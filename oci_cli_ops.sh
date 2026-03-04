@@ -430,8 +430,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.25.68"
-readonly SCRIPT_VERSION_DATE="2026-03-02"
+readonly SCRIPT_VERSION="3.25.69"
+readonly SCRIPT_VERSION_DATE="2026-03-04"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -54251,6 +54251,251 @@ _ch_resolve_instance_names() {
     fi
 }
 
+#--------------------------------------------------------------------------------
+# Compute Host — Display full host detail view
+#   Args: $1=compute host OCID
+#   Returns: 0=back, 2=refresh (caller should re-call)
+#--------------------------------------------------------------------------------
+display_compute_host_details() {
+    local host_ocid="$1"
+    local region="${FOCUS_REGION:-$REGION}"
+
+    echo ""
+    _ui_menu_header "COMPUTE HOST DETAILS" \
+        --breadcrumb "Compute" "Compute Hosts" "Host Detail" \
+        --cmd "oci compute compute-host get --compute-host-id \$HOST_OCID" \
+        --env
+
+    # ========== FETCH ==========
+    _step_init
+    _step_active "host"
+
+    local host_json
+    host_json=$(oci compute compute-host get --compute-host-id "$host_ocid" --region "$region" --output json 2>/dev/null)
+
+    if [[ -z "$host_json" ]] || ! jq -e '.data' <<< "$host_json" > /dev/null 2>&1; then
+        _step_complete "host(failed)"
+        _step_finish
+        echo -e "${RED}Failed to fetch compute host details for: ${host_ocid}${NC}"
+        return 1
+    fi
+    _step_complete "host"
+    _step_finish
+
+    # ========== PARSE ALL FIELDS ==========
+    local ch_display_name ch_state ch_health ch_shape ch_platform ch_has_impacted
+    local ch_ad ch_fd ch_compartment_id
+    local ch_hpc_island ch_network_block ch_local_block ch_gpu_fabric
+    local ch_instance_id ch_host_group_id ch_capacity_reservation_id
+    local ch_time_created ch_time_updated
+
+    IFS=$'\t' read -r ch_display_name ch_state ch_health ch_shape ch_platform ch_has_impacted \
+        ch_ad ch_fd ch_compartment_id \
+        ch_hpc_island ch_network_block ch_local_block ch_gpu_fabric \
+        ch_instance_id ch_host_group_id ch_capacity_reservation_id \
+        ch_time_created ch_time_updated < <(jq -r '.data | [
+        .["display-name"] // "N/A",
+        .["lifecycle-state"] // "N/A",
+        .health // "N/A",
+        .shape // "N/A",
+        .["platform-type"] // "N/A",
+        (.["has-impacted-components"] // false | tostring),
+        .["availability-domain"] // "N/A",
+        .["fault-domain"] // "N/A",
+        .["compartment-id"] // "N/A",
+        .["hpc-island-id"] // "N/A",
+        .["network-block-id"] // "N/A",
+        .["local-block-id"] // "N/A",
+        .["gpu-memory-fabric-id"] // "N/A",
+        .["instance-id"] // "N/A",
+        .["compute-host-group-id"] // "N/A",
+        .["capacity-reservation-id"] // "N/A",
+        .["time-created"] // "N/A",
+        .["time-updated"] // "N/A"
+    ] | @tsv' <<< "$host_json")
+
+    # ========== DISPLAY — Basic Info ==========
+    echo ""
+    _ui_subheader "Basic Info" 0
+
+    # State coloring
+    local state_color="$GREEN"
+    case "$ch_state" in
+        OCCUPIED) state_color="$GREEN" ;;
+        AVAILABLE) state_color="$CYAN" ;;
+        INACTIVE) state_color="$YELLOW" ;;
+        *) state_color="$RED" ;;
+    esac
+
+    # Health coloring
+    local health_color="$GREEN"
+    case "$ch_health" in
+        HEALTHY) health_color="$GREEN" ;;
+        DEGRADED|IMPAIRED) health_color="$YELLOW" ;;
+        UNHEALTHY|FAILED) health_color="$RED" ;;
+    esac
+
+    printf "  ${WHITE}%-20s${NC}${GREEN}%s${NC}\n" "Display Name:" "$ch_display_name"
+    printf "  ${WHITE}%-20s${NC}${state_color}%s${NC}\n" "State:" "$ch_state"
+    printf "  ${WHITE}%-20s${NC}${health_color}%s${NC}\n" "Health:" "$ch_health"
+    printf "  ${WHITE}%-20s${NC}%s\n" "Shape:" "$ch_shape"
+    printf "  ${WHITE}%-20s${NC}%s\n" "Platform:" "$ch_platform"
+    if [[ "$ch_has_impacted" == "true" ]]; then
+        printf "  ${WHITE}%-20s${NC}${RED}YES${NC}\n" "Has Impacted:"
+    else
+        printf "  ${WHITE}%-20s${NC}${GREEN}No${NC}\n" "Has Impacted:"
+    fi
+    printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "OCID:" "$host_ocid"
+
+    # ========== DISPLAY — Location ==========
+    echo ""
+    _ui_subheader "Location" 0
+
+    # AD → short form
+    local ad_short="$ch_ad"
+    [[ "$ch_ad" == *:* ]] && ad_short="${ch_ad##*:}"
+
+    # FD → short form
+    local fd_short="$ch_fd"
+    [[ "$ch_fd" == *FAULT-DOMAIN-* ]] && fd_short="FD-${ch_fd##*FAULT-DOMAIN-}"
+
+    printf "  ${WHITE}%-20s${NC}%s\n" "Availability Domain:" "$ad_short"
+    printf "  ${WHITE}%-20s${NC}%s\n" "Fault Domain:" "$fd_short"
+    if [[ "$ch_compartment_id" != "N/A" ]]; then
+        printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "Compartment:" "$ch_compartment_id"
+    fi
+
+    # ========== DISPLAY — Topology ==========
+    if [[ "$ch_hpc_island" != "N/A" || "$ch_network_block" != "N/A" || "$ch_local_block" != "N/A" ]]; then
+        echo ""
+        _ui_subheader "RDMA Topology" 0
+
+        if [[ "$ch_hpc_island" != "N/A" ]]; then
+            printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "HPC Island:" "$ch_hpc_island"
+        fi
+        if [[ "$ch_network_block" != "N/A" ]]; then
+            printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "Network Block:" "$ch_network_block"
+        fi
+        if [[ "$ch_local_block" != "N/A" ]]; then
+            printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "Local Block:" "$ch_local_block"
+        fi
+    fi
+
+    # ========== DISPLAY — GPU ==========
+    if [[ "$ch_gpu_fabric" != "N/A" ]]; then
+        echo ""
+        _ui_subheader "GPU" 0
+        printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC} ${GRAY}[fabric-${ch_gpu_fabric: -5}]${NC}\n" "GPU Memory Fabric:" "$ch_gpu_fabric"
+    fi
+
+    # ========== DISPLAY — Associations ==========
+    if [[ "$ch_instance_id" != "N/A" || "$ch_host_group_id" != "N/A" || "$ch_capacity_reservation_id" != "N/A" ]]; then
+        echo ""
+        _ui_subheader "Associations" 0
+
+        if [[ "$ch_instance_id" != "N/A" ]]; then
+            printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}  ${GRAY}(type ${CYAN}i${GRAY} to drill in)${NC}\n" "Instance:" "$ch_instance_id"
+        fi
+        if [[ "$ch_host_group_id" != "N/A" ]]; then
+            printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "Host Group:" "$ch_host_group_id"
+        fi
+        if [[ "$ch_capacity_reservation_id" != "N/A" ]]; then
+            printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "Capacity Reserv.:" "$ch_capacity_reservation_id"
+        fi
+    fi
+
+    # ========== DISPLAY — Timestamps ==========
+    echo ""
+    _ui_subheader "Timestamps" 0
+    printf "  ${WHITE}%-20s${NC}%s\n" "Created:" "$ch_time_created"
+    if [[ "$ch_time_updated" != "N/A" && "$ch_time_updated" != "$ch_time_created" ]]; then
+        printf "  ${WHITE}%-20s${NC}%s\n" "Updated:" "$ch_time_updated"
+    fi
+
+    # ========== ACTIONS ==========
+    echo ""
+    _ui_actions
+    if [[ "$ch_instance_id" != "N/A" ]]; then
+        echo -e "  ${YELLOW}i${NC}) Instance details"
+    fi
+    echo -e "  ${CYAN}j${NC}) View raw JSON  |  ${CYAN}j <key>${NC}) Search JSON"
+    echo -e "  ${MAGENTA}r${NC}) Refresh host details"
+    echo -e "  ${CYAN}Enter${NC}) Return"
+    echo ""
+
+    local _hint="j, r, Enter"
+    [[ "$ch_instance_id" != "N/A" ]] && _hint="i, j, r, Enter"
+    _ui_prompt "Compute Host - ${ch_display_name}" "$_hint"
+
+    local action
+    read -r action
+    [[ "${action:-}" == :* ]] && _nav_try_jump "$action" && return
+
+    case "$action" in
+        i|I)
+            if [[ "$ch_instance_id" != "N/A" ]]; then
+                _ch_view_instance "$ch_instance_id"
+                [[ -n "${_NAV_JUMP:-}" ]] && return
+            else
+                echo -e "  ${YELLOW}No instance associated with this host${NC}"
+            fi
+            ;;
+        ocid1.instance.*)
+            _ch_view_instance "$action"
+            [[ -n "${_NAV_JUMP:-}" ]] && return
+            ;;
+        j|J|json|JSON)
+            _ui_json_viewer "Compute Host JSON" "$host_json" ".data"
+            ;;
+        j\ *|J\ *|json\ *|JSON\ *)
+            _ui_json_viewer "Compute Host JSON" "$host_json" ".data" "${action#* }"
+            ;;
+        r|R|refresh|REFRESH)
+            echo ""
+            echo -e "${YELLOW}Refreshing host details...${NC}"
+            return 2
+            ;;
+        show|SHOW) return 2 ;;
+        *) return 0 ;;
+    esac
+
+    return 2
+}
+
+#--------------------------------------------------------------------------------
+# Compute Host — Host detail view wrapper (validates OCID, loops on refresh)
+#   Args: $1=optional prefill OCID (or empty for prompt)
+#--------------------------------------------------------------------------------
+_ch_view_host() {
+    local prefill="${1:-}"
+    local host_ocid=""
+
+    if [[ -n "$prefill" && "$prefill" == ocid1.compute* ]]; then
+        host_ocid="$prefill"
+    else
+        echo ""
+        _ui_prompt "Host Details" "OCID, Enter=back"
+        local input
+        read -r input
+        [[ -z "$input" ]] && return
+        [[ "${input:-}" == :* ]] && _nav_try_jump "$input" && return
+        if [[ "$input" == ocid1.compute* ]]; then
+            host_ocid="$input"
+        else
+            echo -e "${RED}Invalid OCID. Must start with ocid1.compute${NC}"
+            sleep 1
+            return
+        fi
+    fi
+
+    while true; do
+        display_compute_host_details "$host_ocid"
+        local ret=$?
+        [[ -n "${_NAV_JUMP:-}" ]] && break
+        [[ $ret -ne 2 ]] && break
+    done
+}
+
 _ch_view_instance() {
     local prefill="$1"
     local instance_ocid=""
@@ -54354,6 +54599,8 @@ _ch_search_hosts() {
         local _ch_idx=0
         declare -gA CH_HOST_MAP=()
         CH_HOST_MAP=()
+        declare -gA CH_OCID_MAP=()
+        CH_OCID_MAP=()
         _CH_ROW_COUNT=0
 
         while IFS='|' read -r display_name state health shape platform ad fd inst_id host_ocid _hpc _netblk _locblk _hostgrp _capres _gpufab has_impacted _rest; do
@@ -54365,8 +54612,8 @@ _ch_search_hosts() {
         rm -f "$_match_file" 2>/dev/null
 
         echo ""
-        echo -e "  ${YELLOW}i#${NC}) Instance details    ${CYAN}/${NC}${YELLOW}term${NC}) Search again    ${CYAN}Enter${NC}) Return"
-        _ui_prompt "Search" "i#, /term, Enter"
+        echo -e "  ${YELLOW}i#${NC}) Instance details    ${YELLOW}h#${NC}) Host details    ${CYAN}/${NC}${YELLOW}term${NC}) Search again    ${CYAN}Enter${NC}) Return"
+        _ui_prompt "Search" "i#, h#, /term, Enter"
         local sel
         read -r sel
 
@@ -54378,6 +54625,24 @@ _ch_search_hosts() {
                 _ch_view_instance "$sel"
                 [[ -n "${_NAV_JUMP:-}" ]] && return
                 continue
+                ;;
+            ocid1.computecapacityhost.*|ocid1.computehost.*)
+                _ch_view_host "$sel"
+                [[ -n "${_NAV_JUMP:-}" ]] && return
+                continue
+                ;;
+            h[0-9]*)
+                local _hsel="${sel#h}"
+                if [[ -n "${CH_OCID_MAP[$_hsel]:-}" ]]; then
+                    _ch_view_host "${CH_OCID_MAP[$_hsel]}"
+                    [[ -n "${_NAV_JUMP:-}" ]] && return
+                    continue
+                fi
+                if [[ "$_hsel" -ge 1 && "$_hsel" -le "$_ch_idx" ]] 2>/dev/null; then
+                    echo -e "  ${RED}No host OCID for index #${_hsel}${NC}"
+                else
+                    echo -e "  ${RED}Invalid host index: ${sel}${NC}"
+                fi
                 ;;
             i[0-9]*)
                 local _isel="${sel#i}"
@@ -54413,7 +54678,7 @@ _ch_search_hosts() {
 # Compute Host — Row display helper (shared by all view functions)
 # Reads CHOST cache line fields, resolves display values, prints _col_print_row
 #   Args: idx, pipe-delimited line (already parsed into positional vars)
-#   Globals: CH_INST_NAMES (optional), CH_HOST_MAP (written), _CH_ROW_COUNT (written)
+#   Globals: CH_INST_NAMES (optional), CH_HOST_MAP (written), CH_OCID_MAP (written), _CH_ROW_COUNT (written)
 #--------------------------------------------------------------------------------
 _ch_print_host_row() {
     local _idx="$1" display_name="$2" state="$3" health="$4" shape="$5" \
@@ -54470,6 +54735,9 @@ _ch_print_host_row() {
         fd_short="$fd"
     fi
 
+    # Host OCID → h# index mapping (unconditional, always available)
+    CH_OCID_MAP[$_idx]="$host_ocid"
+
     # Instance OCID display + i# index mapping
     local inst_display="-"
     if [[ "$inst_id" == ocid1.instance.* ]]; then
@@ -54512,10 +54780,20 @@ _ch_hidden_cols_notice() {
 #--------------------------------------------------------------------------------
 _ch_post_table_actions() {
     local view_label="$1" search_ctx="${2:-all}"
+
+    # Build jq filter for JSON viewer based on search context
+    local _jq_filter=".data"
+    case "$search_ctx" in
+        state:*)  _jq_filter="[.data[] | select(.\"lifecycle-state\" == \"${search_ctx#state:}\")]" ;;
+        health:*) _jq_filter="[.data[] | select(.health == \"${search_ctx#health:}\")]" ;;
+        shape:*)  _jq_filter="[.data[] | select(.shape == \"${search_ctx#shape:}\")]" ;;
+        impacted) _jq_filter="[.data[] | select(.\"has-impacted-components\" == true)]" ;;
+    esac
+
     echo ""
     while true; do
-        echo -e "  ${YELLOW}i#${NC}) Instance details    ${CYAN}/${NC}${YELLOW}term${NC}) Search    ${YELLOW}j${NC}) JSON    ${GREEN}col${NC}) Columns    ${CYAN}Enter${NC}) Return"
-        _ui_prompt "$view_label" "i#, /term, j, col, Enter"
+        echo -e "  ${YELLOW}i#${NC}) Instance details    ${YELLOW}h#${NC}) Host details    ${CYAN}/${NC}${YELLOW}term${NC}) Search    ${YELLOW}j${NC}) JSON    ${GREEN}col${NC}) Columns    ${CYAN}Enter${NC}) Return"
+        _ui_prompt "$view_label" "i#, h#, /term, j, col, Enter"
         local view_choice
         read -r view_choice
 
@@ -54527,14 +54805,28 @@ _ch_post_table_actions() {
             /*) _ch_search_hosts "$search_ctx" "${view_choice#/}"; [[ -n "${_NAV_JUMP:-}" ]] && return; return ;;
             show|SHOW) continue ;;
             j|J|json|JSON)
-                _ui_json_viewer "Compute Hosts JSON" "-f" "$COMPUTE_HOST_JSON_CACHE" ".data"
+                _ui_json_viewer "${view_label} JSON" "-f" "$COMPUTE_HOST_JSON_CACHE" "$_jq_filter"
                 continue
                 ;;
             j\ *|J\ *|json\ *|JSON\ *)
-                _ui_json_viewer "Compute Hosts JSON" "-f" "$COMPUTE_HOST_JSON_CACHE" ".data" "${view_choice#* }"
+                _ui_json_viewer "${view_label} JSON" "-f" "$COMPUTE_HOST_JSON_CACHE" "$_jq_filter" "${view_choice#* }"
                 continue
                 ;;
             ocid1.instance.*) _ch_view_instance "$view_choice"; [[ -n "${_NAV_JUMP:-}" ]] && return; continue ;;
+            ocid1.computecapacityhost.*|ocid1.computehost.*) _ch_view_host "$view_choice"; [[ -n "${_NAV_JUMP:-}" ]] && return; continue ;;
+            h[0-9]*)
+                local _hsel="${view_choice#h}"
+                if [[ -n "${CH_OCID_MAP[$_hsel]:-}" ]]; then
+                    _ch_view_host "${CH_OCID_MAP[$_hsel]}"
+                    [[ -n "${_NAV_JUMP:-}" ]] && return
+                    continue
+                fi
+                if [[ "$_hsel" -ge 1 && "$_hsel" -le "${_CH_ROW_COUNT:-0}" ]] 2>/dev/null; then
+                    echo -e "  ${RED}No host OCID for index #${_hsel}${NC}"
+                else
+                    echo -e "  ${RED}Invalid host index: ${view_choice}${NC}"
+                fi
+                ;;
             i[0-9]*)
                 local _isel="${view_choice#i}"
                 if [[ -n "${CH_HOST_MAP[$_isel]:-}" ]]; then
@@ -54877,12 +55169,13 @@ manage_compute_hosts() {
         fi
         echo -e "  ${CYAN}/${NC}${YELLOW}term${NC}) Search hosts"
         echo -e "  ${YELLOW}i${NC}) Instance details (paste OCID)"
+        echo -e "  ${YELLOW}h${NC}) Host details (paste OCID)"
         echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)"
         echo -e "  ${GREEN}col${NC}) Configure table columns"
         echo -e "  ${MAGENTA}r${NC}) Refresh data"
         echo -e "  ${CYAN}Enter${NC}) Return to menu"
         echo ""
-        _ui_prompt "Compute Hosts" "1-5, /term, i, j, col, r, Enter, show"
+        _ui_prompt "Compute Hosts" "1-5, /term, i, h, j, col, r, Enter, show"
 
         local choice
         read -r choice
@@ -54897,7 +55190,9 @@ manage_compute_hosts() {
             col|COL|columns|COLUMNS) _col_picker "CHOST" "Compute Hosts" ;;
             /*) _ch_search_hosts "all" "${choice#/}" ;;
             i|I) _ch_view_instance ;;
+            h|H) _ch_view_host ;;
             ocid1.instance.*) _ch_view_instance "$choice" ;;
+            ocid1.computecapacityhost.*|ocid1.computehost.*) _ch_view_host "$choice" ;;
             j|J|json|JSON)
                 _ui_json_viewer "Compute Hosts JSON" "-f" "$COMPUTE_HOST_JSON_CACHE" ".data"
                 ;;
@@ -54966,6 +55261,8 @@ compute_host_view_by_state() {
     local _ch_idx=0
     declare -gA CH_HOST_MAP=()
     CH_HOST_MAP=()
+    declare -gA CH_OCID_MAP=()
+    CH_OCID_MAP=()
 
     while IFS='|' read -r display_name state health shape platform ad fd inst_id host_ocid _hpc _netblk _locblk _hostgrp _capres _gpufab has_impacted _rest; do
         [[ -z "$display_name" ]] && continue
@@ -55029,6 +55326,8 @@ compute_host_view_by_health() {
     local _ch_idx=0
     declare -gA CH_HOST_MAP=()
     CH_HOST_MAP=()
+    declare -gA CH_OCID_MAP=()
+    CH_OCID_MAP=()
 
     while IFS='|' read -r display_name state health shape platform ad fd inst_id host_ocid _hpc _netblk _locblk _hostgrp _capres _gpufab has_impacted _rest; do
         [[ -z "$display_name" ]] && continue
@@ -55068,6 +55367,8 @@ compute_host_view_all() {
     local _ch_idx=0
     declare -gA CH_HOST_MAP=()
     CH_HOST_MAP=()
+    declare -gA CH_OCID_MAP=()
+    CH_OCID_MAP=()
 
     while IFS='|' read -r display_name state health shape platform ad fd inst_id host_ocid _hpc _netblk _locblk _hostgrp _capres _gpufab has_impacted _rest; do
         [[ -z "$display_name" ]] && continue
@@ -55131,6 +55432,8 @@ compute_host_view_by_shape() {
     local _ch_idx=0
     declare -gA CH_HOST_MAP=()
     CH_HOST_MAP=()
+    declare -gA CH_OCID_MAP=()
+    CH_OCID_MAP=()
 
     while IFS='|' read -r display_name state health shape platform ad fd inst_id host_ocid _hpc _netblk _locblk _hostgrp _capres _gpufab has_impacted _rest; do
         [[ -z "$display_name" ]] && continue
@@ -55177,6 +55480,8 @@ compute_host_view_impacted() {
     local _ch_idx=0
     declare -gA CH_HOST_MAP=()
     CH_HOST_MAP=()
+    declare -gA CH_OCID_MAP=()
+    CH_OCID_MAP=()
 
     while IFS='|' read -r display_name state health shape platform ad fd inst_id host_ocid _hpc _netblk _locblk _hostgrp _capres _gpufab has_impacted _rest; do
         [[ -z "$display_name" ]] && continue
