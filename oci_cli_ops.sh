@@ -430,7 +430,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.25.69"
+readonly SCRIPT_VERSION="3.25.70"
 readonly SCRIPT_VERSION_DATE="2026-03-04"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -54347,6 +54347,60 @@ display_compute_host_details() {
     fi
     printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "OCID:" "$host_ocid"
 
+    # ========== DISPLAY — Impacted Components ==========
+    if [[ "$ch_has_impacted" == "true" ]]; then
+        local _imp_v1
+        _imp_v1=$(jq -r '.data["impacted-component-details"]["impactedComponents"]["v1"] // empty' <<< "$host_json" 2>/dev/null)
+        if [[ -n "$_imp_v1" ]]; then
+            echo ""
+            _ui_subheader "Impacted Components" 0
+
+            local _imp_maint _imp_state _imp_cust_impact
+            _imp_maint=$(jq -r '.maintenanceType // "N/A"' <<< "$_imp_v1")
+            _imp_state=$(jq -r '.state // "N/A"' <<< "$_imp_v1")
+            _imp_cust_impact=$(jq -r '.isCustomerImpacting // false' <<< "$_imp_v1")
+
+            local _imp_cust_str="${GREEN}No${NC}"
+            [[ "$_imp_cust_impact" == "true" ]] && _imp_cust_str="${RED}Yes${NC}"
+
+            printf "  ${WHITE}%-22s${NC}${YELLOW}%s${NC}\n" "Maint. Type:" "$_imp_maint"
+            printf "  ${WHITE}%-22s${NC}%s\n" "State:" "$_imp_state"
+            printf "  ${WHITE}%-22s${NC}${_imp_cust_str}\n" "Customer Impacting:"
+
+            local _imp_comp_count
+            _imp_comp_count=$(jq -r '[.components // [] | .[]] | length' <<< "$_imp_v1")
+            if [[ "${_imp_comp_count:-0}" -gt 0 ]]; then
+                echo ""
+                local _imp_idx=0
+                while IFS=$'\t' read -r _ic_type _ic_action _ic_fault _ic_sev _ic_imp _ic_serial _ic_slot; do
+                    ((_imp_idx++))
+                    printf "  ${BOLD}${WHITE}Component %d/%d:${NC}\n" "$_imp_idx" "$_imp_comp_count"
+                    printf "    ${WHITE}%-20s${NC}%s\n" "Type:" "$_ic_type"
+                    printf "    ${WHITE}%-20s${NC}%s\n" "Action:" "$_ic_action"
+                    printf "    ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "Fault ID:" "$_ic_fault"
+                    printf "    ${WHITE}%-20s${NC}%s\n" "Severity:" "$_ic_sev"
+                    local _ic_imp_str="${GREEN}No${NC}"
+                    [[ "$_ic_imp" == "true" ]] && _ic_imp_str="${RED}Yes${NC}"
+                    printf "    ${WHITE}%-20s${NC}${_ic_imp_str}\n" "Impacting:"
+                    if [[ -n "$_ic_serial" && "$_ic_serial" != "null" && "$_ic_serial" != "" ]]; then
+                        printf "    ${WHITE}%-20s${NC}%s\n" "Serial Number:" "$_ic_serial"
+                    fi
+                    if [[ -n "$_ic_slot" && "$_ic_slot" != "null" && "$_ic_slot" != "" ]]; then
+                        printf "    ${WHITE}%-20s${NC}%s\n" "Slot:" "$_ic_slot"
+                    fi
+                done < <(jq -r '.components[]? | [
+                    .componentType // "N/A",
+                    .action // "N/A",
+                    .faultId // "N/A",
+                    .severity // "N/A",
+                    (.impacting // false | tostring),
+                    (.locationData.serialNumber // ""),
+                    (.locationData.slot // "")
+                ] | @tsv' <<< "$_imp_v1")
+            fi
+        fi
+    fi
+
     # ========== DISPLAY — Location ==========
     echo ""
     _ui_subheader "Location" 0
@@ -54937,6 +54991,25 @@ manage_compute_hosts() {
         fi
 
         #-----------------------------------------------------------------------
+        # Pre-extract impacted component details for tree inline display
+        # Format: host_ocid|maintenanceType|comp1_type:comp1_action:comp1_faultId;...
+        #-----------------------------------------------------------------------
+        local _impact_lookup="${TEMP_DIR}/ch_impact_lookup_$$.txt"
+        : > "$_impact_lookup"
+        if [[ -s "$COMPUTE_HOST_JSON_CACHE" ]]; then
+            jq -r '(.data.items // .data // [])[] |
+                select(.["has-impacted-components"] == true) |
+                .id as $hid |
+                (.["impacted-component-details"]["impactedComponents"]["v1"] // {}) |
+                (.maintenanceType // "N/A") as $mt |
+                ([(.components // [])[] |
+                    "\(.componentType // "?"):\(.action // "?"):\(.faultId // "?")"]
+                | join(";")) as $comps |
+                "\($hid)|\($mt)|\($comps)"
+            ' "$COMPUTE_HOST_JSON_CACHE" > "$_impact_lookup" 2>/dev/null || true
+        fi
+
+        #-----------------------------------------------------------------------
         # RDMA Topology Overview (HPC Island → Network Block → Local Block)
         #-----------------------------------------------------------------------
         echo ""
@@ -55091,7 +55164,28 @@ manage_compute_hosts() {
 
                         local _himpact_flag=""
                         if [[ "$_himpacted" == "true" ]]; then
-                            _himpact_flag=" ${LIGHT_RED}[Impacted]${NC}"
+                            local _imp_line=""
+                            if [[ -s "$_impact_lookup" ]]; then
+                                _imp_line=$(grep "^${_hocid}|" "$_impact_lookup" 2>/dev/null | head -1)
+                            fi
+                            if [[ -n "$_imp_line" ]]; then
+                                local _imp_mt _imp_comps
+                                _imp_mt=$(echo "$_imp_line" | cut -d'|' -f2)
+                                _imp_comps=$(echo "$_imp_line" | cut -d'|' -f3)
+                                # Build compact component summary: NIC/DOWNTIME HPCRDMA-0002-03
+                                local _imp_detail=""
+                                IFS=';' read -ra _imp_arr <<< "$_imp_comps"
+                                for _ic in "${_imp_arr[@]}"; do
+                                    [[ -z "$_ic" ]] && continue
+                                    local _ic_type _ic_act _ic_fid
+                                    IFS=':' read -r _ic_type _ic_act _ic_fid <<< "$_ic"
+                                    [[ -n "$_imp_detail" ]] && _imp_detail+=", "
+                                    _imp_detail+="${_ic_type}/${_ic_act} ${_ic_fid}"
+                                done
+                                _himpact_flag=" ${LIGHT_RED}[Impacted: ${_imp_detail} maint:${_imp_mt}]${NC}"
+                            else
+                                _himpact_flag=" ${LIGHT_RED}[Impacted]${NC}"
+                            fi
                         fi
 
                         # Fixed-width state/health for column alignment
