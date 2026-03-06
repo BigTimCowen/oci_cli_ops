@@ -1,6 +1,6 @@
 **OCI CLI Operations** — Interactive management tool for Oracle Cloud Infrastructure, Kubernetes, and GPU infrastructure.
 
-**Version:** 3.25.73 | **Date:** 2026-03-04 | **Lines:** ~71,600
+**Version:** 3.25.73 | **Date:** 2026-03-04
 
 ## Overview
 
