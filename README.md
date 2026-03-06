@@ -4,7 +4,7 @@
 
 ## Overview
 
-`oci_cli_ops.sh` — 71K lines of bash that turns your terminal into a full OCI management console. OCI CLI + kubectl, menu-driven, zero web UI required.
+`oci_cli_ops.sh` — bash script that turns your terminal into a full OCI management console. OCI CLI + kubectl, menu-driven, zero web UI required.
 
 🔥 *Compute* (10 sub-sections)
 Instance lifecycle with K8s cordon/drain/taint/terminate workflows, GPU Memory Fabrics & Clusters with firmware tracking, Capacity Topology with RDMA tree visualization, Custom Images, Instance Pools, Cluster Networks, Compute Hosts with impacted component details and recycle status, and more
