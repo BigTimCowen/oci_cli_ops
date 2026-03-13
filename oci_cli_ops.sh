@@ -431,7 +431,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.30.23"
+readonly SCRIPT_VERSION="3.30.24"
 readonly SCRIPT_VERSION_DATE="2026-03-13"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -9429,70 +9429,70 @@ list_maintenance_events() {
     filtered_evt_count=$(wc -l < "$filtered_evt_ids_file" 2>/dev/null | tr -d ' ')
     [[ -z "$filtered_evt_count" ]] && filtered_evt_count=0
 
-    # Parallel fetch for events not yet in cache — skip if fault cache is fresh (1hr TTL)
+    # Parallel fetch for events not yet in ME_FAULT_MAP
+    # Count missing events first — filter changes (e.g., named→all) may expose
+    # events that were never fetched even though the fault cache file is fresh.
     local fault_total_to_fetch=0
     local fault_found_count=0
     local cache_updated=false
 
-    if ! is_cache_fresh "$FAULT_DETAILS_CACHE"; then
+    # Count how many filtered events are missing from the fault map
+    while IFS= read -r flt_evt_id; do
+        [[ -z "$flt_evt_id" ]] && continue
+        [[ -n "${ME_FAULT_MAP[$flt_evt_id]:-}" ]] && continue
+        ((fault_total_to_fetch++))
+    done < "$filtered_evt_ids_file"
+
+    if [[ $fault_total_to_fetch -gt 0 ]]; then
         local fault_temp_dir="${TEMP_DIR}/fault_detail_$$"
         mkdir -p "$fault_temp_dir" 2>/dev/null
         local fault_fetch_count=0
         local fault_fetch_pids=()
 
-        # Count how many need fetching (only filtered events)
+        _step_active "Fault details(0/${fault_total_to_fetch})"
+
         while IFS= read -r flt_evt_id; do
             [[ -z "$flt_evt_id" ]] && continue
             [[ -n "${ME_FAULT_MAP[$flt_evt_id]:-}" ]] && continue
-            ((fault_total_to_fetch++))
+
+            (
+                local evt_detail
+                evt_detail=$(oci compute instance-maintenance-event get \
+                    --instance-maintenance-event-id "$flt_evt_id" \
+                    --region "$region" \
+                    --output json 2>/dev/null)
+                if [[ -n "$evt_detail" ]]; then
+                    local fault_line
+                    fault_line=$(jq -r '
+                        (.data["additional-details"] // {}) as $ad |
+                        (($ad["faultDetails"] // $ad["fault-details"] // $ad["fault_details"] // null) |
+                         if . != null then (if type == "string" then (try fromjson catch null) else . end) else null end |
+                         if type == "array" and length > 0 then .[0] elif type == "object" then . else null end
+                        ) as $nested |
+                        if $nested != null then
+                            "\($nested.faultId // $nested["fault-id"] // "-")~\($nested.faultComponent // $nested["fault-component"] // "-")~\($nested.severity // "-")~\($nested.customerDescription // $nested["customer-description"] // $nested.description // "-")~\($nested.impactDescription // $nested["impact-description"] // "-")~\($nested.recommendedAction // $nested["recommended-action"] // "-")"
+                        elif ($ad.faultId // $ad["fault-id"] // $ad["faultid"] // null) != null then
+                            "\($ad.faultId // $ad["fault-id"] // $ad["faultid"] // "-")~\($ad.faultComponent // $ad["fault-component"] // $ad.component // "-")~\($ad.severity // $ad.faultSeverity // "-")~\($ad.customerDescription // $ad["customer-description"] // $ad.description // $ad.faultDescription // "-")~\($ad.impactDescription // $ad["impact-description"] // "-")~\($ad.recommendedAction // $ad["recommended-action"] // "-")"
+                        else
+                            "-~-~-~-~-~-"
+                        end
+                    ' <<< "$evt_detail" 2>/dev/null)
+                    if [[ -n "$fault_line" && "$fault_line" != "-~-~-~-~-~-" ]]; then
+                        echo "$fault_line" > "$fault_temp_dir/$flt_evt_id"
+                    fi
+                fi
+            ) >/dev/null 2>&1 &
+            fault_fetch_pids+=($!)
+            ((fault_fetch_count++))
+
+            if [[ $fault_fetch_count -ge 10 ]]; then
+                wait "${fault_fetch_pids[@]}" 2>/dev/null
+                fault_fetch_pids=()
+                fault_fetch_count=0
+            fi
         done < "$filtered_evt_ids_file"
 
-        if [[ $fault_total_to_fetch -gt 0 ]]; then
-            _step_active "Fault details(0/${fault_total_to_fetch})"
-
-            while IFS= read -r flt_evt_id; do
-                [[ -z "$flt_evt_id" ]] && continue
-                [[ -n "${ME_FAULT_MAP[$flt_evt_id]:-}" ]] && continue
-
-                (
-                    local evt_detail
-                    evt_detail=$(oci compute instance-maintenance-event get \
-                        --instance-maintenance-event-id "$flt_evt_id" \
-                        --region "$region" \
-                        --output json 2>/dev/null)
-                    if [[ -n "$evt_detail" ]]; then
-                        local fault_line
-                        fault_line=$(jq -r '
-                            (.data["additional-details"] // {}) as $ad |
-                            (($ad["faultDetails"] // $ad["fault-details"] // $ad["fault_details"] // null) |
-                             if . != null then (if type == "string" then (try fromjson catch null) else . end) else null end |
-                             if type == "array" and length > 0 then .[0] elif type == "object" then . else null end
-                            ) as $nested |
-                            if $nested != null then
-                                "\($nested.faultId // $nested["fault-id"] // "-")~\($nested.faultComponent // $nested["fault-component"] // "-")~\($nested.severity // "-")~\($nested.customerDescription // $nested["customer-description"] // $nested.description // "-")~\($nested.impactDescription // $nested["impact-description"] // "-")~\($nested.recommendedAction // $nested["recommended-action"] // "-")"
-                            elif ($ad.faultId // $ad["fault-id"] // $ad["faultid"] // null) != null then
-                                "\($ad.faultId // $ad["fault-id"] // $ad["faultid"] // "-")~\($ad.faultComponent // $ad["fault-component"] // $ad.component // "-")~\($ad.severity // $ad.faultSeverity // "-")~\($ad.customerDescription // $ad["customer-description"] // $ad.description // $ad.faultDescription // "-")~\($ad.impactDescription // $ad["impact-description"] // "-")~\($ad.recommendedAction // $ad["recommended-action"] // "-")"
-                            else
-                                "-~-~-~-~-~-"
-                            end
-                        ' <<< "$evt_detail" 2>/dev/null)
-                        if [[ -n "$fault_line" && "$fault_line" != "-~-~-~-~-~-" ]]; then
-                            echo "$fault_line" > "$fault_temp_dir/$flt_evt_id"
-                        fi
-                    fi
-                ) >/dev/null 2>&1 &
-                fault_fetch_pids+=($!)
-                ((fault_fetch_count++))
-
-                if [[ $fault_fetch_count -ge 10 ]]; then
-                    wait "${fault_fetch_pids[@]}" 2>/dev/null
-                    fault_fetch_pids=()
-                    fault_fetch_count=0
-                fi
-            done < "$filtered_evt_ids_file"
-
-            [[ ${#fault_fetch_pids[@]} -gt 0 ]] && wait "${fault_fetch_pids[@]}" 2>/dev/null
-        fi
+        [[ ${#fault_fetch_pids[@]} -gt 0 ]] && wait "${fault_fetch_pids[@]}" 2>/dev/null
 
         # Read fetched fault details into ME_FAULT_MAP
         for fault_file in "$fault_temp_dir"/*; do
@@ -32318,18 +32318,18 @@ _PROP_SEARCH_INDICES=()
 
 #--------------------------------------------------------------------------------
 # Instance List View (c1) — column definitions
-# Colors: @1=state, @2=k8s, @3=cordon, @4=taint, @5=pods
+# Colors: @1=state, @2=k8s, @3=cordon, @4=taint, @5=pods, @6=imp, @7=k8s_node
 #--------------------------------------------------------------------------------
 _INST_COL_CONF="$INST_COLUMNS_CONF"
-_INST_COL_KEYS=(           "id"     "imp"    "name"         "state"  "k8s"   "cordon"  "taint"    "pods"  "shape"  "ad"   "fd"   "created"  "age"    "host_id"      "rack_id"      "sn"           "ocid"           )
-_INST_COL_LABELS=(         "ID"     "I"      "Display Name" "State"  "K8s"   "Cordon"  "Taint"    "Pods"  "Shape"  "AD"   "FD"   "Created"  "(Age)"  "Host ID"      "Rack ID"      "SN"           "Instance OCID"  )
-_INST_COL_DEFAULT_WIDTHS=( 5        1        55             9        8       8         10         5       20       3      3      18         6        14             12             12             98               )
-_INST_COL_WIDTHS=(         5        1        55             9        8       8         10         5       20       3      3      18         6        14             12             12             98               )
-_INST_COL_ALIGN=(          "-"      "-"      "-"            "-"      "-"     "-"       "-"        "-"     "-"      "-"    "-"    "-"        "-"      "-"            "-"            "-"            "-"              )
-_INST_COL_FMTS=(           "%-5.5s" "%-1.1s" "%-55.55s"     "%-9.9s" "%-8.8s" "%-8.8s" "%-10.10s" "%-5.5s" "%-20.20s" "%-3.3s" "%-3.3s" "%-18.18s" "%-6.6s" "%-14.14s"     "%-12.12s"     "%-12.12s"     "%-98.98s"       )
-_INST_COL_COLORS=(         "YELLOW" "@6"     ""             "@1"     "@2"    "@3"      "@4"       "@5"    ""       ""     ""     "GRAY"     "GRAY"   "CYAN"         "CYAN"         "CYAN"         "YELLOW"         )
+_INST_COL_KEYS=(           "id"     "imp"    "name"         "state"  "k8s"   "k8s_node"       "cordon"  "taint"    "pods"  "shape"  "ad"   "fd"   "created"  "age"    "host_id"      "rack_id"      "sn"           "fabric"           "ocid"           )
+_INST_COL_LABELS=(         "ID"     "I"      "Display Name" "State"  "K8s"   "K8s Node"       "Cordon"  "Taint"    "Pods"  "Shape"  "AD"   "FD"   "Created"  "(Age)"  "Host ID"      "Rack ID"      "SN"           "GPU Cluster"      "Instance OCID"  )
+_INST_COL_DEFAULT_WIDTHS=( 5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 98               )
+_INST_COL_WIDTHS=(         5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 98               )
+_INST_COL_ALIGN=(          "-"      "-"      "-"            "-"      "-"     "-"              "-"       "-"        "-"     "-"      "-"    "-"    "-"        "-"      "-"            "-"            "-"            "-"                "-"              )
+_INST_COL_FMTS=(           "%-5.5s" "%-1.1s" "%-55.55s"     "%-9.9s" "%-8.8s" "%-20.20s"     "%-8.8s"  "%-10.10s" "%-5.5s" "%-20.20s" "%-3.3s" "%-3.3s" "%-18.18s" "%-6.6s" "%-14.14s"     "%-12.12s"     "%-12.12s"     "%-13.13s"         "%-98.98s"       )
+_INST_COL_COLORS=(         "YELLOW" "@6"     ""             "@1"     "@2"    "@7"             "@3"      "@4"       "@5"    ""       ""     ""     "GRAY"     "GRAY"   "CYAN"         "CYAN"         "CYAN"         "MAGENTA"          "YELLOW"         )
 _INST_COL_LOCKED=( "id" )
-_INST_COL_DEFAULTS=( "id" "imp" "name" "state" "k8s" "cordon" "taint" "pods" "shape" "ad" "fd" "created" "age" "host_id" "rack_id" "sn" )
+_INST_COL_DEFAULTS=( "id" "imp" "name" "state" "k8s" "k8s_node" "cordon" "taint" "pods" "shape" "ad" "fd" "created" "age" "rack_id" "sn" )
 
 # Format globals — INST (Instance List View)
 _INST_ENABLED_COLS=()
@@ -33336,8 +33336,19 @@ _compute_search_instances() {
             fi
         fi
 
+        # GPU cluster lookup (if cache exists)
+        local fabric_name="-"
+        if [[ -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
+            local _s_cluster_line
+            _s_cluster_line=$(grep -F "$ocid" "$INSTANCE_CLUSTER_MAP_CACHE" 2>/dev/null | head -1)
+            if [[ -n "$_s_cluster_line" ]]; then
+                local _s_cname="${_s_cluster_line##*|}"
+                [[ -n "$_s_cname" && "$_s_cname" != "#"* ]] && fabric_name="$_s_cname"
+            fi
+        fi
+
         # Output: searchable_text|display fields
-        echo "${iid}|${imp_indicator}|${name}|${state}|${k8s_status}|${cordon_status}|${taint_status}|${pod_count}|${shape_trunc}|${ad_short}|${fd_short}|${time_display}|${host_id}|${rack_id}|${serial_num}|${ocid}|${k8s_node}"
+        echo "${iid}|${imp_indicator}|${name}|${state}|${k8s_status}|${k8s_node:-"-"}|${cordon_status}|${taint_status}|${pod_count}|${shape_trunc}|${ad_short}|${fd_short}|${time_display}|${host_id}|${rack_id}|${serial_num}|${fabric_name}|${ocid}|${k8s_node}"
     done)
     
     while true; do
@@ -33388,12 +33399,14 @@ _compute_search_instances() {
         printf "${BOLD}${_INST_HDR_FMT}${NC}\n" "${_INST_HDR_ARGS[@]}"
         print_separator $_INST_SEP_WIDTH
 
-        echo "$matched_lines" | while IFS='|' read -r iid imp_indicator name state k8s_status cordon_status taint_status pod_count shape_trunc ad_short fd_short time_display host_id rack_id serial_num ocid k8s_node; do
+        echo "$matched_lines" | while IFS='|' read -r iid imp_indicator name state k8s_status k8s_node_name cordon_status taint_status pod_count shape_trunc ad_short fd_short time_display host_id rack_id serial_num fabric_name ocid k8s_node; do
             [[ -z "$iid" ]] && continue
 
             # Build plain-text row (dynamic columns)
             local row
-            row=$(_col_print_row_plain "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$host_id" "$rack_id" "$serial_num" "$ocid")
+            local _s_age=""
+            _s_age=$(_days_since "$time_display" 2>/dev/null) || _s_age=""
+            row=$(_col_print_row_plain "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_name:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_s_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "$ocid")
             
             # Apply BG_YELLOW highlight to matching text (case-insensitive)
             local highlighted
@@ -33518,10 +33531,23 @@ manage_compute_instances() {
         if ! grep -q "^fd" "$INST_COLUMNS_CONF" 2>/dev/null; then
             sed -i '/^ad/a fd' "$INST_COLUMNS_CONF" 2>/dev/null
         fi
+        if ! grep -q "^k8s_node" "$INST_COLUMNS_CONF" 2>/dev/null; then
+            sed -i '/^k8s$/a k8s_node' "$INST_COLUMNS_CONF" 2>/dev/null
+        fi
     fi
 
     while true; do
         echo ""
+        # Check if fabric column is enabled (for cache header + discovery)
+        local _inst_fabric_enabled=false
+        if [[ -f "$INST_COLUMNS_CONF" ]] && grep -q "^fabric" "$INST_COLUMNS_CONF" 2>/dev/null; then
+            _inst_fabric_enabled=true
+        fi
+        # Build cache entries list
+        local -a _inst_cache_entries=("${INSTANCE_LIST_CACHE}|Instances")
+        if [[ "$_inst_fabric_enabled" == "true" ]]; then
+            _inst_cache_entries+=("${INSTANCE_CLUSTER_MAP_CACHE}|GPU Clusters")
+        fi
         if [[ -n "$filter_label" ]]; then
             _ui_menu_header "COMPUTE INSTANCE MANAGEMENT (${filter_label})" \
                 --color "$YELLOW" \
@@ -33529,7 +33555,7 @@ manage_compute_instances() {
                 --cmd "oci compute instance list --compartment-id \$COMPARTMENT_ID --all (+ kubectl if instances found)" \
                 --env \
                 --cache \
-                "${INSTANCE_LIST_CACHE}|Instances"
+                "${_inst_cache_entries[@]}"
         else
             _ui_menu_header "COMPUTE INSTANCE MANAGEMENT" \
                 --color "$YELLOW" \
@@ -33537,7 +33563,7 @@ manage_compute_instances() {
                 --cmd "oci compute instance list --compartment-id \$COMPARTMENT_ID --all (+ kubectl if instances found)" \
                 --env \
                 --cache \
-                "${INSTANCE_LIST_CACHE}|Instances"
+                "${_inst_cache_entries[@]}"
         fi
         [[ -n "$filter_label" ]] && echo -e "  ${CYAN}Filter:${NC}      ${YELLOW}${filter_label}${NC}"
         echo ""
@@ -33672,6 +33698,37 @@ manage_compute_instances() {
         ' <<< "$k8s_nodes_json" 2>/dev/null)
         local _nc=$(echo "$k8s_lookup" | grep -c . 2>/dev/null || true)
         _step_complete "k8s nodes(${_nc})"
+
+        # GPU Cluster lookup: key=instance OCID, value=cluster display name
+        # Only fetch if the fabric column is enabled (off by default)
+        declare -A _inst_fabric_map=()
+        local _fabric_col_enabled=false
+        _col_build_fmt "INST"
+        for _ek in "${_INST_ENABLED_COLS[@]:-}"; do
+            [[ "$_ek" == "fabric" ]] && _fabric_col_enabled=true && break
+        done
+        if [[ "$_fabric_col_enabled" == "true" ]]; then
+            # Ensure cluster caches exist; fetch if missing
+            if [[ ! -f "$INSTANCE_CLUSTER_MAP_CACHE" || ! -s "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
+                _step_active "gpu clusters"
+                if [[ ! -f "$FABRIC_CACHE" || ! -s "$FABRIC_CACHE" ]]; then
+                    fetch_gpu_fabrics 2>/dev/null || true
+                fi
+                fetch_gpu_clusters 2>/dev/null || true
+                _step_complete "gpu clusters($(_clc "$CLUSTER_CACHE" 2>/dev/null || echo "0"))"
+            else
+                _step_active "gpu clusters"
+                _step_complete "gpu clusters($(_clc "$CLUSTER_CACHE" 2>/dev/null || echo "0") cached)"
+            fi
+            # Direct lookup: instance→cluster display name from INSTANCE_CLUSTER_MAP_CACHE
+            if [[ -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
+                while IFS='|' read -r _icm_inst _icm_cluster _icm_cname; do
+                    [[ "$_icm_inst" == "#"* || -z "$_icm_inst" || -z "$_icm_cname" ]] && continue
+                    _inst_fabric_map["$_icm_inst"]="$_icm_cname"
+                done < "$INSTANCE_CLUSTER_MAP_CACHE"
+            fi
+        fi
+
         _step_finish
 
         # ── Pre-build associative arrays for O(1) lookups (eliminates per-row subprocesses) ──
@@ -33700,7 +33757,6 @@ manage_compute_instances() {
         # Display instances table
         _ui_subheader "Instances" 0
         echo ""
-        _col_build_fmt "INST"
         printf "${BOLD}${_INST_HDR_FMT}${NC}\n" "${_INST_HDR_ARGS[@]}"
         print_separator $_INST_SEP_WIDTH
 
@@ -33817,7 +33873,18 @@ manage_compute_instances() {
                 imp_color="$LIGHT_RED"
             fi
 
-            _col_print_row "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_inst_age" "$host_id" "$rack_id" "$serial_num" "$ocid" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pod_color" "$imp_color"
+            # O(1) GPU fabric lookup
+            local fabric_name="${_inst_fabric_map[$ocid]:-"-"}"
+
+            # K8s node name display — use short name or "-"
+            local k8s_node_display="-"
+            local k8s_node_color="$GRAY"
+            if [[ -n "$k8s_node_name" && "$k8s_node_name" != "N/A" ]]; then
+                k8s_node_display="$k8s_node_name"
+                k8s_node_color="$CYAN"
+            fi
+
+            _col_print_row "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_display:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_inst_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "$ocid" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pod_color" "$imp_color" "$k8s_node_color"
         done < <(jq -r '
             .data[] |
             select(.["lifecycle-state"] != "TERMINATED") |
