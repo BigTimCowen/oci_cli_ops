@@ -431,8 +431,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.30.24"
-readonly SCRIPT_VERSION_DATE="2026-03-13"
+readonly SCRIPT_VERSION="3.30.25"
+readonly SCRIPT_VERSION_DATE="2026-03-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -5193,6 +5193,15 @@ _date_short() {
     local ts="${1:-}"
     [[ -z "$ts" || "$ts" == "N/A" || "$ts" == "null" ]] && { echo "N/A"; return; }
     echo "${ts:0:10}"
+}
+
+# Convert ISO timestamp to MM-DD-YYYY format
+# Input: 2026-01-15T03:29:11.123Z → 01-15-2026
+_date_mmddyyyy() {
+    local ts="${1:-}"
+    [[ -z "$ts" || "$ts" == "N/A" || "$ts" == "null" ]] && { echo "N/A"; return; }
+    local yyyy="${ts:0:4}" mm="${ts:5:2}" dd="${ts:8:2}"
+    echo "${mm}-${dd}-${yyyy}"
 }
 
 #===============================================================================
@@ -13450,7 +13459,7 @@ display_gpu_management_menu() {
             
             # Compute created date and age for fabric
             local _fab_date _fab_age
-            _fab_date=$(_date_short "${fabric_created:-}")
+            _fab_date=$(_date_mmddyyyy "${fabric_created:-}")
             _fab_age=$(_days_since "${fabric_created:-}")
 
             # Print fabric line: main info with Created/Age and OCID on same line
@@ -13521,6 +13530,13 @@ display_gpu_management_menu() {
                     cluster_lines+=("$cluster_ocid|$cluster_name|$cluster_state|$cluster_fabric_suffix|$instance_config_id|$compute_cluster_id|$cluster_size|${cluster_created:-N/A}")
                 done < <(grep -v '^#' "$CLUSTER_CACHE" 2>/dev/null)
 
+                # Sort clusters by created date ascending (oldest first, newest last)
+                local sorted_cluster_lines=()
+                while IFS= read -r _scl; do
+                    [[ -n "$_scl" ]] && sorted_cluster_lines+=("$_scl")
+                done < <(printf '%s\n' "${cluster_lines[@]}" | sort -t'|' -k8,8)
+                cluster_lines=("${sorted_cluster_lines[@]}")
+
                 local num_clusters=${#cluster_lines[@]}
                 ((summary_clusters += num_clusters))
                 local cluster_i=0
@@ -13558,7 +13574,7 @@ display_gpu_management_menu() {
 
                     # Compute created date and age for cluster
                     local _cl_date _cl_age
-                    _cl_date=$(_date_short "${cluster_created:-}")
+                    _cl_date=$(_date_mmddyyyy "${cluster_created:-}")
                     _cl_age=$(_days_since "${cluster_created:-}")
 
                     # Check if this cluster has degraded/unhealthy compute hosts (from pre-computed map)
@@ -13598,7 +13614,7 @@ display_gpu_management_menu() {
                         fi
                     fi
                     local _cc_date _cc_age _cc_state_color
-                    _cc_date=$(_date_short "${_cc_created:-}")
+                    _cc_date=$(_date_mmddyyyy "${_cc_created:-}")
                     _cc_age=$(_days_since "${_cc_created:-}")
                     _cc_state_color=$(color_resource_state "${_cc_state:-}")
 
@@ -13612,7 +13628,7 @@ display_gpu_management_menu() {
                         fi
                     fi
                     local _ic_date _ic_age
-                    _ic_date=$(_date_short "${_ic_created:-}")
+                    _ic_date=$(_date_mmddyyyy "${_ic_created:-}")
                     _ic_age=$(_days_since "${_ic_created:-}")
 
                     # Sub-tree indent: 10 visible chars — continuation bar at col 3 aligns with cluster tree
@@ -13681,7 +13697,7 @@ display_gpu_management_menu() {
             IC_INDEX_MAP[$iid]="$ic_ocid"
 
             local _ic_dt _ic_ag
-            _ic_dt=$(_date_short "${ic_created:-}")
+            _ic_dt=$(_date_mmddyyyy "${ic_created:-}")
             _ic_ag=$(_days_since "${ic_created:-}")
 
             printf "${YELLOW}%-5s${NC} ${WHITE}%-60s${NC}  ${WHITE}%-10s${NC} ${GRAY}%-6s${NC}  ${YELLOW}%s${NC}\n" \
@@ -13719,7 +13735,7 @@ display_gpu_management_menu() {
             state_color=$(color_resource_state "$cc_state")
 
             local _cc_dt _cc_ag
-            _cc_dt=$(_date_short "${cc_created:-}")
+            _cc_dt=$(_date_mmddyyyy "${cc_created:-}")
             _cc_ag=$(_days_since "${cc_created:-}")
 
             printf "${YELLOW}%-5s${NC} ${WHITE}%-50s${NC}  ${state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC}  ${CYAN}%s${NC}\n" \
@@ -34410,34 +34426,76 @@ manage_compute_instances() {
             echo ""
             
             declare -a reboot_valid=()
-            
-            printf "  ${BOLD}%-5s %-45s %-9s %-8s %-55s${NC}\n" "ID" "Display Name" "State" "K8s" "Instance OCID"
-            print_separator 130
-            
+
+            printf "  ${BOLD}%-5s %-30s %-9s %-6s %-20s %-6s %-7s %-4s %-4s %-4s %-8s %-8s %-10s${NC}\n" \
+                "ID" "Display Name" "State" "K8s" "K8s Node" "Crdn" "Taint" "Pods" "AD" "FD" "Rack ID" "SN" "Age"
+            print_separator 135
+
             for ri in "${!_PARSED_IDS[@]}"; do
                 local r_iid="${_PARSED_IDS[$ri]}"
                 local r_ocid="${_PARSED_OCIDS[$ri]}"
-                local r_name r_state
+                local r_name r_state r_ad r_fd r_created
                 r_name=$(_inst_attr "$r_ocid" "$INSTANCE_LIST_CACHE" "display-name")
                 r_state=$(_inst_attr "$r_ocid" "$INSTANCE_LIST_CACHE" "lifecycle-state")
-                
-                local r_k8s_status="No"
-                if [[ -n "$k8s_nodes_json" ]]; then
-                    local r_k8s_node
-                    r_k8s_node=$(resolve_k8s_node_name "$r_ocid" "$k8s_nodes_json")
-                    [[ -n "$r_k8s_node" ]] && r_k8s_status="Yes"
+                r_ad=$(_inst_attr "$r_ocid" "$INSTANCE_LIST_CACHE" "availability-domain")
+                r_fd=$(_inst_attr "$r_ocid" "$INSTANCE_LIST_CACHE" "fault-domain")
+                r_created=$(_inst_attr "$r_ocid" "$INSTANCE_LIST_CACHE" "time-created")
+
+                # Shorten AD/FD
+                local r_ad_short="-"
+                [[ "$r_ad" == *-AD-* ]] && r_ad_short="AD${r_ad##*-AD-}"
+                local r_fd_short="${r_fd/FAULT-DOMAIN-/FD}"
+                [[ "$r_fd_short" == "N/A" || -z "$r_fd_short" ]] && r_fd_short="-"
+
+                # Age
+                local r_age=""
+                r_age=$(_days_since "$r_created")
+
+                # K8s details from pre-built map
+                local r_k8s_status="-" r_k8s_node="-" r_cordon="-" r_taint="-" r_pods="-"
+                local r_rack="-" r_sn="-"
+                local r_k8s_color="$GRAY" r_cordon_color="$GRAY" r_taint_color="$GRAY" r_pod_color="$GRAY"
+                local r_k8s_match="${_k8s_map[$r_ocid]:-}"
+                if [[ -n "$r_k8s_match" ]]; then
+                    local _rk_pid _rk_name _rk_ready _rk_nn _rk_unsched _rk_maint _rk_host _rk_rack _rk_sn
+                    IFS='|' read -r _rk_pid _rk_name _rk_ready _rk_nn _rk_unsched _rk_maint _rk_host _rk_rack _rk_sn <<< "$r_k8s_match"
+                    r_k8s_node="${_rk_name:-"-"}"
+                    r_rack="${_rk_rack:-"-"}"
+                    r_sn="${_rk_sn:-"-"}"
+                    if [[ "$_rk_ready" == "True" ]]; then
+                        r_k8s_status="Ready"; r_k8s_color="$GREEN"
+                    else
+                        r_k8s_status="NotRdy"; r_k8s_color="$RED"
+                    fi
+                    # Cordon
+                    if [[ "$_rk_unsched" == "true" ]]; then
+                        r_cordon="Yes"; r_cordon_color="$YELLOW"
+                    fi
+                    # Taints
+                    local _rk_has_n="false" _rk_has_m="false"
+                    [[ "$_rk_nn" != "N/A" && -n "$_rk_nn" ]] && _rk_has_n="true"
+                    [[ "$_rk_maint" != "N/A" && -n "$_rk_maint" ]] && _rk_has_m="true"
+                    if [[ "$_rk_has_n" == "true" && "$_rk_has_m" == "true" ]]; then
+                        r_taint="n,m"; r_taint_color="$CYAN"
+                    elif [[ "$_rk_has_n" == "true" ]]; then
+                        r_taint="newNd"; r_taint_color="$CYAN"
+                    elif [[ "$_rk_has_m" == "true" ]]; then
+                        r_taint="maint"; r_taint_color="$MAGENTA"
+                    fi
+                    # Pods
+                    local _rk_pods="${_pods_map[$_rk_name]:-0}"
+                    r_pods="$_rk_pods"; r_pod_color="$CYAN"
                 fi
-                
+
                 local r_state_color; r_state_color=$(color_oci_state "$r_state")
-                local r_k8s_color="$GRAY"; [[ "$r_k8s_status" == "Yes" ]] && r_k8s_color="$YELLOW"
-                
+
                 if [[ "$r_state" == "RUNNING" ]]; then
-                    printf "  ${YELLOW}%-5s${NC} %-45s ${r_state_color}%-9s${NC} ${r_k8s_color}%-8s${NC} ${GRAY}%-55s${NC}\n" \
-                        "$r_iid" "${r_name:0:45}" "${r_state:0:9}" "$r_k8s_status" "$r_ocid"
+                    printf "  ${YELLOW}%-5s${NC} %-30s ${r_state_color}%-9s${NC} ${r_k8s_color}%-6s${NC} ${CYAN}%-20s${NC} ${r_cordon_color}%-6s${NC} ${r_taint_color}%-7s${NC} ${r_pod_color}%-4s${NC} %-4s %-4s ${GRAY}%-8s %-8s${NC} %-10s\n" \
+                        "$r_iid" "${r_name:0:30}" "${r_state:0:9}" "$r_k8s_status" "${r_k8s_node:0:20}" "$r_cordon" "$r_taint" "$r_pods" "$r_ad_short" "$r_fd_short" "${r_rack:0:8}" "${r_sn:0:8}" "$r_age"
                     reboot_valid+=("${r_iid}|${r_ocid}|${r_name}|${r_state}|${r_k8s_status}")
                 else
-                    printf "  ${GRAY}%-5s %-45s %-9s %-8s %-55s${NC}  ${RED}(not RUNNING — skip)${NC}\n" \
-                        "$r_iid" "${r_name:0:45}" "${r_state:0:9}" "$r_k8s_status" "$r_ocid"
+                    printf "  ${GRAY}%-5s %-30s %-9s %-6s %-20s %-6s %-7s %-4s %-4s %-4s %-8s %-8s %-10s${NC}  ${RED}(not RUNNING — skip)${NC}\n" \
+                        "$r_iid" "${r_name:0:30}" "${r_state:0:9}" "$r_k8s_status" "${r_k8s_node:0:20}" "$r_cordon" "$r_taint" "$r_pods" "$r_ad_short" "$r_fd_short" "${r_rack:0:8}" "${r_sn:0:8}" "$r_age"
                 fi
             done
             
@@ -34452,7 +34510,8 @@ manage_compute_instances() {
             # K8s node warning
             local r_k8s_count=0
             for rv in "${reboot_valid[@]}"; do
-                [[ "$(echo "$rv" | cut -d'|' -f5)" == "Yes" ]] && ((r_k8s_count++))
+                local _rv_k8s; _rv_k8s=$(echo "$rv" | cut -d'|' -f5)
+                [[ "$_rv_k8s" == "Ready" || "$_rv_k8s" == "NotRdy" ]] && ((r_k8s_count++))
             done
             if [[ $r_k8s_count -gt 0 ]]; then
                 echo ""
@@ -34692,7 +34751,7 @@ manage_compute_instances() {
                 _compute_search_instances "$k8s_lookup" "$pods_per_node" "${input#/}"
                 ;;
             properties|PROPERTIES|props|p)
-                display_instances_properties_view
+                display_instances_properties_view "$filter_ocids"
                 ;;
             col|COL|columns|COLUMNS)
                 _col_picker "INST" "Compute Instances"
@@ -35513,6 +35572,7 @@ compute_boot_volume_replacement() {
 # Uses parallel fetching and caching for boot volumes and images
 #--------------------------------------------------------------------------------
 display_instances_properties_view() {
+    local filter_ocids="${1:-}"  # Optional: pipe-separated instance OCIDs to filter to
     local compartment_id="${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}"
     local region="${FOCUS_REGION:-$REGION}"
     local max_parallel=$OCI_MAX_PARALLEL
@@ -35560,7 +35620,14 @@ display_instances_properties_view() {
             _ui_pause "return"
             return
         fi
-        
+
+        # Apply filter if provided (filter_ocids is pipe-separated list of instance OCIDs)
+        if [[ -n "$filter_ocids" ]]; then
+            instances_json=$(jq --arg ids "$filter_ocids" '
+                .data |= [.[] | select(.id as $id | ($ids | split("|")) | index($id))]
+            ' <<< "$instances_json" )
+        fi
+
         # Extract unique image IDs and instance OCIDs
         local unique_images unique_instances
         unique_images=$(jq -r '.data[] | select(.["lifecycle-state"] != "TERMINATED") | .["image-id"] // empty' <<< "$instances_json" | sort -u | grep -v '^$' )
