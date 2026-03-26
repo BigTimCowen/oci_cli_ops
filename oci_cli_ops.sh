@@ -33475,17 +33475,26 @@ _compute_search_instances() {
             continue
         fi
         
-        # Escape regex special characters
-        local search_escaped
-        search_escaped=$(printf '%s' "$search_term" | sed 's/[.[\*^$()+?{|\\]/\\&/g')
-        
-        # Filter matching lines (case-insensitive across all fields)
-        local matched_lines
-        matched_lines=$(echo "$search_data" | grep -i "$search_escaped" 2>/dev/null)
-        
+        # Split search into terms and escape each for regex
+        local -a search_terms=()
+        local -a search_escaped_terms=()
+        local _st
+        for _st in $search_term; do
+            search_terms+=("$_st")
+            search_escaped_terms+=("$(printf '%s' "$_st" | sed 's/[.[\*^$()+?{|\\]/\\&/g')")
+        done
+
+        # Filter matching lines — AND logic: every term must match (case-insensitive)
+        local matched_lines="$search_data"
+        local _se
+        for _se in "${search_escaped_terms[@]}"; do
+            matched_lines=$(echo "$matched_lines" | grep -i "$_se" 2>/dev/null)
+            [[ -z "$matched_lines" ]] && break
+        done
+
         local match_count=0
         [[ -n "$matched_lines" ]] && match_count=$(echo "$matched_lines" | grep -c . 2>/dev/null)
-        
+
         echo ""
         _ui_subheader "Search Results: '${YELLOW}${search_term}${WHITE}' ($match_count matches)" 0
         echo ""
@@ -33507,9 +33516,11 @@ _compute_search_instances() {
             _s_age=$(_days_since "$time_display" 2>/dev/null) || _s_age=""
             row=$(_col_print_row_plain "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_name:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_s_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "$ocid")
             
-            # Apply BG_YELLOW highlight to matching text (case-insensitive)
-            local highlighted
-            highlighted=$(echo "$row" | sed -E "s/(${search_escaped})/\x1b[43m\1\x1b[0m/gI" 2>/dev/null)
+            # Apply BG_YELLOW highlight to all matching terms (case-insensitive)
+            local highlighted="$row"
+            for _se in "${search_escaped_terms[@]}"; do
+                highlighted=$(echo "$highlighted" | sed -E "s/(${_se})/\x1b[43m\1\x1b[0m/gI" 2>/dev/null)
+            done
             [[ -z "$highlighted" ]] && highlighted="$row"
             
             echo -e "$highlighted"
@@ -33548,10 +33559,15 @@ _compute_search_properties() {
         
         [[ -z "$search_term" ]] && return
         
-        # Escape regex special characters
-        local search_escaped
-        search_escaped=$(printf '%s' "$search_term" | sed 's/[.[\*^$()+?{|\\]/\\&/g')
-        
+        # Split search into terms and escape each for regex
+        local -a search_terms=()
+        local -a search_escaped_terms=()
+        local _st
+        for _st in $search_term; do
+            search_terms+=("$_st")
+            search_escaped_terms+=("$(printf '%s' "$_st" | sed 's/[.[\*^$()+?{|\\]/\\&/g')")
+        done
+
         # For CreatedBy columns, we need to also search the resolved names
         # Build an augmented version: original line + resolved created_by appended
         local augmented_data=""
@@ -33562,10 +33578,14 @@ _compute_search_properties() {
             fi
             echo "${name}|${state}|${shape}|${ocpus}|${memory}|${gpus}|${net_bw}|${max_vnics}|${bv_size}|${bv_vpus}|${image_name}|${created_by}|${created_on}|${ci_fp}|${_inst_ocid}|${resolved_by}"
         done < <(sort -t'|' -k1,1 "$tmp_data"))
-        
-        # Filter matching lines (search against augmented data including resolved names)
-        local matched_lines
-        matched_lines=$(echo "$augmented_data" | grep -i "$search_escaped" 2>/dev/null)
+
+        # Filter matching lines — AND logic: every term must match (case-insensitive)
+        local matched_lines="$augmented_data"
+        local _se
+        for _se in "${search_escaped_terms[@]}"; do
+            matched_lines=$(echo "$matched_lines" | grep -i "$_se" 2>/dev/null)
+            [[ -z "$matched_lines" ]] && break
+        done
         
         local match_count=0
         [[ -n "$matched_lines" ]] && match_count=$(echo "$matched_lines" | grep -c . 2>/dev/null)
@@ -33603,9 +33623,11 @@ _compute_search_properties() {
             local row
             row=$(_col_print_row_plain "PROP" "" "$name_t" "$state_t" "$shape_t" "$ocpus" "$memory" "$gpu_disp" "$net_bw" "$max_vnics" "$bv_size" "$bv_vpus" "$image_name" "$created_by_display" "$created_on" "$ci_fp")
             
-            # Apply BG_YELLOW highlight to matching text (case-insensitive)
-            local highlighted
-            highlighted=$(echo "$row" | sed -E "s/(${search_escaped})/\x1b[43m\1\x1b[0m/gI" 2>/dev/null)
+            # Apply BG_YELLOW highlight to all matching terms (case-insensitive)
+            local highlighted="$row"
+            for _se in "${search_escaped_terms[@]}"; do
+                highlighted=$(echo "$highlighted" | sed -E "s/(${_se})/\x1b[43m\1\x1b[0m/gI" 2>/dev/null)
+            done
             [[ -z "$highlighted" ]] && highlighted="$row"
             
             echo -e "$highlighted"
