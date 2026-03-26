@@ -33484,13 +33484,12 @@ _compute_search_instances() {
             search_escaped_terms+=("$(printf '%s' "$_st" | sed 's/[.[\*^$()+?{|\\]/\\&/g')")
         done
 
-        # Filter matching lines — AND logic: every term must match (case-insensitive)
-        local matched_lines="$search_data"
-        local _se
-        for _se in "${search_escaped_terms[@]}"; do
-            matched_lines=$(echo "$matched_lines" | grep -i "$_se" 2>/dev/null)
-            [[ -z "$matched_lines" ]] && break
-        done
+        # Filter matching lines — OR logic: match any term (case-insensitive)
+        # Build combined regex: term1|term2|term3
+        local _or_pattern
+        _or_pattern=$(IFS='|'; echo "${search_escaped_terms[*]}")
+        local matched_lines
+        matched_lines=$(echo "$search_data" | grep -iE "$_or_pattern" 2>/dev/null)
 
         local match_count=0
         [[ -n "$matched_lines" ]] && match_count=$(echo "$matched_lines" | grep -c . 2>/dev/null)
@@ -33579,14 +33578,12 @@ _compute_search_properties() {
             echo "${name}|${state}|${shape}|${ocpus}|${memory}|${gpus}|${net_bw}|${max_vnics}|${bv_size}|${bv_vpus}|${image_name}|${created_by}|${created_on}|${ci_fp}|${_inst_ocid}|${resolved_by}"
         done < <(sort -t'|' -k1,1 "$tmp_data"))
 
-        # Filter matching lines — AND logic: every term must match (case-insensitive)
-        local matched_lines="$augmented_data"
-        local _se
-        for _se in "${search_escaped_terms[@]}"; do
-            matched_lines=$(echo "$matched_lines" | grep -i "$_se" 2>/dev/null)
-            [[ -z "$matched_lines" ]] && break
-        done
-        
+        # Filter matching lines — OR logic: match any term (case-insensitive)
+        local _or_pattern
+        _or_pattern=$(IFS='|'; echo "${search_escaped_terms[*]}")
+        local matched_lines
+        matched_lines=$(echo "$augmented_data" | grep -iE "$_or_pattern" 2>/dev/null)
+
         local match_count=0
         [[ -n "$matched_lines" ]] && match_count=$(echo "$matched_lines" | grep -c . 2>/dev/null)
         
