@@ -9172,7 +9172,7 @@ reschedule_maintenance_event() {
     
     echo ""
     echo -e "${YELLOW}Executing reschedule...${NC}"
-    _log_masked "log_file" "EXECUTE: $resched_cmd"
+    _log_masked "$log_file" "EXECUTE: $resched_cmd"
     echo -e "${WHITE}$ ${resched_cmd}${NC}"
     echo ""
     
@@ -9188,7 +9188,7 @@ reschedule_maintenance_event() {
     if [[ $resched_rc -eq 0 ]]; then
         echo -e "${GREEN}✓ Maintenance event rescheduled successfully${NC}"
         log_action_result "SUCCESS" "UPDATE operation"
-        _log_masked "log_file" "SUCCESS: Rescheduled $event_display_name ($event_id) to $new_time_window"
+        _log_masked "$log_file" "SUCCESS: Rescheduled $event_display_name ($event_id) to $new_time_window"
         
         # Show updated event details
         local new_window_start
@@ -9201,7 +9201,7 @@ reschedule_maintenance_event() {
     else
         echo -e "${RED}✗ Failed to reschedule maintenance event${NC}"
         log_action_result "FAILED" "UPDATE operation"
-        _log_masked "log_file" "FAILED: Reschedule $event_display_name ($event_id) to $new_time_window"
+        _log_masked "$log_file" "FAILED: Reschedule $event_display_name ($event_id) to $new_time_window"
         echo -e "${GRAY}Error output:${NC}"
         echo "$resched_output" | head -20
     fi
@@ -10835,11 +10835,11 @@ list_maintenance_events() {
                     if _safe_exec "$cmd"; then
                         echo -e "${GREEN}  ✓ Success: ${inst_name}${NC}"
                         ((success_count++))
-                        _log_masked "MAINTENANCE_LOG_FILE" "TERMINATE: $cmd"
+                        _log_masked "$MAINTENANCE_LOG_FILE" "TERMINATE: $cmd"
                     else
                         echo -e "${RED}  ✗ Failed: ${inst_name}${NC}"
                         ((fail_count++))
-                        _log_masked "MAINTENANCE_LOG_FILE" "FAILED TERMINATE: $cmd"
+                        _log_masked "$MAINTENANCE_LOG_FILE" "FAILED TERMINATE: $cmd"
                     fi
                     echo ""
                 done
@@ -11236,7 +11236,7 @@ list_maintenance_events() {
                 
                 echo -e "${WHITE}[#$bv_idx] ${bv_inst_name}${NC}"
                 echo -e "${GRAY}$ $bv_cmd${NC}"
-                _log_masked "log_file" "EXECUTE: $bv_cmd"
+                _log_masked "$log_file" "EXECUTE: $bv_cmd"
                 
                 local bv_output
                 log_action "UPDATE" "$bv_cmd"
@@ -11252,12 +11252,12 @@ list_maintenance_events() {
                     bv_new_window=$(jq -r '.data["time-window-start"] // "N/A"' <<< "$bv_output" 2>/dev/null)
                     echo -e "  ${GREEN}✓ Rescheduled → ${bv_new_window}${NC}"
                     log_action_result "SUCCESS" "UPDATE operation"
-                    _log_masked "log_file" "SUCCESS: Rescheduled $bv_inst_name ($bv_evt_id) to $bulk_new_time"
+                    _log_masked "$log_file" "SUCCESS: Rescheduled $bv_inst_name ($bv_evt_id) to $bulk_new_time"
                     ((bulk_success++))
                 else
                     echo -e "  ${RED}✗ Failed to reschedule${NC}"
                     log_action_result "FAILED" "UPDATE operation"
-                    _log_masked "log_file" "FAILED: Reschedule $bv_inst_name ($bv_evt_id) to $bulk_new_time"
+                    _log_masked "$log_file" "FAILED: Reschedule $bv_inst_name ($bv_evt_id) to $bulk_new_time"
                     local bv_err
                     bv_err=$(jq -r '.message // empty' <<< "$bv_output" 2>/dev/null)
                     [[ -n "$bv_err" ]] && echo -e "  ${GRAY}$bv_err${NC}"
@@ -14945,7 +14945,7 @@ compartment_submenu() {
                     local log_file="${LOGS_DIR}/compartment_actions_$(date +%Y%m%d).log"
                     mkdir -p "$(dirname "$log_file")" 2>/dev/null
                     log_action "CREATE_COMPARTMENT" "$cmd" --quiet --context "Name: $new_name, Parent: $comp_id"
-                    _log_masked "log_file" "CREATE COMPARTMENT: $cmd"
+                    _log_masked "$log_file" "CREATE COMPARTMENT: $cmd"
                     
                     local result
                     result=$(oci iam compartment create --compartment-id "$comp_id" --name "$new_name" --description "$new_desc" --output json 2>&1)
@@ -14964,7 +14964,7 @@ compartment_submenu() {
                     else
                         echo -e "${RED}✗ Failed to create compartment${NC}"
                         echo "$result"
-                        _log_masked "log_file" "FAILED: $result"
+                        _log_masked "$log_file" "FAILED: $result"
                         log_action_result "FAILED" "$result"
                     fi
                     
@@ -15037,7 +15037,7 @@ compartment_submenu() {
                 # Log the action
                 local log_file="${LOGS_DIR}/compartment_actions_$(date +%Y%m%d).log"
                 mkdir -p "$(dirname "$log_file")" 2>/dev/null
-                _log_masked "log_file" "DELETE COMPARTMENT: $del_cmd"
+                _log_masked "$log_file" "DELETE COMPARTMENT: $del_cmd"
                 
                 echo ""
                 echo -e "${GRAY}Deleting compartment...${NC}"
@@ -15050,7 +15050,7 @@ compartment_submenu() {
                     echo -e "${GREEN}✓ Compartment deletion initiated!${NC}"
                     log_action_result "SUCCESS" "DELETE operation"
                     echo -e "  ${GRAY}The compartment will move to DELETING state and be permanently removed.${NC}"
-                    _log_masked "log_file" "SUCCESS: Initiated deletion of compartment $name ($comp_id)"
+                    _log_masked "$log_file" "SUCCESS: Initiated deletion of compartment $name ($comp_id)"
                     echo ""
                     rm -f "$COMPARTMENTS_CACHE"
                     echo -e "${GRAY}Refreshing compartment list...${NC}"
@@ -15059,7 +15059,7 @@ compartment_submenu() {
                     echo -e "${RED}✗ Failed to delete compartment${NC}"
                     log_action_result "FAILED" "DELETE operation"
                     echo "$result"
-                    _log_masked "log_file" "FAILED: $result"
+                    _log_masked "$log_file" "FAILED: $result"
                     echo ""
                     _ui_pause
                 fi
@@ -15225,7 +15225,7 @@ create_subcompartment_enhanced() {
     # Log the action
     local log_file="${LOGS_DIR}/compartment_actions_$(date +%Y%m%d).log"
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
-    _log_masked "log_file" "CREATE COMPARTMENT: $cmd"
+    _log_masked "$log_file" "CREATE COMPARTMENT: $cmd"
     
     # Execute
     local result
@@ -15238,7 +15238,7 @@ create_subcompartment_enhanced() {
         echo -e "${GREEN}✓ Compartment created successfully!${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}New OCID:${NC} ${YELLOW}$new_id${NC}"
-        _log_masked "log_file" "SUCCESS: Created compartment $new_name ($new_id)"
+        _log_masked "$log_file" "SUCCESS: Created compartment $new_name ($new_id)"
         echo ""
         rm -f "$COMPARTMENTS_CACHE"
         echo -e "${GRAY}Refreshing compartment list...${NC}"
@@ -15247,7 +15247,7 @@ create_subcompartment_enhanced() {
         echo -e "${RED}✗ Failed to create compartment${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
         echo ""
         _ui_pause
     fi
@@ -16717,7 +16717,7 @@ _identity_replica_regions() {
                 if [[ "${confirm,,}" == "y" ]]; then
                     local log_file="${LOGS_DIR}/identity_actions.log"
                     mkdir -p "$LOGS_DIR"
-                    _log_masked "log_file" "EXECUTE: $enable_cmd"
+                    _log_masked "$log_file" "EXECUTE: $enable_cmd"
                     log_action "ENABLE_REPLICATION" "$enable_cmd" --quiet
                     echo -e "  ${GRAY}Logged to: ${log_file}${NC}"
 
@@ -16732,12 +16732,12 @@ _identity_replica_regions() {
                     if [[ $exit_code -eq 0 ]]; then
                         echo -e "  ${GREEN}✓${NC} Replication enabled to ${WHITE}${target_region}${NC}"
                         echo -e "  ${GRAY}Replication may take several minutes to complete${NC}"
-                        _log_masked "log_file" "SUCCESS: Enabled replication to $target_region for domain $domain_name"
+                        _log_masked "$log_file" "SUCCESS: Enabled replication to $target_region for domain $domain_name"
                         log_action_result "SUCCESS" "Enabled replication to $target_region for domain $domain_name"
                     else
                         echo -e "  ${RED}✗ Failed to enable replication${NC}"
                         echo "$result" | head -5
-                        _log_masked "log_file" "FAILED: $result"
+                        _log_masked "$log_file" "FAILED: $result"
                         log_action_result "FAILED" "Enable replication to $target_region: $result"
                     fi
                     
@@ -18940,7 +18940,7 @@ _vault_create() {
     
     # Execute
     log_action "CREATE_VAULT" "$cmd" --quiet --context "Name: $vault_name, Type: $vault_type"
-    _log_masked "log_file" "CREATE VAULT: $cmd"
+    _log_masked "$log_file" "CREATE VAULT: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -18958,12 +18958,12 @@ _vault_create() {
         echo -e "  ${GREEN}✓ Vault creation initiated!${NC}"
         echo -e "  ${CYAN}OCID:${NC}  ${YELLOW}${new_id}${NC}"
         echo -e "  ${CYAN}State:${NC} ${YELLOW}${new_state}${NC}"
-        _log_masked "log_file" "SUCCESS: Created vault $vault_name ($new_id) state=$new_state"
+        _log_masked "$log_file" "SUCCESS: Created vault $vault_name ($new_id) state=$new_state"
         log_action_result "SUCCESS" "Created vault $vault_name ($new_id)"
     else
         echo -e "  ${RED}✗ Failed to create vault${NC}"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -19008,7 +19008,7 @@ _vault_update() {
     fi
     
     log_action "UPDATE_VAULT" "$cmd" --quiet --context "Rename: $current_name -> $new_name"
-    _log_masked "log_file" "UPDATE VAULT: $cmd"
+    _log_masked "$log_file" "UPDATE VAULT: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -19020,12 +19020,12 @@ _vault_update() {
     
     if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
         echo -e "  ${GREEN}✓ Vault updated${NC}"
-        _log_masked "log_file" "SUCCESS: Renamed vault $current_name -> $new_name ($vault_id)"
+        _log_masked "$log_file" "SUCCESS: Renamed vault $current_name -> $new_name ($vault_id)"
         log_action_result "SUCCESS" "Renamed vault $current_name -> $new_name"
     else
         echo -e "  ${RED}✗ Failed to update vault${NC}"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -19082,7 +19082,7 @@ _vault_schedule_deletion() {
     fi
     
     log_action "SCHEDULE_VAULT_DELETION" "$cmd" --quiet --context "Vault: $vault_name, Delete at: $delete_time"
-    _log_masked "log_file" "SCHEDULE DELETION: $cmd"
+    _log_masked "$log_file" "SCHEDULE DELETION: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -19095,12 +19095,12 @@ _vault_schedule_deletion() {
     if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
         echo -e "  ${GREEN}✓ Vault scheduled for deletion${NC}"
         echo -e "  ${GRAY}Cancel with 'x' in vault detail before ${delete_time}${NC}"
-        _log_masked "log_file" "SUCCESS: Scheduled deletion of $vault_name at $delete_time"
+        _log_masked "$log_file" "SUCCESS: Scheduled deletion of $vault_name at $delete_time"
         log_action_result "SUCCESS" "Scheduled deletion of $vault_name at $delete_time"
     else
         echo -e "  ${RED}✗ Failed to schedule deletion${NC}"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -19132,7 +19132,7 @@ _vault_cancel_deletion() {
     fi
     
     log_action "CANCEL_VAULT_DELETION" "$cmd" --quiet --context "Vault: $vault_name"
-    _log_masked "log_file" "CANCEL DELETION: $cmd"
+    _log_masked "$log_file" "CANCEL DELETION: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -19143,12 +19143,12 @@ _vault_cancel_deletion() {
     
     if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
         echo -e "  ${GREEN}✓ Vault deletion cancelled — vault restored to ACTIVE${NC}"
-        _log_masked "log_file" "SUCCESS: Cancelled deletion of $vault_name"
+        _log_masked "$log_file" "SUCCESS: Cancelled deletion of $vault_name"
         log_action_result "SUCCESS" "Cancelled deletion of $vault_name"
     else
         echo -e "  ${RED}✗ Failed to cancel deletion${NC}"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -19282,7 +19282,7 @@ _vault_create_key() {
     fi
     
     log_action "CREATE_KEY" "$cmd" --quiet --context "Name: $key_name, Algo: $algorithm, Protect: $protection_mode"
-    _log_masked "log_file" "CREATE KEY: $cmd"
+    _log_masked "$log_file" "CREATE KEY: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -19302,12 +19302,12 @@ _vault_create_key() {
         echo -e "  ${GREEN}✓ Key creation initiated!${NC}"
         echo -e "  ${CYAN}Key OCID:${NC} ${YELLOW}${new_key_id}${NC}"
         echo -e "  ${CYAN}State:${NC}    ${YELLOW}${new_key_state}${NC}"
-        _log_masked "log_file" "SUCCESS: Created key $key_name ($new_key_id)"
+        _log_masked "$log_file" "SUCCESS: Created key $key_name ($new_key_id)"
         log_action_result "SUCCESS" "Created key $key_name ($new_key_id)"
     else
         echo -e "  ${RED}✗ Failed to create key${NC}"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -22308,7 +22308,7 @@ manage_oke_cluster() {
                     fi
                     
                     echo ""
-                    _log_masked "_np_log" "EXECUTE: $_display_cmd"
+                    _log_masked "$_np_log" "EXECUTE: $_display_cmd"
                     echo -e "  ${WHITE}Executing...${NC}"
                     
                     # Execute with proper stderr capture — no eval, use file:// for JSON
@@ -22326,7 +22326,7 @@ manage_oke_cluster() {
                     [[ -s "$_outfile" ]] && _wr=$(jq -r '.["opc-work-request-id"] // empty' "$_outfile" 2>/dev/null)
                     if [[ -n "$_wr" ]]; then
                         echo -e "  ${GREEN}✓ ${_label} initiated — work request: ${_wr}${NC}"
-                        _log_masked "_np_log" "SUCCESS: ${_label} for ${sel_np_name}, WR: ${_wr}"
+                        _log_masked "$_np_log" "SUCCESS: ${_label} for ${sel_np_name}, WR: ${_wr}"
                         echo ""
                         echo -e "  ${GRAY}Monitor with:  ${WHITE}wr${NC}"
                         echo -e "  ${GRAY}CLI:  ${WHITE}oci ce work-request get --work-request-id ${_wr}${NC}"
@@ -22343,13 +22343,13 @@ manage_oke_cluster() {
                         _oci_parse_error "$_errfile"
                         if [[ -n "$_OCI_ERR_CODE" ]]; then
                             echo -e "  ${RED}✗ ${_label} failed: ${_OCI_ERR_CODE}${_OCI_ERR_MSG:+: ${_OCI_ERR_MSG:0:200}}${NC}"
-                            _log_masked "_np_log" "FAILED: ${_label} for ${sel_np_name} — ${_OCI_ERR_CODE}: ${_OCI_ERR_MSG:0:200}"
+                            _log_masked "$_np_log" "FAILED: ${_label} for ${sel_np_name} — ${_OCI_ERR_CODE}: ${_OCI_ERR_MSG:0:200}"
                             _rc=1
                         else
                             # Raw error text
                             local _raw; _raw=$(head -c 300 "$_errfile")
                             echo -e "  ${RED}✗ ${_label} failed: ${_raw}${NC}"
-                            _log_masked "_np_log" "FAILED: ${_label} for ${sel_np_name} — ${_raw}"
+                            _log_masked "$_np_log" "FAILED: ${_label} for ${sel_np_name} — ${_raw}"
                             _rc=1
                         fi
                     elif [[ -s "$_outfile" ]]; then
@@ -22358,15 +22358,15 @@ manage_oke_cluster() {
                         _oci_parse_error "$_errfile"
                         if [[ -n "$_OCI_ERR_CODE" ]]; then
                             echo -e "  ${RED}✗ ${_label} failed: ${_OCI_ERR_CODE}: ${_OCI_ERR_MSG:0:200}${NC}"
-                            _log_masked "_np_log" "FAILED: ${_label} for ${sel_np_name} — ${_OCI_ERR_CODE}"
+                            _log_masked "$_np_log" "FAILED: ${_label} for ${sel_np_name} — ${_OCI_ERR_CODE}"
                             _rc=1
                         else
                             echo -e "  ${GREEN}✓ ${_label} submitted${NC}"
-                            _log_masked "_np_log" "SUCCESS: ${_label} submitted for ${sel_np_name}"
+                            _log_masked "$_np_log" "SUCCESS: ${_label} submitted for ${sel_np_name}"
                         fi
                     else
                         echo -e "  ${GREEN}✓ ${_label} submitted (no output)${NC}"
-                        _log_masked "_np_log" "SUCCESS: ${_label} submitted for ${sel_np_name}"
+                        _log_masked "$_np_log" "SUCCESS: ${_label} submitted for ${sel_np_name}"
                     fi
                     echo ""
                     echo -e "  ${GRAY}Log: ${_np_log}${NC}"
@@ -31998,7 +31998,7 @@ _cap_save_shapes() {
     mkdir -p "$(dirname "$CAPACITY_SHAPES_CONF")"
     printf "# Capacity report shapes (auto-generated)\n" > "$CAPACITY_SHAPES_CONF"
     for _sh in "${_REPORT_SHAPES[@]}"; do
-        _log_masked "CAPACITY_SHAPES_CONF" "$_sh"
+        echo "$_sh" >> "$CAPACITY_SHAPES_CONF"
     done
 }
 
@@ -32111,12 +32111,12 @@ _col_save() {
                 if [[ "${_sv_widths[$_i]}" != "${_sv_dw[$_i]}" ]]; then
                     echo "${_key}:${_sv_widths[$_i]}" >> "$_conf"
                 else
-                    _log_masked "_conf" "$_key"
+                    echo "$_key" >> "$_conf"
                 fi
                 _saved=true; break
             fi
         done
-        [[ "$_saved" == "false" ]] && _log_masked "_conf" "$_key"
+        [[ "$_saved" == "false" ]] && echo "$_key" >> "$_conf"
     done
 }
 
@@ -33181,7 +33181,7 @@ _k8s_bulk_node_action() {
     fi
 
     echo ""
-    _log_masked "log_file" "===== ${action_upper}: ${#entries[@]} node(s) ====="
+    _log_masked "$log_file" "===== ${action_upper}: ${#entries[@]} node(s) ====="
     local ok=0 fail=0
 
     for entry in "${entries[@]}"; do
@@ -33312,7 +33312,7 @@ _k8s_taint_action() {
     echo ""
     local _mode_upper
     _mode_upper=$(echo "$mode" | tr '[:lower:]' '[:upper:]')
-    _log_masked "log_file" "===== ${_mode_upper} TAINT: ${taint_str} on ${#_TAINT_VALID[@]} node(s) ====="
+    _log_masked "$log_file" "===== ${_mode_upper} TAINT: ${taint_str} on ${#_TAINT_VALID[@]} node(s) ====="
     local ok=0 fail=0
 
     for tv in "${_TAINT_VALID[@]}"; do
@@ -33321,7 +33321,7 @@ _k8s_taint_action() {
 
         echo -e "${WHITE}[${tv_iid}] ${tv_name} → ${tv_node}${NC}"
         echo -e "${GRAY}$ ${cmd}${NC}"
-        _log_masked "log_file" "EXECUTE: ${cmd}"
+        _log_masked "$log_file" "EXECUTE: ${cmd}"
 
         local result
         result=$(_safe_exec "$cmd")
@@ -33331,20 +33331,20 @@ _k8s_taint_action() {
             else
                 echo -e "  ${GREEN}✓ Taint removed (${taint_label})${NC}"
             fi
-            _log_masked "log_file" "SUCCESS: ${mode^} ${taint_label} on ${tv_node} (${tv_name})"
+            _log_masked "$log_file" "SUCCESS: ${mode^} ${taint_label} on ${tv_node} (${tv_name})"
             ((ok++))
         else
             if [[ "$mode" == "apply" && ("$result" == *"already has"* || "$result" == *"already exists"*) ]]; then
                 echo -e "  ${YELLOW}⚠ Already tainted (${taint_label})${NC}"
-                _log_masked "log_file" "SKIPPED: ${tv_node} already has ${taint_label} taint"
+                _log_masked "$log_file" "SKIPPED: ${tv_node} already has ${taint_label} taint"
                 ((ok++))
             elif [[ "$mode" == "remove" && "$result" == *"not found"* ]]; then
                 echo -e "  ${YELLOW}⚠ Taint not present (${taint_label})${NC}"
-                _log_masked "log_file" "SKIPPED: ${tv_node} ${taint_label} taint not found"
+                _log_masked "$log_file" "SKIPPED: ${tv_node} ${taint_label} taint not found"
                 ((ok++))
             else
                 echo -e "  ${RED}✗ Failed: ${result}${NC}"
-                _log_masked "log_file" "FAILED: ${mode^} ${taint_label} on ${tv_node}: ${result}"
+                _log_masked "$log_file" "FAILED: ${mode^} ${taint_label} on ${tv_node}: ${result}"
                 ((fail++))
             fi
         fi
@@ -34323,7 +34323,7 @@ manage_compute_instances() {
             fi
             
             echo ""
-            _log_masked "cdt_log_file" "===== CDT WORKFLOW: ${#CDT_VALID[@]} instance(s) ====="
+            _log_masked "$cdt_log_file" "===== CDT WORKFLOW: ${#CDT_VALID[@]} instance(s) ====="
             
             local cdt_success=0 cdt_fail=0
             
@@ -34331,7 +34331,7 @@ manage_compute_instances() {
                 IFS='|' read -r tv_iid tv_ocid tv_name tv_state tv_node <<< "$tv"
                 
                 _ui_subheader "[${tv_iid}] ${tv_name}" 0
-                _log_masked "cdt_log_file" "--- CDT START: ${tv_name} (${tv_ocid}) ---"
+                _log_masked "$cdt_log_file" "--- CDT START: ${tv_name} (${tv_ocid}) ---"
                 
                 local cdt_abort=false
                 
@@ -34340,28 +34340,28 @@ manage_compute_instances() {
                     local cmd="kubectl cordon ${tv_node}"
                     echo -e "  ${CYAN}Step 1: Cordon${NC}"
                     echo -e "  ${GRAY}$ ${cmd}${NC}"
-                    _log_masked "cdt_log_file" "EXECUTE: ${cmd}"
+                    _log_masked "$cdt_log_file" "EXECUTE: ${cmd}"
                     
                     local result
                     result=$(_safe_exec "$cmd")
                     if [[ $? -eq 0 || "$result" == *"already cordoned"* ]]; then
                         echo -e "  ${GREEN}✓ Cordoned${NC}"
-                        _log_masked "cdt_log_file" "SUCCESS: Cordoned ${tv_node}"
+                        _log_masked "$cdt_log_file" "SUCCESS: Cordoned ${tv_node}"
                     else
                         echo -e "  ${RED}✗ Cordon failed: ${result}${NC}"
-                        _log_masked "cdt_log_file" "FAILED: Cordon ${tv_node}: ${result}"
+                        _log_masked "$cdt_log_file" "FAILED: Cordon ${tv_node}: ${result}"
                         echo -n -e "  ${YELLOW}Continue anyway? [y/N]: ${NC}"
                         local cordon_cont
                         read -r cordon_cont
                         if [[ ! "$cordon_cont" =~ ^[Yy] ]]; then
                             echo -e "  ${RED}Skipping this instance${NC}"
-                            _log_masked "cdt_log_file" "ABORTED: CDT for ${tv_name} (cordon failed)"
+                            _log_masked "$cdt_log_file" "ABORTED: CDT for ${tv_name} (cordon failed)"
                             cdt_abort=true
                         fi
                     fi
                 else
                     echo -e "  ${YELLOW}Step 1: Cordon - Skipped (not in K8s)${NC}"
-                    _log_masked "cdt_log_file" "SKIPPED: Cordon - ${tv_name} not in K8s"
+                    _log_masked "$cdt_log_file" "SKIPPED: Cordon - ${tv_name} not in K8s"
                 fi
                 
                 # ── Step 2: Drain ──
@@ -34369,7 +34369,7 @@ manage_compute_instances() {
                     local cmd="kubectl drain ${tv_node} --ignore-daemonsets --delete-emptydir-data --force --timeout=300s"
                     echo -e "  ${CYAN}Step 2: Drain${NC}"
                     echo -e "  ${GRAY}$ ${cmd}${NC}"
-                    _log_masked "cdt_log_file" "EXECUTE: ${cmd}"
+                    _log_masked "$cdt_log_file" "EXECUTE: ${cmd}"
                     
                     echo -e "  ${YELLOW}Draining pods (timeout 300s)...${NC}"
                     local result
@@ -34378,23 +34378,23 @@ manage_compute_instances() {
                     
                     if [[ $drain_exit -eq 0 ]]; then
                         echo -e "  ${GREEN}✓ Drained${NC}"
-                        _log_masked "cdt_log_file" "SUCCESS: Drained ${tv_node}"
+                        _log_masked "$cdt_log_file" "SUCCESS: Drained ${tv_node}"
                     else
                         echo -e "  ${RED}✗ Drain failed (exit code: ${drain_exit})${NC}"
                         echo -e "  ${GRAY}${result}${NC}" | tail -5
-                        _log_masked "cdt_log_file" "FAILED: Drain ${tv_node}: exit=${drain_exit}"
+                        _log_masked "$cdt_log_file" "FAILED: Drain ${tv_node}: exit=${drain_exit}"
                         echo -n -e "  ${YELLOW}Continue to terminate anyway? [y/N]: ${NC}"
                         local drain_cont
                         read -r drain_cont
                         if [[ ! "$drain_cont" =~ ^[Yy] ]]; then
                             echo -e "  ${RED}Skipping this instance${NC}"
-                            _log_masked "cdt_log_file" "ABORTED: CDT for ${tv_name} (drain failed)"
+                            _log_masked "$cdt_log_file" "ABORTED: CDT for ${tv_name} (drain failed)"
                             cdt_abort=true
                         fi
                     fi
                 elif [[ "$cdt_abort" != "true" ]]; then
                     echo -e "  ${YELLOW}Step 2: Drain - Skipped (not in K8s)${NC}"
-                    _log_masked "cdt_log_file" "SKIPPED: Drain - ${tv_name} not in K8s"
+                    _log_masked "$cdt_log_file" "SKIPPED: Drain - ${tv_name} not in K8s"
                 fi
                 
                 # ── Step 3: Tag (ComputeInstanceHostActions.CustomerReportedHostStatus=unhealthy) ──
@@ -34404,7 +34404,7 @@ manage_compute_instances() {
                     local tag_value="unhealthy"
                     
                     echo -e "  ${CYAN}Step 3: Tag${NC} ${MAGENTA}${tag_namespace}.${tag_key}=${tag_value}${NC}"
-                    _log_masked "cdt_log_file" "Step 3: Tag ${tag_namespace}.${tag_key}=${tag_value}"
+                    _log_masked "$cdt_log_file" "Step 3: Tag ${tag_namespace}.${tag_key}=${tag_value}"
                     
                     # Fetch current defined tags (preserve existing)
                     local inst_json
@@ -34429,7 +34429,7 @@ manage_compute_instances() {
                         local cmd="oci compute instance update --instance-id ${tv_ocid} --region ${FOCUS_REGION:-$REGION} --defined-tags '${updated_tags_compact}' --force"
                         echo -e "  ${GRAY}$ oci compute instance update --instance-id ${tv_ocid} \\${NC}"
                         echo -e "  ${GRAY}    --region ${FOCUS_REGION:-$REGION} --defined-tags '<merged-tags>' --force${NC}"
-                        _log_masked "cdt_log_file" "EXECUTE: ${cmd}"
+                        _log_masked "$cdt_log_file" "EXECUTE: ${cmd}"
                         
                         local tag_result
                         log_action "UPDATE" "$cmd"
@@ -34446,10 +34446,10 @@ manage_compute_instances() {
                             applied_tag=$(jq -r --arg ns "$tag_namespace" --arg key "$tag_key" '.data["defined-tags"][$ns][$key] // "NOT_SET"' <<< "$tag_result" 2>/dev/null)
                             echo -e "  ${GREEN}✓ Tagged: ${MAGENTA}${tag_namespace}.${tag_key}${NC} = ${RED}${applied_tag}${NC}"
                             log_action_result "SUCCESS" "UPDATE operation"
-                            _log_masked "cdt_log_file" "SUCCESS: Tagged ${tv_name} ${tag_namespace}.${tag_key}=${applied_tag}"
+                            _log_masked "$cdt_log_file" "SUCCESS: Tagged ${tv_name} ${tag_namespace}.${tag_key}=${applied_tag}"
                         else
                             echo -e "  ${YELLOW}⚠ Tag failed (non-fatal): ${tag_result}${NC}"
-                            _log_masked "cdt_log_file" "WARNING: Tag failed for ${tv_name}: ${tag_result}"
+                            _log_masked "$cdt_log_file" "WARNING: Tag failed for ${tv_name}: ${tag_result}"
                             # Check if namespace doesn't exist
                             if echo "$tag_result" | grep -qi "TagDefinition\|TagNamespace\|does not exist"; then
                                 echo -e "  ${YELLOW}  ↳ Tag namespace '${tag_namespace}' may not exist in this tenancy${NC}"
@@ -34457,7 +34457,7 @@ manage_compute_instances() {
                         fi
                     else
                         echo -e "  ${YELLOW}⚠ Could not fetch instance tags (non-fatal)${NC}"
-                        _log_masked "cdt_log_file" "WARNING: Could not fetch tags for ${tv_name}"
+                        _log_masked "$cdt_log_file" "WARNING: Could not fetch tags for ${tv_name}"
                     fi
                 fi
                 
@@ -34468,7 +34468,7 @@ manage_compute_instances() {
                     local cmd="oci compute instance terminate --instance-id ${tv_ocid} --region ${_cdt_region} --preserve-boot-volume false --force"
                     echo -e "  ${RED}Step 4: Terminate${NC}"
                     echo -e "  ${GRAY}$ ${cmd}${NC}"
-                    _log_masked "cdt_log_file" "EXECUTE: ${cmd}"
+                    _log_masked "$cdt_log_file" "EXECUTE: ${cmd}"
 
                     local result
                     log_action "TERMINATE" "$cmd"
@@ -34480,23 +34480,23 @@ manage_compute_instances() {
                     if [[ $? -eq 0 ]]; then
                         echo -e "  ${GREEN}✓ Terminate initiated${NC}"
                         log_action_result "SUCCESS" "TERMINATE operation"
-                        _log_masked "cdt_log_file" "SUCCESS: Terminated ${tv_name} (${tv_ocid})"
+                        _log_masked "$cdt_log_file" "SUCCESS: Terminated ${tv_name} (${tv_ocid})"
                         ((cdt_success++))
                     else
                         echo -e "  ${RED}✗ Terminate failed: ${result}${NC}"
                         log_action_result "FAILED" "TERMINATE operation"
-                        _log_masked "cdt_log_file" "FAILED: Terminate ${tv_name}: ${result}"
+                        _log_masked "$cdt_log_file" "FAILED: Terminate ${tv_name}: ${result}"
                         ((cdt_fail++))
                     fi
                 else
                     ((cdt_fail++))
                 fi
                 
-                _log_masked "cdt_log_file" "--- CDT END: ${tv_name} ---"
+                _log_masked "$cdt_log_file" "--- CDT END: ${tv_name} ---"
                 echo ""
             done
             
-            _log_masked "cdt_log_file" "===== CDT COMPLETE: Success=${cdt_success} Failed=${cdt_fail} Total=${#CDT_VALID[@]} ====="
+            _log_masked "$cdt_log_file" "===== CDT COMPLETE: Success=${cdt_success} Failed=${cdt_fail} Total=${#CDT_VALID[@]} ====="
             _ui_subheader "CDT Workflow Complete" 0
             echo -e "  ${GREEN}Success:${NC} ${cdt_success}  ${RED}Failed/Skipped:${NC} ${cdt_fail}  ${WHITE}Total:${NC} ${#CDT_VALID[@]}"
             echo -e "  ${GRAY}Log: ${cdt_log_file}${NC}"
@@ -34653,7 +34653,7 @@ manage_compute_instances() {
             echo ""
             _ui_subheader "Executing Reboots (${reboot_action})" 0
             echo ""
-            _log_masked "reboot_log_file" "===== BULK REBOOT (${reboot_action}): ${#reboot_valid[@]} instance(s) ====="
+            _log_masked "$reboot_log_file" "===== BULK REBOOT (${reboot_action}): ${#reboot_valid[@]} instance(s) ====="
 
             local reboot_success=0 reboot_fail=0
             for rv in "${reboot_valid[@]}"; do
@@ -34666,8 +34666,8 @@ manage_compute_instances() {
 
                 echo -e "${WHITE}[${rv_idx}] ${rv_name}${NC}"
                 echo -e "${GRAY}$ ${reboot_cmd}${NC}"
-                _log_masked "reboot_log_file" "EXECUTE: ${reboot_cmd}"
-                _log_masked "reboot_log_file" "  Instance: ${rv_name} (${rv_state}) K8s=${rv_k8s}"
+                _log_masked "$reboot_log_file" "EXECUTE: ${reboot_cmd}"
+                _log_masked "$reboot_log_file" "  Instance: ${rv_name} (${rv_state}) K8s=${rv_k8s}"
 
                 local reboot_result
                 reboot_result=$(oci compute instance action \
@@ -34678,18 +34678,18 @@ manage_compute_instances() {
                 
                 if [[ $? -eq 0 ]]; then
                     echo -e "  ${GREEN}✓ ${reboot_action} initiated: ${rv_name}${NC}"
-                    _log_masked "reboot_log_file" "SUCCESS: ${reboot_action} ${rv_name} (${rv_ocid})"
+                    _log_masked "$reboot_log_file" "SUCCESS: ${reboot_action} ${rv_name} (${rv_ocid})"
                     ((reboot_success++))
                 else
                     echo -e "  ${RED}✗ Failed to ${reboot_action}: ${rv_name}${NC}"
                     echo -e "  ${GRAY}${reboot_result}${NC}"
-                    _log_masked "reboot_log_file" "FAILED: ${reboot_action} ${rv_name} (${rv_ocid}) - ${reboot_result}"
+                    _log_masked "$reboot_log_file" "FAILED: ${reboot_action} ${rv_name} (${rv_ocid}) - ${reboot_result}"
                     ((reboot_fail++))
                 fi
                 echo ""
             done
             
-            _log_masked "reboot_log_file" "===== BULK REBOOT COMPLETE: Success=${reboot_success} Failed=${reboot_fail} Total=${#reboot_valid[@]} ====="
+            _log_masked "$reboot_log_file" "===== BULK REBOOT COMPLETE: Success=${reboot_success} Failed=${reboot_fail} Total=${#reboot_valid[@]} ====="
             echo ""
             _ui_subheader "Reboot Complete" 0
             echo -e "  ${GREEN}Success:${NC} $reboot_success  ${RED}Failed:${NC} $reboot_fail  ${WHITE}Total:${NC} ${#reboot_valid[@]}"
@@ -34808,7 +34808,7 @@ manage_compute_instances() {
             echo ""
             _ui_subheader "Executing Terminations" 0
             echo ""
-            _log_masked "term_log_file" "===== BULK TERMINATE: ${#term_valid[@]} instance(s) ====="
+            _log_masked "$term_log_file" "===== BULK TERMINATE: ${#term_valid[@]} instance(s) ====="
             
             local term_success=0 term_fail=0
             for tv in "${term_valid[@]}"; do
@@ -34821,22 +34821,22 @@ manage_compute_instances() {
 
                 echo -e "${WHITE}[${tv_idx}] ${tv_name}${NC}"
                 echo -e "${GRAY}$ ${term_cmd}${NC}"
-                _log_masked "term_log_file" "EXECUTE: ${term_cmd}"
-                _log_masked "term_log_file" "  Instance: ${tv_name} (${tv_state}) K8s=${tv_k8s}"
+                _log_masked "$term_log_file" "EXECUTE: ${term_cmd}"
+                _log_masked "$term_log_file" "  Instance: ${tv_name} (${tv_state}) K8s=${tv_k8s}"
                 
                 if _safe_exec "$term_cmd"; then
                     echo -e "  ${GREEN}✓ Terminate initiated: ${tv_name}${NC}"
-                    _log_masked "term_log_file" "SUCCESS: Terminated ${tv_name} (${tv_ocid})"
+                    _log_masked "$term_log_file" "SUCCESS: Terminated ${tv_name} (${tv_ocid})"
                     ((term_success++))
                 else
                     echo -e "  ${RED}✗ Failed to terminate: ${tv_name}${NC}"
-                    _log_masked "term_log_file" "FAILED: Terminate ${tv_name} (${tv_ocid})"
+                    _log_masked "$term_log_file" "FAILED: Terminate ${tv_name} (${tv_ocid})"
                     ((term_fail++))
                 fi
                 echo ""
             done
             
-            _log_masked "term_log_file" "===== BULK TERMINATE COMPLETE: Success=${term_success} Failed=${term_fail} Total=${#term_valid[@]} ====="
+            _log_masked "$term_log_file" "===== BULK TERMINATE COMPLETE: Success=${term_success} Failed=${term_fail} Total=${#term_valid[@]} ====="
             echo ""
             _ui_subheader "Terminate Complete" 0
             echo -e "  ${GREEN}Success:${NC} $term_success  ${RED}Failed:${NC} $term_fail  ${WHITE}Total:${NC} ${#term_valid[@]}"
@@ -35590,7 +35590,7 @@ compute_boot_volume_replacement() {
     echo ""
     _ui_subheader "Executing Boot Volume Replacement" 0
     echo ""
-    _log_masked "log_file" "EXECUTE: $cmd"
+    _log_masked "$log_file" "EXECUTE: $cmd"
     echo -e "${WHITE}$ ${cmd}${NC}"
     echo ""
     
@@ -35601,7 +35601,7 @@ compute_boot_volume_replacement() {
     echo ""
     if [[ $bvr_exit_code -eq 0 ]]; then
         echo -e "${GREEN}Boot Volume Replacement Completed Successfully${NC}"
-        _log_masked "log_file" "SUCCESS: BVR completed for nodes: $K8S_NODE_NAME"
+        _log_masked "$log_file" "SUCCESS: BVR completed for nodes: $K8S_NODE_NAME"
         
         #==================================================================
         # Post-execution: Handle old boot volumes
@@ -35636,15 +35636,15 @@ compute_boot_volume_replacement() {
                         read -r del_confirm
                         if [[ "$del_confirm" == "y" || "$del_confirm" == "Y" ]]; then
                             local del_cmd="oci bv boot-volume delete --boot-volume-id $old_bv_id --region $region --force"
-                            _log_masked "log_file" "EXECUTE: $del_cmd"
+                            _log_masked "$log_file" "EXECUTE: $del_cmd"
                             echo -e "  ${WHITE}$ ${del_cmd}${NC}"
                             _safe_exec "$del_cmd"
                             if [[ $? -eq 0 ]]; then
                                 echo -e "  ${GREEN}✓ Boot volume deleted${NC}"
-                                _log_masked "log_file" "SUCCESS: Deleted old boot volume $old_bv_id"
+                                _log_masked "$log_file" "SUCCESS: Deleted old boot volume $old_bv_id"
                             else
                                 echo -e "  ${RED}✗ Failed to delete boot volume${NC}"
-                                _log_masked "log_file" "FAILED: Delete boot volume $old_bv_id"
+                                _log_masked "$log_file" "FAILED: Delete boot volume $old_bv_id"
                             fi
                         else
                             echo -e "  ${GRAY}Skipped${NC}"
@@ -35660,7 +35660,7 @@ compute_boot_volume_replacement() {
         fi
     else
         echo -e "${RED}Boot Volume Replacement Failed (exit code: $bvr_exit_code)${NC}"
-        _log_masked "log_file" "FAILED: BVR exit code $bvr_exit_code for nodes: $K8S_NODE_NAME"
+        _log_masked "$log_file" "FAILED: BVR exit code $bvr_exit_code for nodes: $K8S_NODE_NAME"
     fi
     
     echo ""
@@ -37564,7 +37564,7 @@ display_instance_details() {
         [[ "${_confirm,,}" != "y" ]] && { echo -e "  ${YELLOW}Cancelled${NC}"; return; }
 
         echo ""
-        _log_masked "_rc_log" "EXECUTE: ${_cmd_display}"
+        _log_masked "$_rc_log" "EXECUTE: ${_cmd_display}"
         log_action "RUN_COMMAND" "$_cmd_display" --quiet
 
         local _result
@@ -37582,7 +37582,7 @@ display_instance_details() {
             local _new_id
             _new_id=$(jq -r '.data.id // "unknown"' <<< "$_result" 2>/dev/null)
             echo -e "  ${GREEN}✓ Command submitted: ${YELLOW}${_new_id}${NC}"
-            _log_masked "_rc_log" "SUCCESS: Command created ${_new_id}"
+            _log_masked "$_rc_log" "SUCCESS: Command created ${_new_id}"
             log_action_result "SUCCESS" "Command created ${_new_id}"
         else
             echo -e "  ${RED}✗ Failed to create command${NC}"
@@ -37590,7 +37590,7 @@ display_instance_details() {
                 local _err; _err=$(cat "$_inst_rc_dir/create_err.txt")
                 echo -e "  ${RED}${_err}${NC}"
             }
-            _log_masked "_rc_log" "FAILED: ${_cmd}"
+            _log_masked "$_rc_log" "FAILED: ${_cmd}"
             log_action_result "FAILED" "Run command creation failed"
             _ui_pause "return"
             return
@@ -37639,17 +37639,17 @@ display_instance_details() {
         local _confirm; read -r _confirm
         [[ "${_confirm,,}" != "y" ]] && { echo -e "  ${YELLOW}Cancelled${NC}"; return; }
 
-        _log_masked "_rc_log" "EXECUTE: ${_cmd}"
+        _log_masked "$_rc_log" "EXECUTE: ${_cmd}"
 
         oci instance-agent command cancel --command-id "$_cmd_id" --region "$region" --force 2>/dev/null
         local _rc=$?
         
         if [[ $_rc -eq 0 ]]; then
             echo -e "  ${GREEN}✓ Cancel request sent (best-effort)${NC}"
-            _log_masked "_rc_log" "SUCCESS: Cancelled ${_cmd_id}"
+            _log_masked "$_rc_log" "SUCCESS: Cancelled ${_cmd_id}"
         else
             echo -e "  ${RED}✗ Cancel failed${NC}"
-            _log_masked "_rc_log" "FAILED: Cancel ${_cmd_id}"
+            _log_masked "$_rc_log" "FAILED: Cancel ${_cmd_id}"
         fi
     }
     
@@ -38409,13 +38409,13 @@ display_instance_details() {
                         local _vnc_str; _vnc_str=$(jq -r '.data["vnc-connection-string"] // empty' <<< "$_icc_create_json")
                         [[ -n "$_vnc_str" ]] && echo -e "\n  ${WHITE}VNC Connection String:${NC}\n  ${CYAN}${_vnc_str}${NC}"
                         log_action_result "SUCCESS" "Created ICC: ${_new_id}"
-                        _log_masked "_icc_log" "CREATE: ${_icc_create_cmd} → ${_new_id} (${_new_state})"
+                        _log_masked "$_icc_log" "CREATE: ${_icc_create_cmd} → ${_new_id} (${_new_state})"
                     else
                         _step_complete "create(failed)"; _step_finish
                         echo -e "  ${RED}✗ Failed to create console connection${NC}"
                         [[ -n "$_icc_create_json" ]] && echo -e "  ${GRAY}$(jq -r '.message // .' <<< "$_icc_create_json" 2>/dev/null | head -3)${NC}"
                         log_action_result "FAILED" "ICC create for ${instance_ocid}"
-                        _log_masked "_icc_log" "FAILED CREATE: ${_icc_create_cmd}"
+                        _log_masked "$_icc_log" "FAILED CREATE: ${_icc_create_cmd}"
                     fi
                     # Clean up temp key file if we created one
                     [[ -n "$_pub_key_tmp" && -f "$_pub_key_tmp" ]] && rm -f "$_pub_key_tmp"
@@ -38534,12 +38534,12 @@ display_instance_details() {
                                 _step_complete "deleted"; _step_finish
                                 echo -e "  ${GREEN}✓ Console connection deleted${NC}"
                                 log_action_result "SUCCESS" "Deleted ICC: ${_d_id}"
-                                _log_masked "_icc_log" "DELETE: ${_del_cmd}"
+                                _log_masked "$_icc_log" "DELETE: ${_del_cmd}"
                             else
                                 _step_complete "delete(failed)"; _step_finish
                                 echo -e "  ${RED}✗ Failed to delete console connection${NC}"
                                 log_action_result "FAILED" "ICC delete: ${_d_id}"
-                                _log_masked "_icc_log" "FAILED DELETE: ${_del_cmd}"
+                                _log_masked "$_icc_log" "FAILED DELETE: ${_del_cmd}"
                             fi
                         else
                             echo -e "  ${GRAY}Cancelled${NC}"
@@ -41669,7 +41669,7 @@ rename_instance_configuration_interactive() {
     local exit_code=$?
 
     # Log the result
-    _log_masked "log_file" "$result"
+    _log_masked "$log_file" "$result"
     
     if [[ $exit_code -eq 0 ]]; then
         echo ""
@@ -41850,7 +41850,7 @@ rename_single_instance_configuration() {
         --display-name "$new_name" 2>&1)
     local exit_code=$?
 
-    _log_masked "log_file" "$result"
+    _log_masked "$log_file" "$result"
 
     if [[ $exit_code -eq 0 ]]; then
         echo -e "${GREEN}✓ Renamed successfully!${NC}"
@@ -41989,7 +41989,7 @@ interactive_gpu_management() {
                 echo ""
                 _ui_subheader "Executing GPU Memory Cluster Deletions" 0
                 echo ""
-                _log_masked "del_log_file" "===== BULK DELETE GPU MEMORY CLUSTERS: ${#del_valid[@]} cluster(s) ====="
+                _log_masked "$del_log_file" "===== BULK DELETE GPU MEMORY CLUSTERS: ${#del_valid[@]} cluster(s) ====="
                 
                 local del_success=0 del_fail=0
                 for dv in "${del_valid[@]}"; do
@@ -42000,22 +42000,22 @@ interactive_gpu_management() {
                     
                     echo -e "${WHITE}[${dv_idx}] ${dv_name}${NC} ${GRAY}(${dv_state}, size=${dv_size})${NC}"
                     echo -e "${GRAY}$ ${del_cmd}${NC}"
-                    _log_masked "del_log_file" "EXECUTE: ${del_cmd}"
-                    _log_masked "del_log_file" "  Cluster: ${dv_name} (${dv_state}, size=${dv_size})"
+                    _log_masked "$del_log_file" "EXECUTE: ${del_cmd}"
+                    _log_masked "$del_log_file" "  Cluster: ${dv_name} (${dv_state}, size=${dv_size})"
                     
                     if _safe_exec "$del_cmd" >/dev/null 2>&1; then
                         echo -e "  ${GREEN}✓ Delete initiated: ${dv_name}${NC}"
-                        _log_masked "del_log_file" "SUCCESS: Deleted ${dv_name} (${dv_ocid})"
+                        _log_masked "$del_log_file" "SUCCESS: Deleted ${dv_name} (${dv_ocid})"
                         ((del_success++))
                     else
                         echo -e "  ${RED}✗ Failed to delete: ${dv_name}${NC}"
-                        _log_masked "del_log_file" "FAILED: Delete ${dv_name} (${dv_ocid})"
+                        _log_masked "$del_log_file" "FAILED: Delete ${dv_name} (${dv_ocid})"
                         ((del_fail++))
                     fi
                     echo ""
                 done
                 
-                _log_masked "del_log_file" "===== BULK DELETE COMPLETE: Success=${del_success} Failed=${del_fail} Total=${#del_valid[@]} ====="
+                _log_masked "$del_log_file" "===== BULK DELETE COMPLETE: Success=${del_success} Failed=${del_fail} Total=${#del_valid[@]} ====="
                 echo ""
                 _ui_subheader "Delete Complete" 0
                 echo -e "  ${GREEN}Success:${NC} $del_success  ${RED}Failed:${NC} $del_fail  ${WHITE}Total:${NC} ${#del_valid[@]}"
@@ -42546,7 +42546,7 @@ manage_firmware_bundles() {
         mkdir -p "$(dirname "$FWB_COLUMNS_CONF")"
         printf "# Column config (auto-generated, format: key[:width])\n" > "$FWB_COLUMNS_CONF"
         for _dk in "${_FWB_COL_DEFAULT_ENABLED[@]}"; do
-            _log_masked "FWB_COLUMNS_CONF" "$_dk"
+            echo "$_dk" >> "$FWB_COLUMNS_CONF"
         done
     fi
     _col_load "FWB"
@@ -43324,7 +43324,7 @@ _fw_update_fabric_firmware() {
 
     # Log the action
     log_action "UPDATE_FIRMWARE" "$_cmd" --context "Fabric: ${_sel_fabric_name}, Bundle: ${_sel_bundle}, Recycle: ${_recycle_level}"
-    _log_masked "log_file" "UPDATE FIRMWARE: $_cmd"
+    _log_masked "$log_file" "UPDATE FIRMWARE: $_cmd"
 
     # Execute
     local _result
@@ -43345,7 +43345,7 @@ _fw_update_fabric_firmware() {
         echo -e "  ${WHITE}Firmware Update State:${NC} $(color_firmware_state "$_new_state")${_new_state}${NC}"
         echo -e "  ${WHITE}Target Firmware:${NC}       ${YELLOW}${_new_target}${NC}"
         log_action_result "SUCCESS" "Firmware update initiated for ${_sel_fabric_name}: target=${_sel_bundle}, recycle=${_recycle_level}"
-        _log_masked "log_file" "SUCCESS: Firmware update initiated for ${_sel_fabric_name}"
+        _log_masked "$log_file" "SUCCESS: Firmware update initiated for ${_sel_fabric_name}"
 
         # Invalidate fabric cache so it refreshes on next view
         rm -f "$FABRIC_CACHE"
@@ -43353,7 +43353,7 @@ _fw_update_fabric_firmware() {
         echo -e "  ${RED}✗ Failed to update fabric firmware${NC}"
         echo -e "  ${GRAY}${_result}${NC}"
         log_action_result "FAILED" "Firmware update failed for ${_sel_fabric_name}: ${_result}"
-        _log_masked "log_file" "FAILED: ${_result}"
+        _log_masked "$log_file" "FAILED: ${_result}"
     fi
 
     echo ""
@@ -44161,7 +44161,7 @@ update_gpu_memory_cluster_interactive() {
         echo -e "  ${YELLOW}${gid}${NC} ${MAGENTA}${c_name}${NC} ..."
 
         # Log the command
-        _log_masked "log_file" "EXECUTE: ${cmd_display}"
+        _log_masked "$log_file" "EXECUTE: ${cmd_display}"
 
         local result
         log_action "UPDATE" "$cmd_display"
@@ -44181,13 +44181,13 @@ update_gpu_memory_cluster_interactive() {
             
             echo -e "    ${GREEN}✓${NC} State: ${state_color}${updated_state}${NC}  Size: ${CYAN}${updated_size}${NC}"
             log_action_result "SUCCESS" "UPDATE operation"
-            _log_masked "log_file" "SUCCESS: ${gid} ${c_name} -> state=${updated_state} size=${updated_size}"
+            _log_masked "$log_file" "SUCCESS: ${gid} ${c_name} -> state=${updated_state} size=${updated_size}"
             ((success_count++))
         else
             echo -e "    ${RED}✗ Failed${NC}"
             log_action_result "FAILED" "UPDATE operation"
             echo "$result" | head -3 | sed 's/^/      /'
-            _log_masked "log_file" "FAILED: ${gid} ${c_name} -> ${result}"
+            _log_masked "$log_file" "FAILED: ${gid} ${c_name} -> ${result}"
             ((fail_count++))
         fi
     done
@@ -44927,16 +44927,16 @@ delete_compute_cluster_interactive() {
         result=$(_safe_exec "$cmd")
         local exit_code=$?
 
-        _log_masked "log_file" "$result"
+        _log_masked "$log_file" "$result"
 
         if [[ $exit_code -eq 0 ]]; then
             echo -e "${GREEN}✓ Deleted: ${WHITE}${sel_name}${NC} ${GRAY}(#${sel_num})${NC}"
-            _log_masked "log_file" "SUCCESS: Deleted CC '${sel_name}' (${sel_ocid})"
+            _log_masked "$log_file" "SUCCESS: Deleted CC '${sel_name}' (${sel_ocid})"
             ((success_count++))
         else
             echo -e "${RED}✗ Failed: ${WHITE}${sel_name}${NC} ${GRAY}(#${sel_num})${NC}"
             echo -e "  ${RED}${result}${NC}"
-            _log_masked "log_file" "FAILED: Delete CC '${sel_name}' (${sel_ocid}): ${result}"
+            _log_masked "$log_file" "FAILED: Delete CC '${sel_name}' (${sel_ocid}): ${result}"
             ((fail_count++))
         fi
         echo ""
@@ -45099,7 +45099,7 @@ create_compute_cluster_interactive() {
     local exit_code=$?
     
     # Log the result
-    _log_masked "log_file" "$result"
+    _log_masked "$log_file" "$result"
     
     if [[ $exit_code -eq 0 ]]; then
         local new_ocid
@@ -46162,7 +46162,7 @@ create_instance_pool_interactive() {
         --output json 2>&1)
     local exit_code=$?
 
-    _log_masked "log_file" "$result"
+    _log_masked "$log_file" "$result"
 
     if [[ $exit_code -eq 0 ]]; then
         local new_ocid new_state
@@ -50844,7 +50844,7 @@ fss_guided_setup() {
     echo ""
     echo -e "${GRAY}Note: Ensure NSGs/Security Lists allow NFS traffic (TCP 111, 2048-2050; UDP 111, 2048).${NC}"
     echo ""
-    _log_masked "log_file" "GUIDED SETUP COMPLETE: FS=$new_fs_id MT=$new_mt_id Export=$new_export_id"
+    _log_masked "$log_file" "GUIDED SETUP COMPLETE: FS=$new_fs_id MT=$new_mt_id Export=$new_export_id"
     
     _ui_pause
 }
@@ -51034,7 +51034,7 @@ fss_recursive_delete_file_system() {
     fi
     
     echo ""
-    _log_masked "log_file" "RECURSIVE DELETE STARTED for file system: $fs_name ($fs_id)"
+    _log_masked "$log_file" "RECURSIVE DELETE STARTED for file system: $fs_name ($fs_id)"
     
     # ==================== Phase 1: Delete Exports ====================
     if [[ $export_idx -gt 0 ]]; then
@@ -51046,7 +51046,7 @@ fss_recursive_delete_file_system() {
 
             echo -e "  ${CYAN}Deleting export: ${WHITE}$exp_path${NC}"
             echo -e "  ${GRAY}$delete_cmd${NC}"
-            _log_masked "log_file" "EXECUTING: $delete_cmd"
+            _log_masked "$log_file" "EXECUTING: $delete_cmd"
             
             local result
             log_action "DELETE" "$delete_cmd"
@@ -51055,11 +51055,11 @@ fss_recursive_delete_file_system() {
             if [[ $? -eq 0 ]]; then
                 echo -e "  ${GREEN}✓ Export deleted${NC}"
                 log_action_result "SUCCESS" "DELETE operation"
-                _log_masked "log_file" "SUCCESS: Deleted export $exp_id"
+                _log_masked "$log_file" "SUCCESS: Deleted export $exp_id"
             else
                 echo -e "  ${RED}✗ Failed to delete export: $result${NC}"
                 log_action_result "FAILED" "DELETE operation"
-                _log_masked "log_file" "FAILED: Delete export $exp_id - $result"
+                _log_masked "$log_file" "FAILED: Delete export $exp_id - $result"
             fi
         done
         echo ""
@@ -51080,7 +51080,7 @@ fss_recursive_delete_file_system() {
             
             echo -e "  ${CYAN}Deleting mount target: ${WHITE}$mt_name${NC}"
             echo -e "  ${GRAY}$delete_cmd${NC}"
-            _log_masked "log_file" "EXECUTING: $delete_cmd"
+            _log_masked "$log_file" "EXECUTING: $delete_cmd"
             
             local result
             log_action "DELETE" "$delete_cmd"
@@ -51089,11 +51089,11 @@ fss_recursive_delete_file_system() {
             if [[ $? -eq 0 ]]; then
                 echo -e "  ${GREEN}✓ Mount target deleted${NC}"
                 log_action_result "SUCCESS" "DELETE operation"
-                _log_masked "log_file" "SUCCESS: Deleted mount target $mt_id"
+                _log_masked "$log_file" "SUCCESS: Deleted mount target $mt_id"
             else
                 echo -e "  ${RED}✗ Failed to delete mount target: $result${NC}"
                 log_action_result "FAILED" "DELETE operation"
-                _log_masked "log_file" "FAILED: Delete mount target $mt_id - $result"
+                _log_masked "$log_file" "FAILED: Delete mount target $mt_id - $result"
             fi
         done
         echo ""
@@ -51107,7 +51107,7 @@ fss_recursive_delete_file_system() {
     local delete_cmd="oci fs file-system delete --file-system-id \"$fs_id\" --region \"$region\" --force"
     echo -e "  ${CYAN}Deleting file system: ${WHITE}$fs_name${NC}"
     echo -e "  ${GRAY}$delete_cmd${NC}"
-    _log_masked "log_file" "EXECUTING: $delete_cmd"
+    _log_masked "$log_file" "EXECUTING: $delete_cmd"
     
     local result
     log_action "DELETE" "$delete_cmd"
@@ -51116,15 +51116,15 @@ fss_recursive_delete_file_system() {
     if [[ $? -eq 0 ]]; then
         echo -e "  ${GREEN}✓ File system deletion initiated${NC}"
         log_action_result "SUCCESS" "DELETE operation"
-        _log_masked "log_file" "SUCCESS: Deleted file system $fs_id"
+        _log_masked "$log_file" "SUCCESS: Deleted file system $fs_id"
     else
         echo -e "  ${RED}✗ Failed to delete file system: $result${NC}"
         log_action_result "FAILED" "DELETE operation"
-        _log_masked "log_file" "FAILED: Delete file system $fs_id - $result"
+        _log_masked "$log_file" "FAILED: Delete file system $fs_id - $result"
     fi
     
     echo ""
-    _log_masked "log_file" "RECURSIVE DELETE COMPLETED for: $fs_name ($fs_id)"
+    _log_masked "$log_file" "RECURSIVE DELETE COMPLETED for: $fs_name ($fs_id)"
     echo -e "${GREEN}Recursive delete complete.${NC}"
     echo ""
     _ui_pause
@@ -51766,7 +51766,7 @@ _fss_delete_resource() {
         return
     fi
 
-    _log_masked "log_file" "EXECUTING: $delete_cmd"
+    _log_masked "$log_file" "EXECUTING: $delete_cmd"
     echo -e "${GRAY}$delete_cmd${NC}"
 
     local result
@@ -51776,11 +51776,11 @@ _fss_delete_resource() {
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}${display_label} deletion initiated${NC}"
         log_action_result "SUCCESS" "DELETE operation"
-        _log_masked "log_file" "SUCCESS: Deleted $resource_ocid"
+        _log_masked "$log_file" "SUCCESS: Deleted $resource_ocid"
     else
         echo -e "${RED}Failed to delete ${display_label,,}: $result${NC}"
         log_action_result "FAILED" "DELETE operation"
-        _log_masked "log_file" "FAILED: Delete $resource_ocid - $result"
+        _log_masked "$log_file" "FAILED: Delete $resource_ocid - $result"
     fi
 }
 
@@ -51950,13 +51950,13 @@ _fss_do_create_file_system() {
         echo -e "${GREEN}✓ File system created: ${WHITE}$_name${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${GRAY}$FSS_CREATED_ID${NC}"
-        _log_masked "_log" "SUCCESS: Created FS $FSS_CREATED_ID"
+        _log_masked "$_log" "SUCCESS: Created FS $FSS_CREATED_ID"
         return 0
     else
         echo -e "${RED}✗ Failed to create file system${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$_result"
-        _log_masked "_log" "FAILED: $_result"
+        _log_masked "$_log" "FAILED: $_result"
         return 1
     fi
 }
@@ -51987,13 +51987,13 @@ _fss_do_create_mount_target() {
         echo -e "${GREEN}✓ Mount target created: ${WHITE}$_name${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${GRAY}$FSS_CREATED_ID${NC}"
-        _log_masked "_log" "SUCCESS: Created MT $FSS_CREATED_ID"
+        _log_masked "$_log" "SUCCESS: Created MT $FSS_CREATED_ID"
         return 0
     else
         echo -e "${RED}✗ Failed to create mount target${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$_result"
-        _log_masked "_log" "FAILED: $_result"
+        _log_masked "$_log" "FAILED: $_result"
         return 1
     fi
 }
@@ -52021,13 +52021,13 @@ _fss_do_create_export() {
         echo -e "${GREEN}✓ Export created: ${WHITE}$_path${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${GRAY}$FSS_CREATED_ID${NC}"
-        _log_masked "_log" "SUCCESS: Created Export $FSS_CREATED_ID"
+        _log_masked "$_log" "SUCCESS: Created Export $FSS_CREATED_ID"
         return 0
     else
         echo -e "${RED}✗ Failed to create export${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$_result"
-        _log_masked "_log" "FAILED: $_result"
+        _log_masked "$_log" "FAILED: $_result"
         return 1
     fi
 }
@@ -52449,7 +52449,7 @@ fss_create_snapshot() {
     fi
     
     local log_file="${LOGS_DIR}/fss_actions_$(date +%Y%m%d).log"
-    _log_masked "log_file" "CREATE SNAPSHOT: $create_cmd"
+    _log_masked "$log_file" "CREATE SNAPSHOT: $create_cmd"
     
     echo ""
     echo -e "${CYAN}Creating snapshot...${NC}"
@@ -52468,12 +52468,12 @@ fss_create_snapshot() {
         echo -e "${GREEN}✓ Snapshot created successfully${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${YELLOW}$new_snap_id${NC}"
-        _log_masked "log_file" "SUCCESS: Created $new_snap_id"
+        _log_masked "$log_file" "SUCCESS: Created $new_snap_id"
     else
         echo -e "${RED}Failed to create snapshot${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -53331,7 +53331,7 @@ lfs_create_file_system() {
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
-    _log_masked "log_file" "CREATE LUSTRE: $create_cmd"
+    _log_masked "$log_file" "CREATE LUSTRE: $create_cmd"
     
     echo ""
     echo -e "${CYAN}Creating Lustre file system (this may take several minutes)...${NC}"
@@ -53402,13 +53402,13 @@ lfs_create_file_system() {
         new_lfs_id=$(jq -r '.data.id' <<< "$result")
         echo -e "${GREEN}✓ Lustre file system creation initiated${NC}"
         echo -e "  ${CYAN}OCID:${NC} ${YELLOW}$new_lfs_id${NC}"
-        _log_masked "log_file" "SUCCESS: Created $new_lfs_id"
+        _log_masked "$log_file" "SUCCESS: Created $new_lfs_id"
         rm -f "$LUSTRE_FS_CACHE"
     else
         echo -e "${RED}Failed to create Lustre file system${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -53648,7 +53648,7 @@ lfs_update_file_system() {
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
-    _log_masked "log_file" "UPDATE LUSTRE: $update_cmd"
+    _log_masked "$log_file" "UPDATE LUSTRE: $update_cmd"
     
     local result
     if [[ "$update_type" == "1" ]]; then
@@ -53700,7 +53700,7 @@ lfs_update_file_system() {
             echo -e "  ${CYAN}New capacity:${NC} ${new_capacity_tb} TB / ${new_capacity_gb} GB (was ${current_capacity_tb} TB / ${current_capacity_gb} GB)"
         fi
         [[ "$has_nsg" == "true" ]] && echo -e "  ${CYAN}NSG:${NC} Preserved"
-        _log_masked "log_file" "SUCCESS: Updated $LFS_SELECTED"
+        _log_masked "$log_file" "SUCCESS: Updated $LFS_SELECTED"
         rm -f "$LUSTRE_FS_CACHE"
     elif [[ -n "$work_request_id" ]]; then
         echo -e "${GREEN}✓ Lustre file system update initiated${NC}"
@@ -53710,13 +53710,13 @@ lfs_update_file_system() {
         [[ "$has_nsg" == "true" ]] && echo -e "  ${CYAN}NSG:${NC} Preserved"
         echo -e "  ${CYAN}Work Request:${NC} ${YELLOW}$work_request_id${NC}"
         echo -e "  ${GRAY}File system will show UPDATING state until complete${NC}"
-        _log_masked "log_file" "SUCCESS: Update initiated, work-request: $work_request_id"
+        _log_masked "$log_file" "SUCCESS: Update initiated, work-request: $work_request_id"
         rm -f "$LUSTRE_FS_CACHE"
     else
         echo -e "${RED}Failed to update Lustre file system${NC}"
         log_action_result "FAILED" "UPDATE operation"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -53969,7 +53969,7 @@ lfs_delete_file_system() {
     fi
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
-    _log_masked "log_file" "DELETE LUSTRE: $delete_cmd"
+    _log_masked "$log_file" "DELETE LUSTRE: $delete_cmd"
     
     echo ""
     echo -e "${CYAN}Deleting Lustre file system...${NC}"
@@ -53984,13 +53984,13 @@ lfs_delete_file_system() {
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}✓ Lustre file system deletion initiated${NC}"
         log_action_result "SUCCESS" "DELETE operation"
-        _log_masked "log_file" "SUCCESS: Deleted $LFS_SELECTED"
+        _log_masked "$log_file" "SUCCESS: Deleted $LFS_SELECTED"
         rm -f "$LUSTRE_FS_CACHE"
     else
         echo -e "${RED}Failed to delete Lustre file system${NC}"
         log_action_result "FAILED" "DELETE operation"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -54133,7 +54133,7 @@ lfs_create_object_storage_link() {
     fi
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
-    _log_masked "log_file" "CREATE OS LINK: $create_cmd"
+    _log_masked "$log_file" "CREATE OS LINK: $create_cmd"
     
     echo ""
     echo -e "${CYAN}Creating Object Storage link...${NC}"
@@ -54154,12 +54154,12 @@ lfs_create_object_storage_link() {
         echo -e "${GREEN}✓ Object Storage link created${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${YELLOW}$new_link_id${NC}"
-        _log_masked "log_file" "SUCCESS: Created $new_link_id"
+        _log_masked "$log_file" "SUCCESS: Created $new_link_id"
     else
         echo -e "${RED}Failed to create Object Storage link${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -54202,7 +54202,7 @@ _lfs_object_storage_transfer() {
     fi
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
-    _log_masked "log_file" "START ${direction^^}: $cmd"
+    _log_masked "$log_file" "START ${direction^^}: $cmd"
     
     echo ""
     echo -e "${CYAN}Starting ${direction}...${NC}"
@@ -54214,11 +54214,11 @@ _lfs_object_storage_transfer() {
     
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}✓ ${action_label} started${NC}"
-        _log_masked "log_file" "SUCCESS: ${action_label} started for $LFS_SELECTED_LINK"
+        _log_masked "$log_file" "SUCCESS: ${action_label} started for $LFS_SELECTED_LINK"
     else
         echo -e "${RED}Failed to start ${direction}${NC}"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -54255,7 +54255,7 @@ lfs_delete_object_storage_link() {
     fi
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
-    _log_masked "log_file" "DELETE OS LINK: $delete_cmd"
+    _log_masked "$log_file" "DELETE OS LINK: $delete_cmd"
     
     echo ""
     echo -e "${CYAN}Deleting Object Storage link...${NC}"
@@ -54270,12 +54270,12 @@ lfs_delete_object_storage_link() {
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}✓ Object Storage link deleted${NC}"
         log_action_result "SUCCESS" "DELETE operation"
-        _log_masked "log_file" "SUCCESS: Deleted $LFS_SELECTED_LINK"
+        _log_masked "$log_file" "SUCCESS: Deleted $LFS_SELECTED_LINK"
     else
         echo -e "${RED}Failed to delete Object Storage link${NC}"
         log_action_result "FAILED" "DELETE operation"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -56552,7 +56552,7 @@ manage_compute_hosts() {
         mkdir -p "$(dirname "$CHOST_COLUMNS_CONF")"
         printf "# Column config (auto-generated, format: key[:width])\n" > "$CHOST_COLUMNS_CONF"
         for _dk in "${_CHOST_COL_DEFAULT_ENABLED[@]}"; do
-            _log_masked "CHOST_COLUMNS_CONF" "$_dk"
+            echo "$_dk" >> "$CHOST_COLUMNS_CONF"
         done
     else
         # Migrate: add new columns if missing from existing config
@@ -60221,7 +60221,7 @@ bulk_runcommand() {
 
         local _cmd_display="oci instance-agent command create --compartment-id ${_compartment} --timeout-in-seconds ${_timeout} --display-name \"${_label}-${_iname}\" --content file://${_brc_tmp}/content.json --target file://${_brc_tmp}/target_${_tid}.json --output json"
         echo -e "  ${YELLOW}→ ${_iname}${NC}..."
-        _log_masked "_log_file" "EXECUTE: ${_cmd_display}"
+        _log_masked "$_log_file" "EXECUTE: ${_cmd_display}"
         log_action "BULK_RUN_COMMAND" "$_cmd_display" --quiet
 
         local _result _rc_err_file="$_brc_tmp/err_${_tid}.txt"
@@ -60236,7 +60236,7 @@ bulk_runcommand() {
         if [[ $_rc_exit -eq 0 && -n "$_result" ]] && jq -e '.data.id' <<< "$_result" >/dev/null 2>&1; then
             local _cid; _cid=$(jq -r '.data.id // "?"' <<< "$_result" 2>/dev/null)
             echo -e "    ${GREEN}✓ Submitted${NC} ${GRAY}(${_cid})${NC}"
-            _log_masked "_log_file" "SUCCESS: ${_cid} → ${_iname}"
+            _log_masked "$_log_file" "SUCCESS: ${_cid} → ${_iname}"
             log_action_result "SUCCESS" "Bulk run command ${_cid} → ${_iname}"
             ((_success++))
         else
@@ -60251,7 +60251,7 @@ bulk_runcommand() {
             [[ -z "$_err_msg" && $_rc_exit -ne 0 ]] && _err_msg="exit code $_rc_exit"
             echo -e "    ${RED}✗ Failed${NC}"
             [[ -n "$_err_msg" ]] && echo -e "      ${GRAY}${_err_msg:0:200}${NC}"
-            _log_masked "_log_file" "FAILED: ${_iname} — ${_err_msg:-unknown}"
+            _log_masked "$_log_file" "FAILED: ${_iname} — ${_err_msg:-unknown}"
             log_action_result "FAILED" "Bulk run command failed for ${_iname}: ${_err_msg:-unknown}"
             ((_fail++))
         fi
@@ -63633,7 +63633,7 @@ DSEOF
                     if [[ $_ds_rc -eq 0 ]]; then
                         echo -e "  ${GREEN}✓ ConfigMap + DaemonSet created successfully${NC}"
                         log_action_result "SUCCESS" "SSH keys: ${#_new_keys[@]} keys, DaemonSet deployed"
-                        _log_masked "_ask_log" "CREATE: ${#_new_keys[@]} keys deployed via ConfigMap + DaemonSet"
+                        _log_masked "$_ask_log" "CREATE: ${#_new_keys[@]} keys deployed via ConfigMap + DaemonSet"
                     else
                         echo -e "  ${RED}✗ DaemonSet deployment failed${NC}"
                         log_action_result "FAILED" "SSH keys DaemonSet deploy"
@@ -63710,7 +63710,7 @@ DSEOF
                         echo -e "  ${GREEN}✓ Key '${_key_fname}' added to ConfigMap${NC}"
                         echo -e "  ${GRAY}Run ${WHITE}Restart${GRAY} (option 4) to distribute to nodes${NC}"
                         log_action_result "SUCCESS" "Added key ${_key_fname}"
-                        _log_masked "_ask_log" "ADD_KEY: ${_key_fname}"
+                        _log_masked "$_ask_log" "ADD_KEY: ${_key_fname}"
                     else
                         _step_complete "patch failed"; _step_finish
                         echo -e "  ${RED}✗ Failed to add key${NC}"
@@ -63762,7 +63762,7 @@ DSEOF
                     echo -e "  ${GREEN}✓ Key '${_rm_name}' removed${NC}"
                     echo -e "  ${GRAY}Run ${WHITE}Restart${GRAY} (option 4) to apply to nodes${NC}"
                     log_action_result "SUCCESS" "Removed key ${_rm_name}"
-                    _log_masked "_ask_log" "REMOVE_KEY: ${_rm_name}"
+                    _log_masked "$_ask_log" "REMOVE_KEY: ${_rm_name}"
                 else
                     _step_complete "failed"; _step_finish
                     echo -e "  ${RED}✗ Failed to remove key${NC}"
@@ -63783,7 +63783,7 @@ DSEOF
                 echo ""
                 echo -e "  ${GRAY}Run ${WHITE}Restart${GRAY} (option 4) to distribute updated keys${NC}"
                 log_action_result "SUCCESS" "Edited SSH keys ConfigMap"
-                _log_masked "_ask_log" "EDIT: ${_edit_cmd}"
+                _log_masked "$_ask_log" "EDIT: ${_edit_cmd}"
                 _ui_pause
                 ;;
 
@@ -63808,7 +63808,7 @@ DSEOF
                     _step_complete "rollout complete"; _step_finish
 
                     log_action_result "SUCCESS" "Restarted SSH keys DaemonSet"
-                    _log_masked "_ask_log" "RESTART: ${_restart_cmd}"
+                    _log_masked "$_ask_log" "RESTART: ${_restart_cmd}"
                 else
                     _step_complete "failed"; _step_finish
                     echo -e "  ${RED}✗ Failed to restart DaemonSet${NC}"
@@ -63861,7 +63861,7 @@ DSEOF
                         _step_complete "deployed"; _step_finish
                         echo -e "  ${GREEN}✓ DaemonSet deployed${NC}"
                         log_action_result "SUCCESS" "Deployed SSH keys DaemonSet"
-                        _log_masked "_ask_log" "DEPLOY_DS"
+                        _log_masked "$_ask_log" "DEPLOY_DS"
                     else
                         _step_complete "failed"; _step_finish
                         echo -e "  ${RED}✗ Failed to deploy DaemonSet${NC}"
@@ -63903,7 +63903,7 @@ DSEOF
                 _step_finish
                 echo -e "  ${GREEN}✓ SSH key resources removed${NC}"
                 log_action_result "SUCCESS" "Deleted SSH keys ConfigMap + DaemonSet"
-                _log_masked "_ask_log" "DELETE: ConfigMap + DaemonSet removed"
+                _log_masked "$_ask_log" "DELETE: ConfigMap + DaemonSet removed"
                 echo ""
                 _ui_pause
                 ;;
@@ -64213,19 +64213,19 @@ k8s_kubelet_deregister() {
         local drain_cmd="kubectl drain ${sel_k8s_node} --ignore-daemonsets --delete-emptydir-data"
         _ui_subheader "Step 1: Draining Node" 0
         echo -e "${GRAY}\$ ${drain_cmd}${NC}"
-        _log_masked "log_file" "EXECUTE: ${drain_cmd}"
-        _log_masked "log_file" "Instance: ${sel_name} (${sel_ocid})"
+        _log_masked "$log_file" "EXECUTE: ${drain_cmd}"
+        _log_masked "$log_file" "Instance: ${sel_name} (${sel_ocid})"
         
         log_action "DRAIN" "$drain_cmd"
         if kubectl drain "$sel_k8s_node" --ignore-daemonsets --delete-emptydir-data 2>&1 | tee -a "$log_file"; then
             echo ""
             echo -e "${GREEN}✓ Node drained successfully${NC}"
             log_action_result "SUCCESS" "DRAIN operation"
-            _log_masked "log_file" "RESULT: Drain succeeded"
+            _log_masked "$log_file" "RESULT: Drain succeeded"
         else
             echo ""
             echo -e "${YELLOW}⚠ Drain encountered errors (see above). Continuing with delete...${NC}"
-            _log_masked "log_file" "RESULT: Drain had errors"
+            _log_masked "$log_file" "RESULT: Drain had errors"
         fi
         
         # Step 2: Delete node
@@ -64233,19 +64233,19 @@ k8s_kubelet_deregister() {
         local delete_cmd="kubectl delete node ${sel_k8s_node}"
         _ui_subheader "Step 2: Deleting Node from Cluster" 0
         echo -e "${GRAY}\$ ${delete_cmd}${NC}"
-        _log_masked "log_file" "EXECUTE: ${delete_cmd}"
+        _log_masked "$log_file" "EXECUTE: ${delete_cmd}"
         
         log_action "DELETE" "$delete_cmd"
         if kubectl delete node "$sel_k8s_node" 2>&1 | tee -a "$log_file"; then
             echo ""
             echo -e "${GREEN}✓ Node deleted from cluster${NC}"
             log_action_result "SUCCESS" "DELETE operation"
-            _log_masked "log_file" "RESULT: Delete succeeded"
+            _log_masked "$log_file" "RESULT: Delete succeeded"
         else
             echo ""
             echo -e "${RED}✗ Failed to delete node${NC}"
             log_action_result "FAILED" "DELETE operation"
-            _log_masked "log_file" "RESULT: Delete failed"
+            _log_masked "$log_file" "RESULT: Delete failed"
         fi
         
         # Step 3: Show manual recovery steps
@@ -66706,7 +66706,7 @@ create_instance_configuration_interactive() {
                 
                 local _add_cmd="oci compute image-shape-compatibility-entry add --image-id \"$image_id\" --shape-name \"$shape_name\" --region \"$region\""
                 echo -e "  ${WHITE}$ ${_add_cmd}${NC}"
-                _log_masked "_compat_log" "EXECUTE: $_add_cmd"
+                _log_masked "$_compat_log" "EXECUTE: $_add_cmd"
                 
                 local _add_result
                 _add_result=$(oci compute image-shape-compatibility-entry add \
@@ -66717,7 +66717,7 @@ create_instance_configuration_interactive() {
 
                 if echo "$_add_result" | jq -e '.data' >/dev/null 2>&1 || [[ -z "$_add_result" ]]; then
                     echo -e "  ${GREEN}✓ Added shape compatibility: ${WHITE}${shape_name}${NC}"
-                    _log_masked "_compat_log" "SUCCESS: Added shape compat ${shape_name} to image ${image_id}"
+                    _log_masked "$_compat_log" "SUCCESS: Added shape compat ${shape_name} to image ${image_id}"
                     
                     # Re-verify shape availability after adding
                     echo ""
@@ -66744,7 +66744,7 @@ create_instance_configuration_interactive() {
                 else
                     echo -e "  ${RED}✗ Failed to add shape compatibility${NC}"
                     echo -e "  ${GRAY}${_add_result}${NC}"
-                    _log_masked "_compat_log" "FAILED: ${shape_name} — ${_add_result}"
+                    _log_masked "$_compat_log" "FAILED: ${shape_name} — ${_add_result}"
                 fi
                 ;;
             *) ;; # Continue anyway
@@ -67862,7 +67862,7 @@ EOF
     local exit_code=$?
     
     # Log the result
-    _log_masked "log_file" "$result"
+    _log_masked "$log_file" "$result"
     
     if [[ $exit_code -eq 0 ]]; then
         local new_ocid
@@ -68124,7 +68124,7 @@ delete_instance_configuration_interactive() {
         _ui_subheader "Command to Execute" 0
         echo -e "${GRAY}$ ${cmd}${NC}"
         
-        _log_masked "log_file" "EXECUTE: $cmd"
+        _log_masked "$log_file" "EXECUTE: $cmd"
         
         local result
         result=$(_safe_exec "$cmd")
@@ -68132,12 +68132,12 @@ delete_instance_configuration_interactive() {
         
         if [[ $exit_code -eq 0 ]]; then
             echo -e "${GREEN}✓ Deleted: ${WHITE}${ic_name}${NC} ${GRAY}(${iid})${NC}"
-            _log_masked "log_file" "SUCCESS: Deleted IC '${ic_name}' (${ic_ocid})"
+            _log_masked "$log_file" "SUCCESS: Deleted IC '${ic_name}' (${ic_ocid})"
             ((success_count++))
         else
             echo -e "${RED}✗ Failed: ${WHITE}${ic_name}${NC} ${GRAY}(${iid})${NC}"
             echo -e "  ${RED}${result}${NC}"
-            _log_masked "log_file" "FAILED: Delete IC '${ic_name}' (${ic_ocid}): ${result}"
+            _log_masked "$log_file" "FAILED: Delete IC '${ic_name}' (${ic_ocid}): ${result}"
             ((fail_count++))
         fi
         echo ""
@@ -69794,12 +69794,12 @@ EOF
             if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
                 echo -e "${GREEN}✓ Rules added successfully to $m_sl_name${NC}"
                 log_action_result "SUCCESS" "UPDATE operation"
-                _log_masked "log_file" "SUCCESS: Added rules to $m_sl_name"
+                _log_masked "$log_file" "SUCCESS: Added rules to $m_sl_name"
             else
                 echo -e "${RED}✗ Failed to add rules to $m_sl_name${NC}"
                 log_action_result "FAILED" "UPDATE operation"
                 echo "$result"
-                _log_masked "log_file" "FAILED: $result"
+                _log_masked "$log_file" "FAILED: $result"
             fi
         else
             echo -e "${YELLOW}Skipped adding rules to $m_sl_name${NC}"
@@ -70073,7 +70073,7 @@ pe_add_nsg_rules_wizard() {
             
             if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
                 echo -e "${GREEN}✓ Rules added successfully to $m_nsg_name${NC}"
-                _log_masked "log_file" "SUCCESS: Added rules to $m_nsg_name"
+                _log_masked "$log_file" "SUCCESS: Added rules to $m_nsg_name"
                 
                 # Invalidate cache for this NSG
                 local cache_file="${NSG_CACHE_DIR}/${nsg_id}.json"
@@ -70081,7 +70081,7 @@ pe_add_nsg_rules_wizard() {
             else
                 echo -e "${RED}✗ Failed to add rules to $m_nsg_name${NC}"
                 echo "$result"
-                _log_masked "log_file" "FAILED: $result"
+                _log_masked "$log_file" "FAILED: $result"
             fi
         else
             echo -e "${YELLOW}Skipped adding rules to $m_nsg_name${NC}"
@@ -70429,7 +70429,7 @@ os_create_private_endpoint() {
     # Log the action
     local log_file="${LOGS_DIR}/object_storage_actions_$(date +%Y%m%d).log"
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
-    _log_masked "log_file" "CREATE PRIVATE ENDPOINT: $create_cmd"
+    _log_masked "$log_file" "CREATE PRIVATE ENDPOINT: $create_cmd"
     
     local result
     if [[ -n "$nsg_ids_json" ]]; then
@@ -70472,19 +70472,19 @@ os_create_private_endpoint() {
         echo -e "  ${CYAN}Work Request:${NC} ${YELLOW}$work_request_id${NC}"
         echo -e "  ${GRAY}Endpoint will show CREATING state until complete${NC}"
         echo -e "  ${GRAY}Use 'w' from Object Storage menu to view work request status${NC}"
-        _log_masked "log_file" "SUCCESS: Creation initiated, work-request: $work_request_id"
+        _log_masked "$log_file" "SUCCESS: Creation initiated, work-request: $work_request_id"
     elif jq -e '.data.name' <<< "$result" > /dev/null 2>&1; then
         echo -e "${GREEN}✓ Private endpoint created${NC}"
         echo -e "  ${CYAN}Name:${NC}      ${WHITE}$pe_name${NC}"
         echo -e "  ${CYAN}Namespace:${NC} ${WHITE}$namespace${NC}"
         echo -e "  ${CYAN}Prefix:${NC}    ${WHITE}$pe_prefix${NC}"
-        _log_masked "log_file" "SUCCESS: Created $pe_name in namespace $namespace"
+        _log_masked "$log_file" "SUCCESS: Created $pe_name in namespace $namespace"
     else
         echo -e "${RED}Failed to create private endpoint${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
         echo -e "  ${GRAY}Use 'w' from Object Storage menu to view work request errors${NC}"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -70587,7 +70587,7 @@ os_delete_private_endpoints() {
         local delete_cmd="oci os private-endpoint delete --pe-name \"$_name\" --namespace-name \"$_ns\" --region \"$region\" --force"
         
         echo -e "  ${CYAN}Deleting: ${WHITE}${_name}${NC}"
-        _log_masked "log_file" "EXECUTING: $delete_cmd"
+        _log_masked "$log_file" "EXECUTING: $delete_cmd"
         
         local result
         log_action "DELETE" "$delete_cmd"
@@ -70596,12 +70596,12 @@ os_delete_private_endpoints() {
         if [[ $? -eq 0 ]]; then
             echo -e "  ${GREEN}✓ Deletion initiated${NC}"
             log_action_result "SUCCESS" "DELETE operation"
-            _log_masked "log_file" "SUCCESS: Deleted $_name (namespace: $_ns)"
+            _log_masked "$log_file" "SUCCESS: Deleted $_name (namespace: $_ns)"
             ((_success++))
         else
             echo -e "  ${RED}✗ Failed: $result${NC}"
             log_action_result "FAILED" "DELETE operation"
-            _log_masked "log_file" "FAILED: Delete $_name - $result"
+            _log_masked "$log_file" "FAILED: Delete $_name - $result"
             ((_failed++))
         fi
     done
@@ -71144,7 +71144,7 @@ custom_image_import() {
     # Execute import — use direct invocation (not _safe_exec) to preserve spaces in OS name/display name
     echo ""
     echo -e "${GRAY}Importing image (this may take several minutes)...${NC}"
-    _log_masked "log_file" "EXECUTE: $cmd"
+    _log_masked "$log_file" "EXECUTE: $cmd"
     echo -e "${WHITE}$ $cmd${NC}"
 
     local -a _import_args=(
@@ -71166,7 +71166,7 @@ custom_image_import() {
         echo -e "${GREEN}✓ Image import initiated successfully${NC}"
         echo -e "  ${CYAN}Image OCID:${NC} ${YELLOW}$new_image_id${NC}"
         echo -e "  ${GRAY}Image will be available once import completes${NC}"
-        _log_masked "log_file" "SUCCESS: Imported image $image_name (OS: $os_name) -> $new_image_id"
+        _log_masked "$log_file" "SUCCESS: Imported image $image_name (OS: $os_name) -> $new_image_id"
         
         # ── Auto-add GPU shape compatibility (vendor + architecture aware) ──
         echo ""
@@ -71188,7 +71188,7 @@ custom_image_import() {
             _gpu_vendor="nvidia"
         fi
         
-        _log_masked "log_file" "SHAPE_DETECT: vendor=${_gpu_vendor} arch=${_img_arch} (from name: $image_name)"
+        _log_masked "$log_file" "SHAPE_DETECT: vendor=${_gpu_vendor} arch=${_img_arch} (from name: $image_name)"
         
         # Build detection label
         local _detect_parts=()
@@ -71322,11 +71322,11 @@ custom_image_import() {
                     echo "$_gs" | grep -qi 'HPC' && _gs_color="$CYAN"
                     _is_arm_shape "$_gs" "" && _gs_color="$BLUE"
                     echo -e "  ${GREEN}✓${NC} ${_gs_color}${_gs}${NC}"
-                    _log_masked "log_file" "SHAPE_COMPAT: Added ${_gs} to ${new_image_id}"
+                    _log_masked "$log_file" "SHAPE_COMPAT: Added ${_gs} to ${new_image_id}"
                     ((_gs_ok++))
                 else
                     echo -e "  ${RED}✗${NC} ${_gs}"
-                    _log_masked "log_file" "SHAPE_COMPAT_FAIL: ${_gs} — ${_gs_result}"
+                    _log_masked "$log_file" "SHAPE_COMPAT_FAIL: ${_gs} — ${_gs_result}"
                     ((_gs_fail++))
                 fi
             done
@@ -71347,7 +71347,7 @@ custom_image_import() {
     else
         echo -e "${RED}Failed to import image${NC}"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -71540,7 +71540,7 @@ custom_image_create_from_instance() {
     # Execute creation
     echo ""
     echo -e "${GRAY}Creating image (this may take several minutes)...${NC}"
-    _log_masked "log_file" "EXECUTE: $cmd"
+    _log_masked "$log_file" "EXECUTE: $cmd"
     echo -e "${WHITE}$ $cmd${NC}"
 
     # Use direct invocation (not _safe_exec) to preserve spaces in display name
@@ -71565,11 +71565,11 @@ custom_image_create_from_instance() {
         echo -e "  ${CYAN}Image OCID:${NC} ${YELLOW}$new_image_id${NC}"
         echo -e "  ${CYAN}Launch Mode:${NC} ${WHITE}$inst_launch_mode${NC}"
         echo -e "  ${GRAY}Image will be available once creation completes${NC}"
-        _log_masked "log_file" "SUCCESS: Created image $image_name (launch-mode: $inst_launch_mode) from $instance_name -> $new_image_id"
+        _log_masked "$log_file" "SUCCESS: Created image $image_name (launch-mode: $inst_launch_mode) from $instance_name -> $new_image_id"
     else
         echo -e "${RED}Failed to create image${NC}"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -71778,7 +71778,7 @@ custom_image_export() {
     # Execute export — use direct invocation (not _safe_exec) to preserve spaces in names
     echo ""
     echo -e "${GRAY}Exporting image (this may take several minutes)...${NC}"
-    _log_masked "log_file" "EXECUTE: $cmd"
+    _log_masked "$log_file" "EXECUTE: $cmd"
 
     local -a _export_args=(
         oci compute image export to-object
@@ -71797,11 +71797,11 @@ custom_image_export() {
         echo -e "${GREEN}✓ Image export initiated successfully${NC}"
         echo -e "  ${CYAN}Destination:${NC} ${WHITE}$selected_bucket/$object_name${NC}"
         echo -e "  ${GRAY}Export will complete in background${NC}"
-        _log_masked "log_file" "SUCCESS: Exported $selected_image_name to $selected_bucket/$object_name"
+        _log_masked "$log_file" "SUCCESS: Exported $selected_image_name to $selected_bucket/$object_name"
     else
         echo -e "${RED}Failed to export image${NC}"
         echo "$result"
-        _log_masked "log_file" "FAILED: $result"
+        _log_masked "$log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -72058,15 +72058,15 @@ custom_image_shape_compatibility() {
                     local _confirm
                     read -r _confirm
                     if [[ "$_confirm" == "y" || "$_confirm" == "Y" ]]; then
-                        _log_masked "log_file" "EXECUTE: $_add_cmd"
+                        _log_masked "$log_file" "EXECUTE: $_add_cmd"
                         local _result
                         _result=$(oci compute image-shape-compatibility-entry add --image-id "$selected_image" --shape-name "$_cust_shape" --region "$region" --output json 2>&1)
                         if echo "$_result" | jq -e '.data' >/dev/null 2>&1 || [[ -z "$_result" ]]; then
                             echo -e "  ${GREEN}✓ Added: $_cust_shape${NC}"
-                            _log_masked "log_file" "SUCCESS: Added shape compat $_cust_shape to $selected_image_name"
+                            _log_masked "$log_file" "SUCCESS: Added shape compat $_cust_shape to $selected_image_name"
                         else
                             echo -e "  ${RED}✗ Failed: $_cust_shape${NC}"
-                            _log_masked "log_file" "FAILED: $_cust_shape — $_result"
+                            _log_masked "$log_file" "FAILED: $_cust_shape — $_result"
                         fi
                     else
                         echo -e "  ${YELLOW}Cancelled${NC}"
@@ -72150,15 +72150,15 @@ custom_image_shape_compatibility() {
                     for _sr in "${_shapes_to_rm[@]}"; do
                         local _rm_cmd="oci compute image-shape-compatibility-entry remove --image-id \"$selected_image\" --shape-name \"$_sr\" --region \"$region\" --force"
                         echo -e "  ${WHITE}$ $_rm_cmd${NC}"
-                        _log_masked "log_file" "EXECUTE: $_rm_cmd"
+                        _log_masked "$log_file" "EXECUTE: $_rm_cmd"
                         oci compute image-shape-compatibility-entry remove --image-id "$selected_image" --shape-name "$_sr" --region "$region" --force 2>/dev/null
                         if [[ $? -eq 0 ]]; then
                             echo -e "  ${GREEN}✓ Removed: $_sr${NC}"
-                            _log_masked "log_file" "SUCCESS: Removed shape compat $_sr from $selected_image_name"
+                            _log_masked "$log_file" "SUCCESS: Removed shape compat $_sr from $selected_image_name"
                             ((_rm_ok++))
                         else
                             echo -e "  ${RED}✗ Failed: $_sr${NC}"
-                            _log_masked "log_file" "FAILED: Remove $_sr"
+                            _log_masked "$log_file" "FAILED: Remove $_sr"
                             ((_rm_fail++))
                         fi
                     done
@@ -72200,16 +72200,16 @@ custom_image_shape_compatibility() {
                             for _sa in "${_shapes_to_add[@]}"; do
                                 local _add_cmd="oci compute image-shape-compatibility-entry add --image-id \"$selected_image\" --shape-name \"$_sa\" --region \"$region\""
                                 echo -e "  ${WHITE}$ $_add_cmd${NC}"
-                                _log_masked "log_file" "EXECUTE: $_add_cmd"
+                                _log_masked "$log_file" "EXECUTE: $_add_cmd"
                                 local _add_result
                                 _add_result=$(oci compute image-shape-compatibility-entry add --image-id "$selected_image" --shape-name "$_sa" --region "$region" --output json 2>&1)
                                 if echo "$_add_result" | jq -e '.data' >/dev/null 2>&1 || [[ -z "$_add_result" ]]; then
                                     echo -e "  ${GREEN}✓ Added: $_sa${NC}"
-                                    _log_masked "log_file" "SUCCESS: Added shape compat $_sa to $selected_image_name"
+                                    _log_masked "$log_file" "SUCCESS: Added shape compat $_sa to $selected_image_name"
                                     ((_add_ok++))
                                 else
                                     echo -e "  ${RED}✗ Failed: $_sa${NC}"
-                                    _log_masked "log_file" "FAILED: $_sa — $_add_result"
+                                    _log_masked "$log_file" "FAILED: $_sa — $_add_result"
                                     ((_add_fail++))
                                 fi
                             done
@@ -72402,7 +72402,7 @@ custom_image_delete() {
         local cmd="oci compute image delete --image-id ${img_ocid} --region ${region} --force"
         
         echo -e "${WHITE}$ ${cmd}${NC}"
-        _log_masked "log_file" "EXECUTE: $cmd"
+        _log_masked "$log_file" "EXECUTE: $cmd"
         
         local result
         result=$(_safe_exec "$cmd")
@@ -72410,12 +72410,12 @@ custom_image_delete() {
         
         if [[ $exit_code -eq 0 || -z "$result" || "$result" == "{}" ]]; then
             echo -e "${GREEN}✓ Deleted: ${WHITE}${img_name}${NC} ${GRAY}(${img_idx})${NC}"
-            _log_masked "log_file" "SUCCESS: Deleted image '${img_name}' (${img_ocid})"
+            _log_masked "$log_file" "SUCCESS: Deleted image '${img_name}' (${img_ocid})"
             ((success_count++))
         else
             echo -e "${RED}✗ Failed: ${WHITE}${img_name}${NC} ${GRAY}(${img_idx})${NC}"
             echo -e "  ${RED}${result}${NC}"
-            _log_masked "log_file" "FAILED: Delete image '${img_name}' (${img_ocid}): ${result}"
+            _log_masked "$log_file" "FAILED: Delete image '${img_name}' (${img_ocid}): ${result}"
             ((fail_count++))
         fi
         echo ""
