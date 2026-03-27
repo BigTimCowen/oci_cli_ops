@@ -26,7 +26,7 @@
 #   Optional: OKE_CLUSTER_ID to specify which OKE cluster to manage
 #
 # Author: Tim Cowen
-# Version: 3.31.0 (2026-03-24)
+# Version: 3.31.1 (2026-03-27)
 # Please use at your own risk.
 #
 #===============================================================================
@@ -432,8 +432,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.31.0"
-readonly SCRIPT_VERSION_DATE="2026-03-24"
+readonly SCRIPT_VERSION="3.31.1"
+readonly SCRIPT_VERSION_DATE="2026-03-27"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
