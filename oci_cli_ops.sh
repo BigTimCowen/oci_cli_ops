@@ -26,9 +26,8 @@
 #   Optional: OKE_CLUSTER_ID to specify which OKE cluster to manage
 #
 # Author: Tim Cowen
-# Version: 3.25.50 (2026-03-02)
-# Please use at your own risk. 
-#
+# Version: 3.31.0 (2026-03-24)
+# Please use at your own risk.
 #
 #===============================================================================
 # CODING STANDARDS (for AI-assisted development — read before modifying)
@@ -413,12 +412,14 @@ DEBUG_MODE=false
 readonly CACHE_MAX_AGE=300  # 5 minutes in seconds (max TTL for all caches)
 
 # GPU Fleet Health Thresholds — configurable via variables.sh
-readonly GPU_TEMP_WARN="${GPU_TEMP_WARN:-80}"            # °C — yellow warning
-readonly GPU_TEMP_CRIT="${GPU_TEMP_CRIT:-90}"            # °C — red critical
-readonly GPU_POWER_WARN_PCT="${GPU_POWER_WARN_PCT:-95}"  # % of limit — warn
-readonly GPU_ECC_UNCORR_CRIT="${GPU_ECC_UNCORR_CRIT:-1}" # any uncorrectable = critical
-readonly GPU_RETIRED_PAGES_WARN="${GPU_RETIRED_PAGES_WARN:-1}" # pending retired pages
-readonly GPU_NVLINK_ERROR_WARN="${GPU_NVLINK_ERROR_WARN:-100}" # NVLink replay errors
+# NOTE: These use non-readonly defaults; variables.sh values (sourced later in main)
+# override these via the ${VAR:-default} pattern. Do NOT make readonly here.
+GPU_TEMP_WARN="${GPU_TEMP_WARN:-80}"            # °C — yellow warning
+GPU_TEMP_CRIT="${GPU_TEMP_CRIT:-90}"            # °C — red critical
+GPU_POWER_WARN_PCT="${GPU_POWER_WARN_PCT:-95}"  # % of limit — warn
+GPU_ECC_UNCORR_CRIT="${GPU_ECC_UNCORR_CRIT:-1}" # any uncorrectable = critical
+GPU_RETIRED_PAGES_WARN="${GPU_RETIRED_PAGES_WARN:-1}" # pending retired pages
+GPU_NVLINK_ERROR_WARN="${GPU_NVLINK_ERROR_WARN:-100}" # NVLink replay errors
 
 # Parallelism: max concurrent OCI API calls (override via environment variable)
 # Lower for rate-limited tenancies, raise for high-limit tenancies
@@ -431,7 +432,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.30.25"
+readonly SCRIPT_VERSION="3.31.0"
 readonly SCRIPT_VERSION_DATE="2026-03-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -752,6 +753,46 @@ log_action_result() {
         echo "Completed: $timestamp"
         echo ""
     } >> "$ACTION_LOG_FILE" 2>/dev/null
+}
+
+# Log to a secondary log file with OCID masking and chmod 600
+# Replaces inline `echo "[...] ..." >> "$log_file"` patterns throughout the script.
+# Args: $1 = log file path, $2 = message (OCIDs will be masked)
+_log_masked() {
+    local _lf="$1" _msg="$2"
+    local _ts; _ts=$(date '+%Y-%m-%d %H:%M:%S')
+    # Ensure log file has restricted permissions on first write
+    if [[ ! -f "$_lf" ]]; then
+        touch "$_lf" 2>/dev/null
+        chmod 600 "$_lf" 2>/dev/null
+    fi
+    echo "[${_ts}] $(_mask_ocids "$_msg")" >> "$_lf" 2>/dev/null
+}
+
+# Wait for background PIDs with a timeout (prevents indefinite hangs)
+# Args: $1 = timeout in seconds, $2..N = PIDs to wait for
+# Returns: 0 if all completed, 1 if timeout occurred (remaining PIDs killed)
+_wait_with_timeout() {
+    local _timeout="${1:-60}"; shift
+    local _pids=("$@")
+    [[ ${#_pids[@]} -eq 0 ]] && return 0
+    local _deadline=$(( $(date +%s) + _timeout ))
+    while true; do
+        local _still_running=0
+        for _p in "${_pids[@]}"; do
+            kill -0 "$_p" 2>/dev/null && ((_still_running++))
+        done
+        [[ $_still_running -eq 0 ]] && return 0
+        if [[ $(date +%s) -ge $_deadline ]]; then
+            # Timeout — kill remaining
+            for _p in "${_pids[@]}"; do
+                kill "$_p" 2>/dev/null
+            done
+            _wait_with_timeout 120 "${_pids[@]}"
+            return 1
+        fi
+        sleep 0.2
+    done
 }
 
 # Check if a value is a valid OCID (not empty, not N/A, not null)
@@ -3026,9 +3067,9 @@ fetch_oke_environment() {
         if is_valid_ocid "$vcn_ocid"; then
             (oci network vcn get --vcn-id "$vcn_ocid" --region "$region" --query 'data."display-name"' --raw-output > "$_ptmp/vcn_name" 2>/dev/null) &
             _pids+=($!)
-            (oci network subnet list --vcn-id "$vcn_ocid" --compartment-id "$compartment_id" --region "$region" --output json > "$_ptmp/subnets" 2>/dev/null) &
+            (oci network subnet list --vcn-id "$vcn_ocid" --compartment-id "$compartment_id" --region "$region" --all --output json > "$_ptmp/subnets" 2>/dev/null) &
             _pids+=($!)
-            (oci network nsg list --compartment-id "$compartment_id" --vcn-id "$vcn_ocid" --region "$region" --output json > "$_ptmp/nsgs" 2>/dev/null) &
+            (oci network nsg list --compartment-id "$compartment_id" --vcn-id "$vcn_ocid" --region "$region" --all --output json > "$_ptmp/nsgs" 2>/dev/null) &
             _pids+=($!)
         fi
         wait "${_pids[@]}"
@@ -3341,9 +3382,9 @@ fetch_network_resources() {
     local _nr_tmp="${TEMP_DIR}/nr_fetch_$$"
     mkdir -p "$_nr_tmp"
     
-    (oci network subnet list --vcn-id "$vcn_ocid" --compartment-id "$compartment_id" --region "$region" --output json > "$_nr_tmp/subnets.json" 2>/dev/null) &
+    (oci network subnet list --vcn-id "$vcn_ocid" --compartment-id "$compartment_id" --region "$region" --all --output json > "$_nr_tmp/subnets.json" 2>/dev/null) &
     local _nr_p1=$!
-    (oci network nsg list --compartment-id "$compartment_id" --vcn-id "$vcn_ocid" --region "$region" --output json > "$_nr_tmp/nsgs.json" 2>/dev/null) &
+    (oci network nsg list --compartment-id "$compartment_id" --vcn-id "$vcn_ocid" --region "$region" --all --output json > "$_nr_tmp/nsgs.json" 2>/dev/null) &
     local _nr_p2=$!
     wait "$_nr_p1" "$_nr_p2" 2>/dev/null
     
@@ -3950,7 +3991,7 @@ fetch_nsg_rules_detail_parallel() {
         _nsg_pids+=($!)
         ((_nsg_batch++))
         if [[ $_nsg_batch -ge $parallel_jobs ]]; then
-            wait "${_nsg_pids[@]}" 2>/dev/null
+            _wait_with_timeout 120 "${_nsg_pids[@]}"
             _nsg_pids=()
             _nsg_batch=0
         fi
@@ -4257,7 +4298,7 @@ fetch_all_network_gateways() {
     
     if [[ ${#_gw_pids[@]} -gt 0 ]]; then
         _step_active "network(${_gw_stale} parallel)"
-        wait "${_gw_pids[@]}" 2>/dev/null
+        _wait_with_timeout 120 "${_gw_pids[@]}"
     fi
     
     # Report results
@@ -4317,7 +4358,7 @@ fetch_os_private_endpoints() {
         
         # List all private endpoints in this compartment
         local pe_list_json
-        pe_list_json=$(oci os private-endpoint list --compartment-id "$cid" --region "$region" --output json 2>/dev/null)
+        pe_list_json=$(oci os private-endpoint list --compartment-id "$cid" --region "$region" --all --output json 2>/dev/null)
         
         if [[ -z "$pe_list_json" ]] || ! jq -e '.data[0]' <<< "$pe_list_json" > /dev/null 2>&1; then
             continue
@@ -4838,12 +4879,13 @@ build_announcement_lookup() {
                 local detail_file="${CACHE_DIR}/ann_${ann_id##*.}.json"
                 if [[ ! -f "$detail_file" || ! -s "$detail_file" ]]; then
                     $DEBUG_MODE && echo -e "${GRAY}[DEBUG] oci announce announcements get --announcement-id ...${ann_id##*.} --region $region${NC}" >&2
+                    _oci_throttle
                     oci announce announcements get --announcement-id "$ann_id" --region "$region" --output json > "$detail_file" 2>/dev/null &
                     _ann_pids+=($!)
                     ((_ann_batch++))
                     ((_ann_fetch++))
                     if [[ $_ann_batch -ge $OCI_MAX_PARALLEL ]]; then
-                        wait "${_ann_pids[@]}" 2>/dev/null
+                        _wait_with_timeout 120 "${_ann_pids[@]}"
                         _ann_pids=()
                         _ann_batch=0
                     fi
@@ -7770,7 +7812,7 @@ display_oke_environment_header() {
         if [[ -s "$OKE_CLUSTER_JSON_CACHE" ]]; then
             cluster_json=$(cat "$OKE_CLUSTER_JSON_CACHE")
         else
-            cluster_json=$(oci ce cluster get --cluster-id "$cluster_ocid" --output json 2>/dev/null)
+            cluster_json=$(oci ce cluster get --cluster-id "$cluster_ocid" --region "${FOCUS_REGION:-$REGION}" --output json 2>/dev/null)
         fi
         if [[ -n "$cluster_json" ]]; then
             cluster_version=$(jq -r '.data["kubernetes-version"] // "N/A"' <<< "$cluster_json")
@@ -8444,7 +8486,7 @@ _fetch_overview_infra() {
         # Wait for all parallel fetches
         if [[ ${#_p3_pids[@]} -gt 0 ]]; then
             _step_active "GPU infra(${_p3_stale} parallel)"
-            wait "${_p3_pids[@]}" 2>/dev/null
+            _wait_with_timeout 120 "${_p3_pids[@]}"
         fi
         
         # Report final counts from cache files
@@ -8574,7 +8616,7 @@ _display_overview() {
     
     if [[ ${#_p3_pids[@]} -gt 0 ]]; then
         _step_active "GPU infra(${_p3_stale} parallel)"
-        wait "${_p3_pids[@]}" 2>/dev/null
+        _wait_with_timeout 120 "${_p3_pids[@]}"
     fi
     _step_complete "fabrics($(_clc "$FABRIC_CACHE"))"
     _step_complete "GPU clusters($(_clc "$CLUSTER_CACHE"))"
@@ -8636,7 +8678,7 @@ _display_overview() {
     fi
 
     _step_active "instances+K8s(${_p4_stale} parallel)"
-    wait "${_p4_pids[@]}" 2>/dev/null
+    _wait_with_timeout 120 "${_p4_pids[@]}"
 
     # Report results
     _step_complete "instances($(_clc "$_OV_INST_TEMP"))"
@@ -8806,7 +8848,7 @@ list_all_instances() {
         fi
 
         _step_active "instances+K8s(${_li_stale} parallel)"
-        wait "${_li_pids[@]}" 2>/dev/null
+        _wait_with_timeout 120 "${_li_pids[@]}"
 
         # Report results
         _step_complete "instances($(_clc "$oci_temp"))"
@@ -9130,7 +9172,7 @@ reschedule_maintenance_event() {
     
     echo ""
     echo -e "${YELLOW}Executing reschedule...${NC}"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $resched_cmd" >> "$log_file"
+    _log_masked "log_file" "EXECUTE: $resched_cmd"
     echo -e "${WHITE}$ ${resched_cmd}${NC}"
     echo ""
     
@@ -9146,7 +9188,7 @@ reschedule_maintenance_event() {
     if [[ $resched_rc -eq 0 ]]; then
         echo -e "${GREEN}✓ Maintenance event rescheduled successfully${NC}"
         log_action_result "SUCCESS" "UPDATE operation"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Rescheduled $event_display_name ($event_id) to $new_time_window" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Rescheduled $event_display_name ($event_id) to $new_time_window"
         
         # Show updated event details
         local new_window_start
@@ -9159,7 +9201,7 @@ reschedule_maintenance_event() {
     else
         echo -e "${RED}✗ Failed to reschedule maintenance event${NC}"
         log_action_result "FAILED" "UPDATE operation"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Reschedule $event_display_name ($event_id) to $new_time_window" >> "$log_file"
+        _log_masked "log_file" "FAILED: Reschedule $event_display_name ($event_id) to $new_time_window"
         echo -e "${GRAY}Error output:${NC}"
         echo "$resched_output" | head -20
     fi
@@ -9495,7 +9537,7 @@ list_maintenance_events() {
             ((fault_fetch_count++))
 
             if [[ $fault_fetch_count -ge 10 ]]; then
-                wait "${fault_fetch_pids[@]}" 2>/dev/null
+                _wait_with_timeout 120 "${fault_fetch_pids[@]}"
                 fault_fetch_pids=()
                 fault_fetch_count=0
             fi
@@ -10793,11 +10835,11 @@ list_maintenance_events() {
                     if _safe_exec "$cmd"; then
                         echo -e "${GREEN}  ✓ Success: ${inst_name}${NC}"
                         ((success_count++))
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] TERMINATE: $cmd" >> "$MAINTENANCE_LOG_FILE"
+                        _log_masked "MAINTENANCE_LOG_FILE" "TERMINATE: $cmd"
                     else
                         echo -e "${RED}  ✗ Failed: ${inst_name}${NC}"
                         ((fail_count++))
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED TERMINATE: $cmd" >> "$MAINTENANCE_LOG_FILE"
+                        _log_masked "MAINTENANCE_LOG_FILE" "FAILED TERMINATE: $cmd"
                     fi
                     echo ""
                 done
@@ -11194,7 +11236,7 @@ list_maintenance_events() {
                 
                 echo -e "${WHITE}[#$bv_idx] ${bv_inst_name}${NC}"
                 echo -e "${GRAY}$ $bv_cmd${NC}"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $bv_cmd" >> "$log_file"
+                _log_masked "log_file" "EXECUTE: $bv_cmd"
                 
                 local bv_output
                 log_action "UPDATE" "$bv_cmd"
@@ -11210,12 +11252,12 @@ list_maintenance_events() {
                     bv_new_window=$(jq -r '.data["time-window-start"] // "N/A"' <<< "$bv_output" 2>/dev/null)
                     echo -e "  ${GREEN}✓ Rescheduled → ${bv_new_window}${NC}"
                     log_action_result "SUCCESS" "UPDATE operation"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Rescheduled $bv_inst_name ($bv_evt_id) to $bulk_new_time" >> "$log_file"
+                    _log_masked "log_file" "SUCCESS: Rescheduled $bv_inst_name ($bv_evt_id) to $bulk_new_time"
                     ((bulk_success++))
                 else
                     echo -e "  ${RED}✗ Failed to reschedule${NC}"
                     log_action_result "FAILED" "UPDATE operation"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Reschedule $bv_inst_name ($bv_evt_id) to $bulk_new_time" >> "$log_file"
+                    _log_masked "log_file" "FAILED: Reschedule $bv_inst_name ($bv_evt_id) to $bulk_new_time"
                     local bv_err
                     bv_err=$(jq -r '.message // empty' <<< "$bv_output" 2>/dev/null)
                     [[ -n "$bv_err" ]] && echo -e "  ${GRAY}$bv_err${NC}"
@@ -11458,7 +11500,7 @@ list_maintenance_events() {
                 echo ""
                 echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
                 echo ""
-                _ui_prompt "Event Detail" "j, Enter"
+                _ui_prompt "Event - ${d_evt_name}" "j, Enter"
                 local _med_choice
                 read -r _med_choice
                 [[ "${_med_choice:-}" == :* ]] && _nav_try_jump "$_med_choice" && { rm -f "$me_inst_temp"; return; }
@@ -11994,7 +12036,7 @@ list_all_announcements() {
             echo ""
             echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
             echo ""
-            _ui_prompt "Announcement Detail" "j, Enter"
+            _ui_prompt "Announcement - ${ref_ticket}" "j, Enter"
             local _ann_choice
             read -r _ann_choice
             [[ "${_ann_choice:-}" == :* ]] && _nav_try_jump "$_ann_choice" && return
@@ -13304,7 +13346,7 @@ display_gpu_management_menu() {
 
     if [[ ${#_gpu_pids[@]} -gt 0 ]]; then
         _step_active "GPU infra(${_gpu_stale} parallel)"
-        wait "${_gpu_pids[@]}" 2>/dev/null
+        _wait_with_timeout 120 "${_gpu_pids[@]}"
     fi
 
     # Report per-step timing
@@ -13359,7 +13401,7 @@ display_gpu_management_menu() {
             _fw_time="$(_ms_to_s "$(( ( $(date +%s%N 2>/dev/null || date +%s) - _t0 ) / 1000000 ))")"
         fi
     fi
-    rm -rf "$_timing_dir" 2>/dev/null
+    rm -rf "${_timing_dir:?}" 2>/dev/null
 
     _step_complete "GPU clusters($(_clc "$CLUSTER_CACHE") ${_gc_time})"
     _step_complete "instance configs($(_clc "$INSTANCE_CONFIG_CACHE") ${_ic_time})"
@@ -14903,7 +14945,7 @@ compartment_submenu() {
                     local log_file="${LOGS_DIR}/compartment_actions_$(date +%Y%m%d).log"
                     mkdir -p "$(dirname "$log_file")" 2>/dev/null
                     log_action "CREATE_COMPARTMENT" "$cmd" --quiet --context "Name: $new_name, Parent: $comp_id"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE COMPARTMENT: $cmd" >> "$log_file"
+                    _log_masked "log_file" "CREATE COMPARTMENT: $cmd"
                     
                     local result
                     result=$(oci iam compartment create --compartment-id "$comp_id" --name "$new_name" --description "$new_desc" --output json 2>&1)
@@ -14922,7 +14964,7 @@ compartment_submenu() {
                     else
                         echo -e "${RED}✗ Failed to create compartment${NC}"
                         echo "$result"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+                        _log_masked "log_file" "FAILED: $result"
                         log_action_result "FAILED" "$result"
                     fi
                     
@@ -14995,7 +15037,7 @@ compartment_submenu() {
                 # Log the action
                 local log_file="${LOGS_DIR}/compartment_actions_$(date +%Y%m%d).log"
                 mkdir -p "$(dirname "$log_file")" 2>/dev/null
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] DELETE COMPARTMENT: $del_cmd" >> "$log_file"
+                _log_masked "log_file" "DELETE COMPARTMENT: $del_cmd"
                 
                 echo ""
                 echo -e "${GRAY}Deleting compartment...${NC}"
@@ -15008,7 +15050,7 @@ compartment_submenu() {
                     echo -e "${GREEN}✓ Compartment deletion initiated!${NC}"
                     log_action_result "SUCCESS" "DELETE operation"
                     echo -e "  ${GRAY}The compartment will move to DELETING state and be permanently removed.${NC}"
-                    echo "[$( date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Initiated deletion of compartment $name ($comp_id)" >> "$log_file"
+                    _log_masked "log_file" "SUCCESS: Initiated deletion of compartment $name ($comp_id)"
                     echo ""
                     rm -f "$COMPARTMENTS_CACHE"
                     echo -e "${GRAY}Refreshing compartment list...${NC}"
@@ -15017,7 +15059,7 @@ compartment_submenu() {
                     echo -e "${RED}✗ Failed to delete compartment${NC}"
                     log_action_result "FAILED" "DELETE operation"
                     echo "$result"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+                    _log_masked "log_file" "FAILED: $result"
                     echo ""
                     _ui_pause
                 fi
@@ -15183,7 +15225,7 @@ create_subcompartment_enhanced() {
     # Log the action
     local log_file="${LOGS_DIR}/compartment_actions_$(date +%Y%m%d).log"
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE COMPARTMENT: $cmd" >> "$log_file"
+    _log_masked "log_file" "CREATE COMPARTMENT: $cmd"
     
     # Execute
     local result
@@ -15196,7 +15238,7 @@ create_subcompartment_enhanced() {
         echo -e "${GREEN}✓ Compartment created successfully!${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}New OCID:${NC} ${YELLOW}$new_id${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created compartment $new_name ($new_id)" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Created compartment $new_name ($new_id)"
         echo ""
         rm -f "$COMPARTMENTS_CACHE"
         echo -e "${GRAY}Refreshing compartment list...${NC}"
@@ -15205,7 +15247,7 @@ create_subcompartment_enhanced() {
         echo -e "${RED}✗ Failed to create compartment${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
         echo ""
         _ui_pause
     fi
@@ -15497,7 +15539,7 @@ _identity_domain_detail() {
     echo ""
     echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
     echo ""
-    _ui_prompt "Domain Detail" "j, Enter"
+    _ui_prompt "Domain - ${domain_display_name}" "j, Enter"
     local _dd_choice
     read -r _dd_choice
     [[ "${_dd_choice:-}" == :* ]] && _nav_try_jump "$_dd_choice" && return
@@ -15753,7 +15795,7 @@ _identity_user_detail() {
     echo ""
     echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
     echo ""
-    _ui_prompt "User Detail" "j, Enter"
+    _ui_prompt "User - ${user_name}" "j, Enter"
     local _ud_choice
     read -r _ud_choice
     [[ "${_ud_choice:-}" == :* ]] && _nav_try_jump "$_ud_choice" && return
@@ -15995,7 +16037,7 @@ _identity_group_detail() {
     echo ""
     echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
     echo ""
-    _ui_prompt "Group Detail" "j, Enter"
+    _ui_prompt "Group - ${group_name}" "j, Enter"
     local _gd_choice
     read -r _gd_choice
     [[ "${_gd_choice:-}" == :* ]] && _nav_try_jump "$_gd_choice" && return
@@ -16179,7 +16221,7 @@ _identity_dynamic_group_detail() {
     echo ""
     echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
     echo ""
-    _ui_prompt "Dynamic Group Detail" "j, Enter"
+    _ui_prompt "Dynamic Group - ${dg_name}" "j, Enter"
     local _dgd_choice
     read -r _dgd_choice
     [[ "${_dgd_choice:-}" == :* ]] && _nav_try_jump "$_dgd_choice" && return
@@ -16675,7 +16717,7 @@ _identity_replica_regions() {
                 if [[ "${confirm,,}" == "y" ]]; then
                     local log_file="${LOGS_DIR}/identity_actions.log"
                     mkdir -p "$LOGS_DIR"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $enable_cmd" >> "$log_file"
+                    _log_masked "log_file" "EXECUTE: $enable_cmd"
                     log_action "ENABLE_REPLICATION" "$enable_cmd" --quiet
                     echo -e "  ${GRAY}Logged to: ${log_file}${NC}"
 
@@ -16690,12 +16732,12 @@ _identity_replica_regions() {
                     if [[ $exit_code -eq 0 ]]; then
                         echo -e "  ${GREEN}✓${NC} Replication enabled to ${WHITE}${target_region}${NC}"
                         echo -e "  ${GRAY}Replication may take several minutes to complete${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Enabled replication to $target_region for domain $domain_name" >> "$log_file"
+                        _log_masked "log_file" "SUCCESS: Enabled replication to $target_region for domain $domain_name"
                         log_action_result "SUCCESS" "Enabled replication to $target_region for domain $domain_name"
                     else
                         echo -e "  ${RED}✗ Failed to enable replication${NC}"
                         echo "$result" | head -5
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+                        _log_masked "log_file" "FAILED: $result"
                         log_action_result "FAILED" "Enable replication to $target_region: $result"
                     fi
                     
@@ -16781,6 +16823,7 @@ _policy_fetch_all() {
     for comp_id in "${comp_ids[@]}"; do
         ((comp_num++))
         
+        _oci_throttle
         (oci iam policy list --compartment-id "$comp_id" --all --output json 2>/dev/null > "${parallel_temp}/pol_${comp_num}.json") &
         _pol_pids+=($!)
         ((running++))
@@ -18451,7 +18494,7 @@ manage_policies() {
                 # Log the export action
                 local log_file="${LOGS_DIR}/policy_actions.log"
                 mkdir -p "$LOGS_DIR"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXPORT: jq '.' \"$POLICIES_ALL_CACHE\" > \"$export_file\"" >> "$log_file"
+                _log_masked "$log_file" "EXPORT: jq . $POLICIES_ALL_CACHE > $export_file"
                 echo -e "  ${GRAY}Logged to: ${log_file}${NC}"
                 echo ""
                 _ui_pause
@@ -18897,7 +18940,7 @@ _vault_create() {
     
     # Execute
     log_action "CREATE_VAULT" "$cmd" --quiet --context "Name: $vault_name, Type: $vault_type"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE VAULT: $cmd" >> "$log_file"
+    _log_masked "log_file" "CREATE VAULT: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -18915,12 +18958,12 @@ _vault_create() {
         echo -e "  ${GREEN}✓ Vault creation initiated!${NC}"
         echo -e "  ${CYAN}OCID:${NC}  ${YELLOW}${new_id}${NC}"
         echo -e "  ${CYAN}State:${NC} ${YELLOW}${new_state}${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created vault $vault_name ($new_id) state=$new_state" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Created vault $vault_name ($new_id) state=$new_state"
         log_action_result "SUCCESS" "Created vault $vault_name ($new_id)"
     else
         echo -e "  ${RED}✗ Failed to create vault${NC}"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -18965,7 +19008,7 @@ _vault_update() {
     fi
     
     log_action "UPDATE_VAULT" "$cmd" --quiet --context "Rename: $current_name -> $new_name"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] UPDATE VAULT: $cmd" >> "$log_file"
+    _log_masked "log_file" "UPDATE VAULT: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -18977,12 +19020,12 @@ _vault_update() {
     
     if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
         echo -e "  ${GREEN}✓ Vault updated${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Renamed vault $current_name -> $new_name ($vault_id)" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Renamed vault $current_name -> $new_name ($vault_id)"
         log_action_result "SUCCESS" "Renamed vault $current_name -> $new_name"
     else
         echo -e "  ${RED}✗ Failed to update vault${NC}"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -19039,7 +19082,7 @@ _vault_schedule_deletion() {
     fi
     
     log_action "SCHEDULE_VAULT_DELETION" "$cmd" --quiet --context "Vault: $vault_name, Delete at: $delete_time"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SCHEDULE DELETION: $cmd" >> "$log_file"
+    _log_masked "log_file" "SCHEDULE DELETION: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -19052,12 +19095,12 @@ _vault_schedule_deletion() {
     if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
         echo -e "  ${GREEN}✓ Vault scheduled for deletion${NC}"
         echo -e "  ${GRAY}Cancel with 'x' in vault detail before ${delete_time}${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Scheduled deletion of $vault_name at $delete_time" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Scheduled deletion of $vault_name at $delete_time"
         log_action_result "SUCCESS" "Scheduled deletion of $vault_name at $delete_time"
     else
         echo -e "  ${RED}✗ Failed to schedule deletion${NC}"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -19089,7 +19132,7 @@ _vault_cancel_deletion() {
     fi
     
     log_action "CANCEL_VAULT_DELETION" "$cmd" --quiet --context "Vault: $vault_name"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CANCEL DELETION: $cmd" >> "$log_file"
+    _log_masked "log_file" "CANCEL DELETION: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -19100,12 +19143,12 @@ _vault_cancel_deletion() {
     
     if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
         echo -e "  ${GREEN}✓ Vault deletion cancelled — vault restored to ACTIVE${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Cancelled deletion of $vault_name" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Cancelled deletion of $vault_name"
         log_action_result "SUCCESS" "Cancelled deletion of $vault_name"
     else
         echo -e "  ${RED}✗ Failed to cancel deletion${NC}"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -19239,7 +19282,7 @@ _vault_create_key() {
     fi
     
     log_action "CREATE_KEY" "$cmd" --quiet --context "Name: $key_name, Algo: $algorithm, Protect: $protection_mode"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE KEY: $cmd" >> "$log_file"
+    _log_masked "log_file" "CREATE KEY: $cmd"
     echo -e "  ${WHITE}$ ${cmd}${NC}"
     
     local result
@@ -19259,12 +19302,12 @@ _vault_create_key() {
         echo -e "  ${GREEN}✓ Key creation initiated!${NC}"
         echo -e "  ${CYAN}Key OCID:${NC} ${YELLOW}${new_key_id}${NC}"
         echo -e "  ${CYAN}State:${NC}    ${YELLOW}${new_key_state}${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created key $key_name ($new_key_id)" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Created key $key_name ($new_key_id)"
         log_action_result "SUCCESS" "Created key $key_name ($new_key_id)"
     else
         echo -e "  ${RED}✗ Failed to create key${NC}"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
         log_action_result "FAILED" "$result"
     fi
     
@@ -20313,19 +20356,19 @@ compare_oke_clusters() {
     local _ctmp="${TEMP_DIR}/cc_compare_$$"
     mkdir -p "$_ctmp"
     
-    (oci ce cluster get --cluster-id "$cluster_a_id" --output json > "$_ctmp/cluster_a.json" 2>/dev/null) &
+    (oci ce cluster get --cluster-id "$cluster_a_id" --region "$region" --output json > "$_ctmp/cluster_a.json" 2>/dev/null) &
     local _pa=$!
-    (oci ce cluster get --cluster-id "$cluster_b_id" --output json > "$_ctmp/cluster_b.json" 2>/dev/null) &
+    (oci ce cluster get --cluster-id "$cluster_b_id" --region "$region" --output json > "$_ctmp/cluster_b.json" 2>/dev/null) &
     local _pb=$!
-    wait "$_pa" "$_pb" 2>/dev/null
+    _wait_with_timeout 120 "$_pa" "$_pb"
     _step_complete "clusters(2)"
-    
+
     _step_active "node pools"
-    (oci ce node-pool list --compartment-id "$cluster_a_comp" --cluster-id "$cluster_a_id" --all --output json > "$_ctmp/np_a.json" 2>/dev/null) &
+    (oci ce node-pool list --compartment-id "$cluster_a_comp" --cluster-id "$cluster_a_id" --region "$region" --all --output json > "$_ctmp/np_a.json" 2>/dev/null) &
     _pa=$!
-    (oci ce node-pool list --compartment-id "$cluster_b_comp" --cluster-id "$cluster_b_id" --all --output json > "$_ctmp/np_b.json" 2>/dev/null) &
+    (oci ce node-pool list --compartment-id "$cluster_b_comp" --cluster-id "$cluster_b_id" --region "$region" --all --output json > "$_ctmp/np_b.json" 2>/dev/null) &
     _pb=$!
-    wait "$_pa" "$_pb" 2>/dev/null
+    _wait_with_timeout 120 "$_pa" "$_pb"
     local _npa
     _npa=$(jq '(.data // []) | length' "$_ctmp/np_a.json" 2>/dev/null || echo "0")
     local _npb
@@ -20481,7 +20524,7 @@ compare_oke_node_pools() {
     _step_init
     _step_active "node pools ${cl_a_name}"
     local np_a_json
-    np_a_json=$(oci ce node-pool list --compartment-id "$cl_a_compartment" --cluster-id "$cl_a_id" --all --output json 2>/dev/null)
+    np_a_json=$(oci ce node-pool list --compartment-id "$cl_a_compartment" --cluster-id "$cl_a_id" --region "$region" --all --output json 2>/dev/null)
     local _npa; _npa=$(jq '(.data // []) | length' <<< "$np_a_json" 2>/dev/null); _npa="${_npa:-0}"
     _step_complete "node pools ${cl_a_name}(${_npa})"
     _step_finish
@@ -20541,7 +20584,7 @@ compare_oke_node_pools() {
     _step_init
     _step_active "node pools ${cl_b_name}"
     local np_b_json
-    np_b_json=$(oci ce node-pool list --compartment-id "$cl_b_compartment" --cluster-id "$cl_b_id" --all --output json 2>/dev/null)
+    np_b_json=$(oci ce node-pool list --compartment-id "$cl_b_compartment" --cluster-id "$cl_b_id" --region "$region" --all --output json 2>/dev/null)
     local _npb; _npb=$(jq '(.data // []) | length' <<< "$np_b_json" 2>/dev/null); _npb="${_npb:-0}"
     _step_complete "node pools ${cl_b_name}(${_npb})"
     _step_finish
@@ -20595,11 +20638,11 @@ compare_oke_node_pools() {
     local _nptmp="${TEMP_DIR}/cn_compare_$$"
     mkdir -p "$_nptmp"
     
-    (oci ce node-pool get --node-pool-id "$np_a_id" --output json > "$_nptmp/np_a.json" 2>/dev/null) &
+    (oci ce node-pool get --node-pool-id "$np_a_id" --region "$region" --output json > "$_nptmp/np_a.json" 2>/dev/null) &
     local _pa=$!
-    (oci ce node-pool get --node-pool-id "$np_b_id" --output json > "$_nptmp/np_b.json" 2>/dev/null) &
+    (oci ce node-pool get --node-pool-id "$np_b_id" --region "$region" --output json > "$_nptmp/np_b.json" 2>/dev/null) &
     local _pb=$!
-    wait "$_pa" "$_pb" 2>/dev/null
+    _wait_with_timeout 120 "$_pa" "$_pb"
     _step_complete "details(2)"
     _step_finish
     
@@ -20872,7 +20915,7 @@ manage_oke_cluster() {
     fi
     
     # Cluster work requests
-    (oci ce work-request list --compartment-id "$compartment_id" --resource-id "$cluster_ocid" --output json > "$_ptmp/cluster_wr.json" 2>/dev/null) &
+    (oci ce work-request list --compartment-id "$compartment_id" --resource-id "$cluster_ocid" --region "$region" --all --output json > "$_ptmp/cluster_wr.json" 2>/dev/null) &
     _pf_pids+=($!)
     
     # ── Phase 2: Discovery bar — cached items instant, spinner for inflight ──
@@ -21319,12 +21362,14 @@ manage_oke_cluster() {
         _step_init
         _step_active "work request"
         local _wd_pids=()
+        _oci_throttle
         (oci ce work-request get --work-request-id "$_wrid" --region "$region" --output json > "$_k1tmp/wr_detail.json" 2>/dev/null) &
         _wd_pids+=($!)
         (oci ce work-request-log-entry list --compartment-id "$compartment_id" --work-request-id "$_wrid" --region "$region" --all --output json > "$_k1tmp/wr_ce_logs.json" 2>"$_k1tmp/wr_ce_logs.err") &
         _wd_pids+=($!)
         (oci ce work-request-error list --compartment-id "$compartment_id" --work-request-id "$_wrid" --region "$region" --all --output json > "$_k1tmp/wr_ce_errors.json" 2>"$_k1tmp/wr_ce_errors.err") &
         _wd_pids+=($!)
+        _oci_throttle
         (oci work-requests work-request-error list --work-request-id "$_wrid" --region "$region" --all --output json > "$_k1tmp/wr_gen_errors.json" 2>/dev/null) &
         _wd_pids+=($!)
         (oci work-requests work-request-log-entry list --work-request-id "$_wrid" --region "$region" --all --output json > "$_k1tmp/wr_gen_logs.json" 2>/dev/null) &
@@ -21424,19 +21469,23 @@ manage_oke_cluster() {
                     local _rs_key="${_rid##*.}"
                     case "$_rid" in
                         ocid1.nodepool.*)
+                            _oci_throttle
                             (oci ce node-pool get --node-pool-id "$_rid" --region "$region" --query 'data."lifecycle-state"' --raw-output > "$_k1tmp/rs/${_rs_key}" 2>/dev/null) &
                             _rs_pids+=($!) ;;
                         ocid1.cluster.*)
                             if [[ "$_rid" == "${cluster_ocid:-}" ]]; then
                                 echo "${cluster_state:-UNKNOWN}" > "$_k1tmp/rs/${_rs_key}"
                             else
+                                _oci_throttle
                                 (oci ce cluster get --cluster-id "$_rid" --region "$region" --query 'data."lifecycle-state"' --raw-output > "$_k1tmp/rs/${_rs_key}" 2>/dev/null) &
                                 _rs_pids+=($!)
                             fi ;;
                         ocid1.instance.*)
+                            _oci_throttle
                             (oci compute instance get --instance-id "$_rid" --region "$region" --query 'data."lifecycle-state"' --raw-output > "$_k1tmp/rs/${_rs_key}" 2>/dev/null) &
                             _rs_pids+=($!) ;;
                         ocid1.subnet.*)
+                            _oci_throttle
                             (oci network subnet get --subnet-id "$_rid" --region "$region" --query 'data."lifecycle-state"' --raw-output > "$_k1tmp/rs/${_rs_key}" 2>/dev/null) &
                             _rs_pids+=($!) ;;
                     esac
@@ -21526,7 +21575,8 @@ manage_oke_cluster() {
             local _sw_pids=()
             for _sid in "${_rel_inst_ids[@]}"; do
                 local _sk="${_sid##*.}"
-                (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$_sid" --output json > "$_k1tmp/sub_wr/${_sk}_list.json" 2>/dev/null) &
+                _oci_throttle
+                (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$_sid" --all --output json > "$_k1tmp/sub_wr/${_sk}_list.json" 2>/dev/null) &
                 _sw_pids+=($!)
             done
             wait "${_sw_pids[@]}"
@@ -21782,7 +21832,7 @@ manage_oke_cluster() {
             _ui_subheader "Work Requests for ${cluster_name}" 0
             echo ""
             echo -e "  ${GRAY}Fetching work requests...${NC}"
-            oci ce work-request list --compartment-id "$compartment_id" --resource-id "$cluster_ocid" --region "$region" --output json > "$_k1tmp/wr.json" 2>/dev/null
+            oci ce work-request list --compartment-id "$compartment_id" --resource-id "$cluster_ocid" --region "$region" --all --output json > "$_k1tmp/wr.json" 2>/dev/null
             _k1_wr_ct=$(jq '(.data // []) | length' "$_k1tmp/wr.json" 2>/dev/null || echo "0")
             _k1_display_wr "$_k1tmp/wr.json"
             if [[ "$_K1_WR_IDX" -gt 0 ]]; then
@@ -21838,7 +21888,7 @@ manage_oke_cluster() {
                     local _np_pids=()
                     (oci ce node-pool get --node-pool-id "$sel_np_id" --region "$region" --output json > "$_nptmp/np.json.tmp" 2>/dev/null) &
                     _np_pids+=($!)
-                    (oci ce work-request list --compartment-id "$compartment_id" --resource-id "$sel_np_id" --region "$region" --output json > "$_nptmp/wr.json.tmp" 2>/dev/null) &
+                    (oci ce work-request list --compartment-id "$compartment_id" --resource-id "$sel_np_id" --region "$region" --all --output json > "$_nptmp/wr.json.tmp" 2>/dev/null) &
                     _np_pids+=($!)
                     wait "${_np_pids[@]}"
                     
@@ -21926,7 +21976,7 @@ manage_oke_cluster() {
                     
                     # ── Cache/Live modes: fetch from API, write to enr/ ──
                     local _enr_pids=()
-                    rm -rf "$_nptmp/enr" 2>/dev/null
+                    rm -rf "${_nptmp:?}/enr" 2>/dev/null
                     mkdir -p "$_nptmp/enr"
                     
                     # kubectl get nodes + pods (parallel)
@@ -21954,6 +22004,7 @@ manage_oke_cluster() {
                     
                     # Parallel fetch OCI state for uncached nodes
                     for _nid in "${_need_oci_fetch[@]}"; do
+                        _oci_throttle
                         (oci compute instance get --instance-id "$_nid" --region "$region" --query 'data."lifecycle-state"' --raw-output > "$_nptmp/enr/oci_${_nid##*.}" 2>/dev/null) &
                         _enr_pids+=($!)
                     done
@@ -22257,7 +22308,7 @@ manage_oke_cluster() {
                     fi
                     
                     echo ""
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $_display_cmd" >> "$_np_log"
+                    _log_masked "_np_log" "EXECUTE: $_display_cmd"
                     echo -e "  ${WHITE}Executing...${NC}"
                     
                     # Execute with proper stderr capture — no eval, use file:// for JSON
@@ -22275,7 +22326,7 @@ manage_oke_cluster() {
                     [[ -s "$_outfile" ]] && _wr=$(jq -r '.["opc-work-request-id"] // empty' "$_outfile" 2>/dev/null)
                     if [[ -n "$_wr" ]]; then
                         echo -e "  ${GREEN}✓ ${_label} initiated — work request: ${_wr}${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: ${_label} for ${sel_np_name}, WR: ${_wr}" >> "$_np_log"
+                        _log_masked "_np_log" "SUCCESS: ${_label} for ${sel_np_name}, WR: ${_wr}"
                         echo ""
                         echo -e "  ${GRAY}Monitor with:  ${WHITE}wr${NC}"
                         echo -e "  ${GRAY}CLI:  ${WHITE}oci ce work-request get --work-request-id ${_wr}${NC}"
@@ -22292,13 +22343,13 @@ manage_oke_cluster() {
                         _oci_parse_error "$_errfile"
                         if [[ -n "$_OCI_ERR_CODE" ]]; then
                             echo -e "  ${RED}✗ ${_label} failed: ${_OCI_ERR_CODE}${_OCI_ERR_MSG:+: ${_OCI_ERR_MSG:0:200}}${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${_label} for ${sel_np_name} — ${_OCI_ERR_CODE}: ${_OCI_ERR_MSG:0:200}" >> "$_np_log"
+                            _log_masked "_np_log" "FAILED: ${_label} for ${sel_np_name} — ${_OCI_ERR_CODE}: ${_OCI_ERR_MSG:0:200}"
                             _rc=1
                         else
                             # Raw error text
                             local _raw; _raw=$(head -c 300 "$_errfile")
                             echo -e "  ${RED}✗ ${_label} failed: ${_raw}${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${_label} for ${sel_np_name} — ${_raw}" >> "$_np_log"
+                            _log_masked "_np_log" "FAILED: ${_label} for ${sel_np_name} — ${_raw}"
                             _rc=1
                         fi
                     elif [[ -s "$_outfile" ]]; then
@@ -22307,15 +22358,15 @@ manage_oke_cluster() {
                         _oci_parse_error "$_errfile"
                         if [[ -n "$_OCI_ERR_CODE" ]]; then
                             echo -e "  ${RED}✗ ${_label} failed: ${_OCI_ERR_CODE}: ${_OCI_ERR_MSG:0:200}${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${_label} for ${sel_np_name} — ${_OCI_ERR_CODE}" >> "$_np_log"
+                            _log_masked "_np_log" "FAILED: ${_label} for ${sel_np_name} — ${_OCI_ERR_CODE}"
                             _rc=1
                         else
                             echo -e "  ${GREEN}✓ ${_label} submitted${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: ${_label} submitted for ${sel_np_name}" >> "$_np_log"
+                            _log_masked "_np_log" "SUCCESS: ${_label} submitted for ${sel_np_name}"
                         fi
                     else
                         echo -e "  ${GREEN}✓ ${_label} submitted (no output)${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: ${_label} submitted for ${sel_np_name}" >> "$_np_log"
+                        _log_masked "_np_log" "SUCCESS: ${_label} submitted for ${sel_np_name}"
                     fi
                     echo ""
                     echo -e "  ${GRAY}Log: ${_np_log}${NC}"
@@ -22363,6 +22414,7 @@ manage_oke_cluster() {
                     _step_init
                     _step_active "work request"
                     local _wd_pids=()
+                    _oci_throttle
                     (oci ce work-request get --work-request-id "$_wrid" --region "$region" --output json > "$_nptmp/wr_detail.json" 2>/dev/null) &
                     _wd_pids+=($!)
                     (oci ce work-request-log-entry list --compartment-id "$compartment_id" --work-request-id "$_wrid" --region "$region" --all --output json > "$_nptmp/wr_ce_logs.json" 2>"$_nptmp/wr_ce_logs.err") &
@@ -22370,6 +22422,7 @@ manage_oke_cluster() {
                     (oci ce work-request-error list --compartment-id "$compartment_id" --work-request-id "$_wrid" --region "$region" --all --output json > "$_nptmp/wr_ce_errors.json" 2>"$_nptmp/wr_ce_errors.err") &
                     _wd_pids+=($!)
                     # Also try generic work-requests service (CE WRs are often accessible via both)
+                    _oci_throttle
                     (oci work-requests work-request-error list --work-request-id "$_wrid" --region "$region" --all --output json > "$_nptmp/wr_gen_errors.json" 2>/dev/null) &
                     _wd_pids+=($!)
                     (oci work-requests work-request-log-entry list --work-request-id "$_wrid" --region "$region" --all --output json > "$_nptmp/wr_gen_logs.json" 2>/dev/null) &
@@ -22469,19 +22522,23 @@ manage_oke_cluster() {
                                 local _rs_key="${_rid##*.}"
                                 case "$_rid" in
                                     ocid1.nodepool.*)
+                                        _oci_throttle
                                         (oci ce node-pool get --node-pool-id "$_rid" --region "$region" --query 'data."lifecycle-state"' --raw-output > "$_nptmp/rs/${_rs_key}" 2>/dev/null) &
                                         _rs_pids+=($!) ;;
                                     ocid1.cluster.*)
                                         if [[ "$_rid" == "${cluster_ocid:-}" ]]; then
                                             echo "${cluster_state:-UNKNOWN}" > "$_nptmp/rs/${_rs_key}"
                                         else
+                                            _oci_throttle
                                             (oci ce cluster get --cluster-id "$_rid" --region "$region" --query 'data."lifecycle-state"' --raw-output > "$_nptmp/rs/${_rs_key}" 2>/dev/null) &
                                             _rs_pids+=($!)
                                         fi ;;
                                     ocid1.instance.*)
+                                        _oci_throttle
                                         (oci compute instance get --instance-id "$_rid" --region "$region" --query 'data."lifecycle-state"' --raw-output > "$_nptmp/rs/${_rs_key}" 2>/dev/null) &
                                         _rs_pids+=($!) ;;
                                     ocid1.subnet.*)
+                                        _oci_throttle
                                         (oci network subnet get --subnet-id "$_rid" --region "$region" --query 'data."lifecycle-state"' --raw-output > "$_nptmp/rs/${_rs_key}" 2>/dev/null) &
                                         _rs_pids+=($!) ;;
                                 esac
@@ -22582,7 +22639,8 @@ manage_oke_cluster() {
                         local _sw_pids=()
                         for _sid in "${_rel_inst_ids[@]}"; do
                             local _sk="${_sid##*.}"
-                            (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$_sid" --region "$region" --output json > "$_nptmp/sub_wr/${_sk}_list.json" 2>/dev/null) &
+                            _oci_throttle
+                            (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$_sid" --region "$region" --all --output json > "$_nptmp/sub_wr/${_sk}_list.json" 2>/dev/null) &
                             _sw_pids+=($!)
                         done
                         wait "${_sw_pids[@]}"
@@ -22733,7 +22791,7 @@ manage_oke_cluster() {
                         local _r_pids=()
                         (oci ce node-pool get --node-pool-id "$sel_np_id" --region "$region" --output json > "$_nptmp/np.json.tmp" 2>/dev/null) &
                         _r_pids+=($!)
-                        (oci ce work-request list --compartment-id "$compartment_id" --resource-id "$sel_np_id" --region "$region" --output json > "$_nptmp/wr.json.tmp" 2>/dev/null) &
+                        (oci ce work-request list --compartment-id "$compartment_id" --resource-id "$sel_np_id" --region "$region" --all --output json > "$_nptmp/wr.json.tmp" 2>/dev/null) &
                         _r_pids+=($!)
                         wait "${_r_pids[@]}"
                         
@@ -22816,7 +22874,7 @@ manage_oke_cluster() {
                         _ui_subheader "Work Requests for ${sel_np_name}" 0
                         echo ""
                         echo -e "  ${GRAY}Fetching work requests...${NC}"
-                        oci ce work-request list --compartment-id "$compartment_id" --resource-id "$sel_np_id" --region "$region" --output json > "$_nptmp/wr.json.tmp" 2>/dev/null
+                        oci ce work-request list --compartment-id "$compartment_id" --resource-id "$sel_np_id" --region "$region" --all --output json > "$_nptmp/wr.json.tmp" 2>/dev/null
                         [[ -s "$_nptmp/wr.json.tmp" ]] && mv -f "$_nptmp/wr.json.tmp" "$_np_wr_cache"
                         _np_wr_ct=$(jq '(.data // []) | length' "$_np_wr_cache" 2>/dev/null || echo "0")
                         _np_display_wr "$_np_wr_cache"
@@ -24117,7 +24175,7 @@ manage_network_resources() {
 
     if [[ ${#_net_pids[@]} -gt 0 ]]; then
         _step_active "network(${#_net_pids[@]} parallel)"
-        wait "${_net_pids[@]}" 2>/dev/null
+        _wait_with_timeout 120 "${_net_pids[@]}"
     fi
 
     # Report each component individually with its own elapsed time
@@ -24147,7 +24205,7 @@ manage_network_resources() {
     _net_report "LPG($(_clc "$LPG_CACHE"))" "LPG"
     _net_report "RT($(_clc "$RT_CACHE"))" "RT"
     _net_report "SL($(_clc "$SL_CACHE"))" "SL"
-    rm -rf "$_NTD"
+    rm -rf "${_NTD:?}"
     
     # Phase 3: NSG↔Subnet mapping (uses shell variables between phases — must be serial)
     if ! is_cache_fresh "$NSG_SUBNET_MAP_CACHE"; then
@@ -24799,7 +24857,7 @@ display_drg_connectivity_map() {
     for comp in "${all_comps[@]}"; do
         local rpc_json
         _drg_dbg_cmd "RPC list" "oci network remote-peering-connection list --compartment-id ${comp} --drg-id ${drg_id} --region $region"
-        rpc_json=$(oci network remote-peering-connection list --compartment-id "$comp" --drg-id "$drg_id" --region "$region" --output json 2>/dev/null)
+        rpc_json=$(oci network remote-peering-connection list --compartment-id "$comp" --drg-id "$drg_id" --region "$region" --all --output json 2>/dev/null)
         if [[ -n "$rpc_json" ]] && jq -e '.data[0]' <<< "$rpc_json" >/dev/null 2>&1; then
             all_rpcs=$(jq -n --argjson a "$all_rpcs" --argjson b "$(jq '.data' <<< "$rpc_json")" '$a + $b | unique_by(.id)' 2>/dev/null)
         fi
@@ -24837,7 +24895,7 @@ display_drg_connectivity_map() {
     attached_vcn_ids=$(jq -r '.[] | (.["network-details"]["id"] // .["vcn-id"] // empty)' <<< "$all_attachments" 2>/dev/null | sort -u )
     for comp in "${all_comps[@]}"; do
         local lpg_json
-        lpg_json=$(oci network local-peering-gateway list --compartment-id "$comp" --region "$region" --output json 2>/dev/null)
+        lpg_json=$(oci network local-peering-gateway list --compartment-id "$comp" --region "$region" --all --output json 2>/dev/null)
         if [[ -n "$lpg_json" ]] && jq -e '.data[0]' <<< "$lpg_json" >/dev/null 2>&1; then
             if [[ -n "$attached_vcn_ids" ]]; then
                 while IFS= read -r vid; do
@@ -25878,6 +25936,7 @@ display_cross_region_drg_map() {
             _drg_dbg_cmd "DRG get" "oci network drg get --drg-id ${q_drg_id} --region $q_region"
             _drg_dbg_cmd "DRG route-table list" "oci network drg-route-table list --drg-id ${q_drg_id} --region $q_region --all"
             _drg_dbg_cmd "Redundancy get" "oci network drg-redundancy-status get --drg-id ${q_drg_id} --region $q_region"
+            _oci_throttle
             oci network drg get --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/drg.json" 2>/dev/null &
             oci network drg-route-table list --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/drt.json" 2>/dev/null &
             oci network drg-redundancy-status get --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/redund.json" 2>/dev/null &
@@ -25890,8 +25949,10 @@ display_cross_region_drg_map() {
                 _drg_dbg_cmd "RPC list [comp $_ci]" "oci network remote-peering-connection list --compartment-id ${comp} --drg-id ${q_drg_id} --region $q_region"
                 _drg_dbg_cmd "FC list [comp $_ci]" "oci network virtual-circuit list --compartment-id ${comp} --region $q_region"
                 _drg_dbg_cmd "VPN list [comp $_ci]" "oci network ip-sec-connection list --compartment-id ${comp} --drg-id ${q_drg_id} --region $q_region"
+                _oci_throttle
                 oci network drg-attachment list --compartment-id "$comp" --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/att_${_ci}.json" 2>/dev/null &
-                oci network remote-peering-connection list --compartment-id "$comp" --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/rpc_${_ci}.json" 2>/dev/null &
+                oci network remote-peering-connection list --compartment-id "$comp" --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/rpc_${_ci}.json" 2>/dev/null &
+                _oci_throttle
                 oci network virtual-circuit list --compartment-id "$comp" --region "$q_region" --all --output json > "$_par_dir/fc_${_ci}.json" 2>/dev/null &
                 oci network ip-sec-connection list --compartment-id "$comp" --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/vpn_${_ci}.json" 2>/dev/null &
                 ((_ci++))
@@ -25952,7 +26013,7 @@ display_cross_region_drg_map() {
                     oci network drg-route-distribution-statement list --route-distribution-id "$export_dist_id" --all \
                         --region "$q_region" --output json > "$_par_dir/export_dist_stmts.json" 2>/dev/null &
                     _par_pids+=($!)
-                    wait "${_par_pids[@]}" 2>/dev/null
+                    _wait_with_timeout 120 "${_par_pids[@]}"
                     
                     local exp_dist_json
                     exp_dist_json=$(cat "$_par_dir/export_dist.json" 2>/dev/null)
@@ -26057,16 +26118,20 @@ display_cross_region_drg_map() {
                     _drg_dbg_cmd "Supp RPC [comp $_si]" "oci network remote-peering-connection list --compartment-id ${_scomp} --drg-id ${q_drg_id} --region $q_region"
                     _drg_dbg_cmd "Supp FC [comp $_si]" "oci network virtual-circuit list --compartment-id ${_scomp} --region $q_region"
                     _drg_dbg_cmd "Supp VPN [comp $_si]" "oci network ip-sec-connection list --compartment-id ${_scomp} --drg-id ${q_drg_id} --region $q_region"
+                    _oci_throttle
                     oci network drg-attachment list --compartment-id "$_scomp" --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/att_${_si}.json" 2>/dev/null &
                     _par_pids2+=($!)
-                    oci network remote-peering-connection list --compartment-id "$_scomp" --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/rpc_${_si}.json" 2>/dev/null &
+                    _oci_throttle
+                    oci network remote-peering-connection list --compartment-id "$_scomp" --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/rpc_${_si}.json" 2>/dev/null &
                     _par_pids2+=($!)
+                    _oci_throttle
                     oci network virtual-circuit list --compartment-id "$_scomp" --region "$q_region" --all --output json > "$_par_dir/fc_${_si}.json" 2>/dev/null &
                     _par_pids2+=($!)
+                    _oci_throttle
                     oci network ip-sec-connection list --compartment-id "$_scomp" --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/vpn_${_si}.json" 2>/dev/null &
                     _par_pids2+=($!)
                 done
-                wait "${_par_pids2[@]}" 2>/dev/null
+                _wait_with_timeout 120 "${_par_pids2[@]}"
                 _drg_dbg "Supplemental batch complete — $_supp_ct compartment(s) fetched"
             fi
             
@@ -26135,7 +26200,7 @@ display_cross_region_drg_map() {
                             ((_fb_i++))
                             # Limit parallelism
                             if (( _fb_i % 10 == 0 )); then
-                                wait "${_fb_pids[@]}" 2>/dev/null
+                                _wait_with_timeout 120 "${_fb_pids[@]}"
                                 _fb_pids=()
                             fi
                         done
@@ -26196,10 +26261,11 @@ display_cross_region_drg_map() {
                     _rt_names+=("$drt_name")
                     XR_REGION_DRT_NAMES["${q_region}:${q_drg_id}:${drt_id}"]="$drt_name"
                     _drg_dbg_cmd "Route rules" "oci network drg-route-rule list --drg-route-table-id ${drt_id} ($drt_name)"
+                    _oci_throttle
                     oci network drg-route-rule list --drg-route-table-id "$drt_id" --region "$q_region" --output json > "$_par_dir/rules_${drt_id: -8}.json" 2>/dev/null &
                     _par_pids3+=($!)
                 done < <(jq -r '.data[] | "\(.id)|\(.["display-name"])"' <<< "$drt_json" 2>/dev/null)
-                wait "${_par_pids3[@]}" 2>/dev/null
+                _wait_with_timeout 120 "${_par_pids3[@]}"
                 
                 for drt_id in "${_rt_ids[@]}"; do
                     local rules_file="$_par_dir/rules_${drt_id: -8}.json"
@@ -26234,14 +26300,17 @@ display_cross_region_drg_map() {
                         _drg_dbg_cmd "Post-att RPC [comp $_pf]" "oci network remote-peering-connection list --compartment-id ${_pf_comp} --drg-id ${q_drg_id} --region $q_region"
                         _drg_dbg_cmd "Post-att FC [comp $_pf]" "oci network virtual-circuit list --compartment-id ${_pf_comp} --region $q_region"
                         _drg_dbg_cmd "Post-att VPN [comp $_pf]" "oci network ip-sec-connection list --compartment-id ${_pf_comp} --drg-id ${q_drg_id} --region $q_region"
-                        oci network remote-peering-connection list --compartment-id "$_pf_comp" --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/rpc_${_pf}.json" 2>/dev/null &
+                        _oci_throttle
+                        oci network remote-peering-connection list --compartment-id "$_pf_comp" --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/rpc_${_pf}.json" 2>/dev/null &
                         _par_pids4+=($!)
+                        _oci_throttle
                         oci network virtual-circuit list --compartment-id "$_pf_comp" --region "$q_region" --all --output json > "$_par_dir/fc_${_pf}.json" 2>/dev/null &
                         _par_pids4+=($!)
+                        _oci_throttle
                         oci network ip-sec-connection list --compartment-id "$_pf_comp" --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/vpn_${_pf}.json" 2>/dev/null &
                         _par_pids4+=($!)
                     done
-                    wait "${_par_pids4[@]}" 2>/dev/null
+                    _wait_with_timeout 120 "${_par_pids4[@]}"
                     _drg_dbg "Post-attachment FC/VPN/RPC fetch complete"
                 fi
             fi
@@ -26317,6 +26386,7 @@ display_cross_region_drg_map() {
                     [[ -z "$vcn_id" || "$vcn_id" == "null" ]] && continue
                     [[ -n "${XR_VCN_NAMES[$vcn_id]+x}" ]] && { _drg_dbg "Skip VCN ${vcn_id} — already processed from prior BFS"; continue; }
                     _drg_dbg_cmd "VCN get" "oci network vcn get --vcn-id ${vcn_id} --region $q_region"
+                    _oci_throttle
                     oci network vcn get --vcn-id "$vcn_id" --region "$q_region" --output json > "$_par_dir/vcn_${vcn_id: -8}.json" 2>/dev/null &
                     _par_pids5+=($!)
                     # Build initial comp list for subnet/LPG: attachment comp + q_comps
@@ -26326,22 +26396,26 @@ display_cross_region_drg_map() {
                         _pa_seen[$_att_comp]=1
                         _drg_dbg_cmd "Subnet list (att comp)" "oci network subnet list --vcn-id ${vcn_id} --compartment-id ${_att_comp} --region $q_region"
                         _drg_dbg_cmd "LPG list (att comp)" "oci network local-peering-gateway list --vcn-id ${vcn_id} --compartment-id ${_att_comp} --region $q_region"
-                        oci network subnet list --vcn-id "$vcn_id" --compartment-id "$_att_comp" --region "$q_region" --output json > "$_par_dir/sub_${vcn_id: -8}_${_att_comp: -8}.json" 2>/dev/null &
+                        _oci_throttle
+                        oci network subnet list --vcn-id "$vcn_id" --compartment-id "$_att_comp" --region "$q_region" --all --output json > "$_par_dir/sub_${vcn_id: -8}_${_att_comp: -8}.json" 2>/dev/null &
                         _par_pids5+=($!)
-                        oci network local-peering-gateway list --vcn-id "$vcn_id" --compartment-id "$_att_comp" --region "$q_region" --output json > "$_par_dir/lpg_${vcn_id: -8}_${_att_comp: -8}.json" 2>/dev/null &
+                        _oci_throttle
+                        oci network local-peering-gateway list --vcn-id "$vcn_id" --compartment-id "$_att_comp" --region "$q_region" --all --output json > "$_par_dir/lpg_${vcn_id: -8}_${_att_comp: -8}.json" 2>/dev/null &
                         _par_pids5+=($!)
                     fi
                     for comp in "${q_comps[@]}"; do
                         [[ -z "$comp" || -n "${_pa_seen[$comp]+x}" ]] && continue
                         _pa_seen[$comp]=1
                         _drg_dbg_cmd "Subnet list [q_comp]" "oci network subnet list --vcn-id ${vcn_id} --compartment-id ${comp} --region $q_region"
-                        oci network subnet list --vcn-id "$vcn_id" --compartment-id "$comp" --region "$q_region" --output json > "$_par_dir/sub_${vcn_id: -8}_${comp: -8}.json" 2>/dev/null &
+                        _oci_throttle
+                        oci network subnet list --vcn-id "$vcn_id" --compartment-id "$comp" --region "$q_region" --all --output json > "$_par_dir/sub_${vcn_id: -8}_${comp: -8}.json" 2>/dev/null &
                         _par_pids5+=($!)
-                        oci network local-peering-gateway list --vcn-id "$vcn_id" --compartment-id "$comp" --region "$q_region" --output json > "$_par_dir/lpg_${vcn_id: -8}_${comp: -8}.json" 2>/dev/null &
+                        _oci_throttle
+                        oci network local-peering-gateway list --vcn-id "$vcn_id" --compartment-id "$comp" --region "$q_region" --all --output json > "$_par_dir/lpg_${vcn_id: -8}_${comp: -8}.json" 2>/dev/null &
                         _par_pids5+=($!)
                     done
                 done <<< "$vcn_ids_raw"
-                wait "${_par_pids5[@]}" 2>/dev/null
+                _wait_with_timeout 120 "${_par_pids5[@]}"
                 _drg_dbg "Phase A complete — VCN + subnet + LPG fetches done"
                 
                 # Phase B: Process VCN details, build expanded comp list per VCN
@@ -26423,16 +26497,19 @@ display_cross_region_drg_map() {
                         [[ -z "$comp" ]] && continue
                         ((_dbg_c_ct++))
                         _drg_dbg_cmd "NSG/SL/RT [VCN ${vcn_id} comp ${comp}]" "oci network nsg|security-list|route-table list --compartment-id ${comp} --vcn-id ${vcn_id} --region $q_region"
+                        _oci_throttle
                         oci network nsg list --compartment-id "$comp" --vcn-id "$vcn_id" --region "$q_region" --all --output json > "$_par_dir/nsg_${vcn_id: -8}_${comp: -8}.json" 2>/dev/null &
                         _par_pids6+=($!)
+                        _oci_throttle
                         oci network security-list list --compartment-id "$comp" --vcn-id "$vcn_id" --region "$q_region" --all --output json > "$_par_dir/sl_${vcn_id: -8}_${comp: -8}.json" 2>/dev/null &
                         _par_pids6+=($!)
+                        _oci_throttle
                         oci network route-table list --compartment-id "$comp" --vcn-id "$vcn_id" --region "$q_region" --all --output json > "$_par_dir/rt_${vcn_id: -8}_${comp: -8}.json" 2>/dev/null &
                         _par_pids6+=($!)
                     done <<< "${_comp_list//|/$'\n'}"
                     _drg_dbg "VCN ${vcn_id}: launched ${_dbg_c_ct} comp × 3 = $((_dbg_c_ct * 3)) parallel calls"
                 done <<< "$vcn_ids_raw"
-                wait "${_par_pids6[@]}" 2>/dev/null
+                _wait_with_timeout 120 "${_par_pids6[@]}"
                 _drg_dbg "Phase C complete — NSG/SL/RT fetches done"
                 
                 # Phase D: Process subnet/LPG/NSG/SL/RT results
@@ -26556,10 +26633,11 @@ display_cross_region_drg_map() {
                         local _nsg_region
                         _nsg_region=$(_ocid_region "$_nid" "$q_region")
                         _drg_dbg_cmd "NSG rules" "oci network nsg rules list --nsg-id ${_nid} --region $_nsg_region --all"
+                        _oci_throttle
                         oci network nsg rules list --nsg-id "$_nid" --region "$_nsg_region" --all --output json > "$_nsg_par_dir/${_nid: -8}.json" 2>/dev/null &
                         _par_pids7+=($!)
                     done <<< "$_all_nsg_ids_uniq"
-                    wait "${_par_pids7[@]}" 2>/dev/null
+                    _wait_with_timeout 120 "${_par_pids7[@]}"
                     
                     while IFS= read -r _nid; do
                         [[ -z "$_nid" ]] && continue
@@ -26607,7 +26685,7 @@ display_cross_region_drg_map() {
                         --region "$peer_region" --output json > "$_par_dir/peer_${peer_rpc_id: -8}.json" 2>/dev/null &
                     _par_pids8+=($!)
                 done < <(jq -r '.[] | "\(.["peer-id"] // "")|\(.["peer-region-name"] // "")|\(.["peering-status"])"' <<< "$all_rpcs" 2>/dev/null)
-                wait "${_par_pids8[@]}" 2>/dev/null
+                _wait_with_timeout 120 "${_par_pids8[@]}"
                 
                 # Process peer RPC results
                 while IFS='|' read -r peer_rpc_id peer_region peer_status; do
@@ -27157,10 +27235,11 @@ display_cross_region_drg_map() {
                                 local _pf_nsg_region
                                 _pf_nsg_region=$(_ocid_region "$_pf_nid" "$region_key")
                                 _drg_dbg_cmd "Pre-fetch NSG rules" "oci network nsg rules list --nsg-id ${_pf_nid} --region $_pf_nsg_region --all"
+                                _oci_throttle
                                 oci network nsg rules list --nsg-id "$_pf_nid" --region "$_pf_nsg_region" --all --output json > "$_pf_dir/${_pf_nid: -8}.json" 2>/dev/null &
                                 _par_pids9+=($!)
                             done <<< "$_prefetch_ids"
-                            wait "${_par_pids9[@]}" 2>/dev/null
+                            _wait_with_timeout 120 "${_par_pids9[@]}"
                             while IFS= read -r _pf_nid; do
                                 [[ -z "$_pf_nid" ]] && continue
                                 local _pf_rf="$_pf_dir/${_pf_nid: -8}.json"
@@ -27245,10 +27324,11 @@ display_cross_region_drg_map() {
                                     local -a _par_pids10=()
                                     for _oc in "${_otf_comps[@]}"; do
                                         _drg_dbg_cmd "OTF NSG list" "oci network nsg list --compartment-id ${_oc} --vcn-id ${_rr_vcn_id} --region $region_key"
+                                        _oci_throttle
                                         oci network nsg list --compartment-id "$_oc" --vcn-id "$_rr_vcn_id" --region "$region_key" --all --output json > "$_otf_par_dir/nsg_${_oc: -8}.json" 2>/dev/null &
                                         _par_pids10+=($!)
                                     done
-                                    wait "${_par_pids10[@]}" 2>/dev/null
+                                    _wait_with_timeout 120 "${_par_pids10[@]}"
                                     
                                     _rr_nsg_ids=""
                                     # Process in priority order: VCN comp first, then default, then network
@@ -27279,10 +27359,11 @@ display_cross_region_drg_map() {
                                         while IFS= read -r _onid; do
                                             [[ -z "$_onid" || -n "${XR_NSG_RULES[$_onid]+x}" ]] && continue
                                             local _onid_region; _onid_region=$(_ocid_region "$_onid" "$region_key")
+                                            _oci_throttle
                                             oci network nsg rules list --nsg-id "$_onid" --region "$_onid_region" --all --output json > "$_otf_par_dir/rules_${_onid: -8}.json" 2>/dev/null &
                                             _par_pids11+=($!)
                                         done <<< "$_rr_nsg_ids"
-                                        wait "${_par_pids11[@]}" 2>/dev/null
+                                        _wait_with_timeout 120 "${_par_pids11[@]}"
                                         
                                         while IFS= read -r _onid; do
                                             [[ -z "$_onid" || -n "${XR_NSG_RULES[$_onid]+x}" ]] && continue
@@ -27321,10 +27402,11 @@ display_cross_region_drg_map() {
                                     _otf_par_dir2=$(mktemp -d "${TEMP_DIR}/otf_nsg2.XXXXXX")
                                     local -a _par_pids12=()
                                     for _oc in "${_fb_comps[@]}"; do
+                                        _oci_throttle
                                         oci network nsg list --compartment-id "$_oc" --vcn-id "$_rr_vcn_id" --region "$region_key" --all --output json > "$_otf_par_dir2/nsg_${_oc: -8}.json" 2>/dev/null &
                                         _par_pids12+=($!)
                                     done
-                                    wait "${_par_pids12[@]}" 2>/dev/null
+                                    _wait_with_timeout 120 "${_par_pids12[@]}"
                                     
                                     _rr_nsg_ids=""
                                     for _oc in "${_fb_comps[@]}"; do
@@ -27350,10 +27432,11 @@ display_cross_region_drg_map() {
                                         while IFS= read -r _onid; do
                                             [[ -z "$_onid" || -n "${XR_NSG_RULES[$_onid]+x}" ]] && continue
                                             local _onid_region2; _onid_region2=$(_ocid_region "$_onid" "$region_key")
+                                            _oci_throttle
                                             oci network nsg rules list --nsg-id "$_onid" --region "$_onid_region2" --all --output json > "$_otf_par_dir2/rules_${_onid: -8}.json" 2>/dev/null &
                                             _par_pids13+=($!)
                                         done <<< "$_rr_nsg_ids"
-                                        wait "${_par_pids13[@]}" 2>/dev/null
+                                        _wait_with_timeout 120 "${_par_pids13[@]}"
                                         while IFS= read -r _onid; do
                                             [[ -z "$_onid" || -n "${XR_NSG_RULES[$_onid]+x}" ]] && continue
                                             local _fb_rf="$_otf_par_dir2/rules_${_onid: -8}.json"
@@ -28079,7 +28162,7 @@ manage_drg_connectivity() {
             
             if [[ ${#_drg_pids[@]} -gt 0 ]]; then
                 _step_active "network(${_drg_stale} parallel)"
-                wait "${_drg_pids[@]}" 2>/dev/null
+                _wait_with_timeout 120 "${_drg_pids[@]}"
             fi
             _step_complete "network($(_clc "$NETWORK_RESOURCES_CACHE"))"
             _step_complete "SLs($(_clc "$SL_CACHE"))"
@@ -29030,7 +29113,7 @@ drg_view_details() {
     for comp in "${connectivity_comps[@]}"; do
         local rpc_json
         _drg_dbg_cmd "RPC list" "oci network remote-peering-connection list --compartment-id ${comp} --drg-id ${drg_id} --region $region"
-        rpc_json=$(oci network remote-peering-connection list --compartment-id "$comp" --drg-id "$drg_id" --region "$region" --output json 2>/dev/null)
+        rpc_json=$(oci network remote-peering-connection list --compartment-id "$comp" --drg-id "$drg_id" --region "$region" --all --output json 2>/dev/null)
         if [[ -n "$rpc_json" ]] && jq -e '.data[0]' <<< "$rpc_json" >/dev/null 2>&1; then
             all_rpcs=$(jq -n --argjson a "$all_rpcs" --argjson b "$(jq '.data' <<< "$rpc_json")" '$a + $b | unique_by(.id)' 2>/dev/null)
         fi
@@ -29919,7 +30002,7 @@ drg_query_remote_region() {
         local all_rpc_remote="[]"
         for qc in "${drg_search_comps[@]}"; do
             local rpc_json
-            rpc_json=$(oci network remote-peering-connection list --compartment-id "$qc" --drg-id "$drg_id" --region "$target_region" --output json 2>/dev/null)
+            rpc_json=$(oci network remote-peering-connection list --compartment-id "$qc" --drg-id "$drg_id" --region "$target_region" --all --output json 2>/dev/null)
             if [[ -n "$rpc_json" ]] && jq -e '.data[0]' <<< "$rpc_json" > /dev/null 2>&1; then
                 all_rpc_remote=$(jq -n --argjson a "$all_rpc_remote" --argjson b "$(jq '.data' <<< "$rpc_json")" '$a + $b | unique_by(.id)' )
             fi
@@ -31915,7 +31998,7 @@ _cap_save_shapes() {
     mkdir -p "$(dirname "$CAPACITY_SHAPES_CONF")"
     printf "# Capacity report shapes (auto-generated)\n" > "$CAPACITY_SHAPES_CONF"
     for _sh in "${_REPORT_SHAPES[@]}"; do
-        echo "$_sh" >> "$CAPACITY_SHAPES_CONF"
+        _log_masked "CAPACITY_SHAPES_CONF" "$_sh"
     done
 }
 
@@ -32028,12 +32111,12 @@ _col_save() {
                 if [[ "${_sv_widths[$_i]}" != "${_sv_dw[$_i]}" ]]; then
                     echo "${_key}:${_sv_widths[$_i]}" >> "$_conf"
                 else
-                    echo "$_key" >> "$_conf"
+                    _log_masked "_conf" "$_key"
                 fi
                 _saved=true; break
             fi
         done
-        [[ "$_saved" == "false" ]] && echo "$_key" >> "$_conf"
+        [[ "$_saved" == "false" ]] && _log_masked "_conf" "$_key"
     done
 }
 
@@ -33098,7 +33181,7 @@ _k8s_bulk_node_action() {
     fi
 
     echo ""
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== ${action_upper}: ${#entries[@]} node(s) =====" >> "$log_file"
+    _log_masked "log_file" "===== ${action_upper}: ${#entries[@]} node(s) ====="
     local ok=0 fail=0
 
     for entry in "${entries[@]}"; do
@@ -33229,7 +33312,7 @@ _k8s_taint_action() {
     echo ""
     local _mode_upper
     _mode_upper=$(echo "$mode" | tr '[:lower:]' '[:upper:]')
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== ${_mode_upper} TAINT: ${taint_str} on ${#_TAINT_VALID[@]} node(s) =====" >> "$log_file"
+    _log_masked "log_file" "===== ${_mode_upper} TAINT: ${taint_str} on ${#_TAINT_VALID[@]} node(s) ====="
     local ok=0 fail=0
 
     for tv in "${_TAINT_VALID[@]}"; do
@@ -33238,7 +33321,7 @@ _k8s_taint_action() {
 
         echo -e "${WHITE}[${tv_iid}] ${tv_name} → ${tv_node}${NC}"
         echo -e "${GRAY}$ ${cmd}${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${cmd}" >> "$log_file"
+        _log_masked "log_file" "EXECUTE: ${cmd}"
 
         local result
         result=$(_safe_exec "$cmd")
@@ -33248,20 +33331,20 @@ _k8s_taint_action() {
             else
                 echo -e "  ${GREEN}✓ Taint removed (${taint_label})${NC}"
             fi
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: ${mode^} ${taint_label} on ${tv_node} (${tv_name})" >> "$log_file"
+            _log_masked "log_file" "SUCCESS: ${mode^} ${taint_label} on ${tv_node} (${tv_name})"
             ((ok++))
         else
             if [[ "$mode" == "apply" && ("$result" == *"already has"* || "$result" == *"already exists"*) ]]; then
                 echo -e "  ${YELLOW}⚠ Already tainted (${taint_label})${NC}"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] SKIPPED: ${tv_node} already has ${taint_label} taint" >> "$log_file"
+                _log_masked "log_file" "SKIPPED: ${tv_node} already has ${taint_label} taint"
                 ((ok++))
             elif [[ "$mode" == "remove" && "$result" == *"not found"* ]]; then
                 echo -e "  ${YELLOW}⚠ Taint not present (${taint_label})${NC}"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] SKIPPED: ${tv_node} ${taint_label} taint not found" >> "$log_file"
+                _log_masked "log_file" "SKIPPED: ${tv_node} ${taint_label} taint not found"
                 ((ok++))
             else
                 echo -e "  ${RED}✗ Failed: ${result}${NC}"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${mode^} ${taint_label} on ${tv_node}: ${result}" >> "$log_file"
+                _log_masked "log_file" "FAILED: ${mode^} ${taint_label} on ${tv_node}: ${result}"
                 ((fail++))
             fi
         fi
@@ -34221,7 +34304,7 @@ manage_compute_instances() {
             fi
             
             echo ""
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== CDT WORKFLOW: ${#CDT_VALID[@]} instance(s) =====" >> "$cdt_log_file"
+            _log_masked "cdt_log_file" "===== CDT WORKFLOW: ${#CDT_VALID[@]} instance(s) ====="
             
             local cdt_success=0 cdt_fail=0
             
@@ -34229,7 +34312,7 @@ manage_compute_instances() {
                 IFS='|' read -r tv_iid tv_ocid tv_name tv_state tv_node <<< "$tv"
                 
                 _ui_subheader "[${tv_iid}] ${tv_name}" 0
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] --- CDT START: ${tv_name} (${tv_ocid}) ---" >> "$cdt_log_file"
+                _log_masked "cdt_log_file" "--- CDT START: ${tv_name} (${tv_ocid}) ---"
                 
                 local cdt_abort=false
                 
@@ -34238,28 +34321,28 @@ manage_compute_instances() {
                     local cmd="kubectl cordon ${tv_node}"
                     echo -e "  ${CYAN}Step 1: Cordon${NC}"
                     echo -e "  ${GRAY}$ ${cmd}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${cmd}" >> "$cdt_log_file"
+                    _log_masked "cdt_log_file" "EXECUTE: ${cmd}"
                     
                     local result
                     result=$(_safe_exec "$cmd")
                     if [[ $? -eq 0 || "$result" == *"already cordoned"* ]]; then
                         echo -e "  ${GREEN}✓ Cordoned${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Cordoned ${tv_node}" >> "$cdt_log_file"
+                        _log_masked "cdt_log_file" "SUCCESS: Cordoned ${tv_node}"
                     else
                         echo -e "  ${RED}✗ Cordon failed: ${result}${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Cordon ${tv_node}: ${result}" >> "$cdt_log_file"
+                        _log_masked "cdt_log_file" "FAILED: Cordon ${tv_node}: ${result}"
                         echo -n -e "  ${YELLOW}Continue anyway? [y/N]: ${NC}"
                         local cordon_cont
                         read -r cordon_cont
                         if [[ ! "$cordon_cont" =~ ^[Yy] ]]; then
                             echo -e "  ${RED}Skipping this instance${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ABORTED: CDT for ${tv_name} (cordon failed)" >> "$cdt_log_file"
+                            _log_masked "cdt_log_file" "ABORTED: CDT for ${tv_name} (cordon failed)"
                             cdt_abort=true
                         fi
                     fi
                 else
                     echo -e "  ${YELLOW}Step 1: Cordon - Skipped (not in K8s)${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SKIPPED: Cordon - ${tv_name} not in K8s" >> "$cdt_log_file"
+                    _log_masked "cdt_log_file" "SKIPPED: Cordon - ${tv_name} not in K8s"
                 fi
                 
                 # ── Step 2: Drain ──
@@ -34267,7 +34350,7 @@ manage_compute_instances() {
                     local cmd="kubectl drain ${tv_node} --ignore-daemonsets --delete-emptydir-data --force --timeout=300s"
                     echo -e "  ${CYAN}Step 2: Drain${NC}"
                     echo -e "  ${GRAY}$ ${cmd}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${cmd}" >> "$cdt_log_file"
+                    _log_masked "cdt_log_file" "EXECUTE: ${cmd}"
                     
                     echo -e "  ${YELLOW}Draining pods (timeout 300s)...${NC}"
                     local result
@@ -34276,23 +34359,23 @@ manage_compute_instances() {
                     
                     if [[ $drain_exit -eq 0 ]]; then
                         echo -e "  ${GREEN}✓ Drained${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Drained ${tv_node}" >> "$cdt_log_file"
+                        _log_masked "cdt_log_file" "SUCCESS: Drained ${tv_node}"
                     else
                         echo -e "  ${RED}✗ Drain failed (exit code: ${drain_exit})${NC}"
                         echo -e "  ${GRAY}${result}${NC}" | tail -5
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Drain ${tv_node}: exit=${drain_exit}" >> "$cdt_log_file"
+                        _log_masked "cdt_log_file" "FAILED: Drain ${tv_node}: exit=${drain_exit}"
                         echo -n -e "  ${YELLOW}Continue to terminate anyway? [y/N]: ${NC}"
                         local drain_cont
                         read -r drain_cont
                         if [[ ! "$drain_cont" =~ ^[Yy] ]]; then
                             echo -e "  ${RED}Skipping this instance${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ABORTED: CDT for ${tv_name} (drain failed)" >> "$cdt_log_file"
+                            _log_masked "cdt_log_file" "ABORTED: CDT for ${tv_name} (drain failed)"
                             cdt_abort=true
                         fi
                     fi
                 elif [[ "$cdt_abort" != "true" ]]; then
                     echo -e "  ${YELLOW}Step 2: Drain - Skipped (not in K8s)${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SKIPPED: Drain - ${tv_name} not in K8s" >> "$cdt_log_file"
+                    _log_masked "cdt_log_file" "SKIPPED: Drain - ${tv_name} not in K8s"
                 fi
                 
                 # ── Step 3: Tag (ComputeInstanceHostActions.CustomerReportedHostStatus=unhealthy) ──
@@ -34302,7 +34385,7 @@ manage_compute_instances() {
                     local tag_value="unhealthy"
                     
                     echo -e "  ${CYAN}Step 3: Tag${NC} ${MAGENTA}${tag_namespace}.${tag_key}=${tag_value}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Step 3: Tag ${tag_namespace}.${tag_key}=${tag_value}" >> "$cdt_log_file"
+                    _log_masked "cdt_log_file" "Step 3: Tag ${tag_namespace}.${tag_key}=${tag_value}"
                     
                     # Fetch current defined tags (preserve existing)
                     local inst_json
@@ -34327,7 +34410,7 @@ manage_compute_instances() {
                         local cmd="oci compute instance update --instance-id ${tv_ocid} --region ${FOCUS_REGION:-$REGION} --defined-tags '${updated_tags_compact}' --force"
                         echo -e "  ${GRAY}$ oci compute instance update --instance-id ${tv_ocid} \\${NC}"
                         echo -e "  ${GRAY}    --region ${FOCUS_REGION:-$REGION} --defined-tags '<merged-tags>' --force${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${cmd}" >> "$cdt_log_file"
+                        _log_masked "cdt_log_file" "EXECUTE: ${cmd}"
                         
                         local tag_result
                         log_action "UPDATE" "$cmd"
@@ -34344,10 +34427,10 @@ manage_compute_instances() {
                             applied_tag=$(jq -r --arg ns "$tag_namespace" --arg key "$tag_key" '.data["defined-tags"][$ns][$key] // "NOT_SET"' <<< "$tag_result" 2>/dev/null)
                             echo -e "  ${GREEN}✓ Tagged: ${MAGENTA}${tag_namespace}.${tag_key}${NC} = ${RED}${applied_tag}${NC}"
                             log_action_result "SUCCESS" "UPDATE operation"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Tagged ${tv_name} ${tag_namespace}.${tag_key}=${applied_tag}" >> "$cdt_log_file"
+                            _log_masked "cdt_log_file" "SUCCESS: Tagged ${tv_name} ${tag_namespace}.${tag_key}=${applied_tag}"
                         else
                             echo -e "  ${YELLOW}⚠ Tag failed (non-fatal): ${tag_result}${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: Tag failed for ${tv_name}: ${tag_result}" >> "$cdt_log_file"
+                            _log_masked "cdt_log_file" "WARNING: Tag failed for ${tv_name}: ${tag_result}"
                             # Check if namespace doesn't exist
                             if echo "$tag_result" | grep -qi "TagDefinition\|TagNamespace\|does not exist"; then
                                 echo -e "  ${YELLOW}  ↳ Tag namespace '${tag_namespace}' may not exist in this tenancy${NC}"
@@ -34355,7 +34438,7 @@ manage_compute_instances() {
                         fi
                     else
                         echo -e "  ${YELLOW}⚠ Could not fetch instance tags (non-fatal)${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: Could not fetch tags for ${tv_name}" >> "$cdt_log_file"
+                        _log_masked "cdt_log_file" "WARNING: Could not fetch tags for ${tv_name}"
                     fi
                 fi
                 
@@ -34366,7 +34449,7 @@ manage_compute_instances() {
                     local cmd="oci compute instance terminate --instance-id ${tv_ocid} --region ${_cdt_region} --preserve-boot-volume false --force"
                     echo -e "  ${RED}Step 4: Terminate${NC}"
                     echo -e "  ${GRAY}$ ${cmd}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${cmd}" >> "$cdt_log_file"
+                    _log_masked "cdt_log_file" "EXECUTE: ${cmd}"
 
                     local result
                     log_action "TERMINATE" "$cmd"
@@ -34378,23 +34461,23 @@ manage_compute_instances() {
                     if [[ $? -eq 0 ]]; then
                         echo -e "  ${GREEN}✓ Terminate initiated${NC}"
                         log_action_result "SUCCESS" "TERMINATE operation"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Terminated ${tv_name} (${tv_ocid})" >> "$cdt_log_file"
+                        _log_masked "cdt_log_file" "SUCCESS: Terminated ${tv_name} (${tv_ocid})"
                         ((cdt_success++))
                     else
                         echo -e "  ${RED}✗ Terminate failed: ${result}${NC}"
                         log_action_result "FAILED" "TERMINATE operation"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Terminate ${tv_name}: ${result}" >> "$cdt_log_file"
+                        _log_masked "cdt_log_file" "FAILED: Terminate ${tv_name}: ${result}"
                         ((cdt_fail++))
                     fi
                 else
                     ((cdt_fail++))
                 fi
                 
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] --- CDT END: ${tv_name} ---" >> "$cdt_log_file"
+                _log_masked "cdt_log_file" "--- CDT END: ${tv_name} ---"
                 echo ""
             done
             
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== CDT COMPLETE: Success=${cdt_success} Failed=${cdt_fail} Total=${#CDT_VALID[@]} =====" >> "$cdt_log_file"
+            _log_masked "cdt_log_file" "===== CDT COMPLETE: Success=${cdt_success} Failed=${cdt_fail} Total=${#CDT_VALID[@]} ====="
             _ui_subheader "CDT Workflow Complete" 0
             echo -e "  ${GREEN}Success:${NC} ${cdt_success}  ${RED}Failed/Skipped:${NC} ${cdt_fail}  ${WHITE}Total:${NC} ${#CDT_VALID[@]}"
             echo -e "  ${GRAY}Log: ${cdt_log_file}${NC}"
@@ -34551,7 +34634,7 @@ manage_compute_instances() {
             echo ""
             _ui_subheader "Executing Reboots (${reboot_action})" 0
             echo ""
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== BULK REBOOT (${reboot_action}): ${#reboot_valid[@]} instance(s) =====" >> "$reboot_log_file"
+            _log_masked "reboot_log_file" "===== BULK REBOOT (${reboot_action}): ${#reboot_valid[@]} instance(s) ====="
 
             local reboot_success=0 reboot_fail=0
             for rv in "${reboot_valid[@]}"; do
@@ -34564,8 +34647,8 @@ manage_compute_instances() {
 
                 echo -e "${WHITE}[${rv_idx}] ${rv_name}${NC}"
                 echo -e "${GRAY}$ ${reboot_cmd}${NC}"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${reboot_cmd}" >> "$reboot_log_file"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')]   Instance: ${rv_name} (${rv_state}) K8s=${rv_k8s}" >> "$reboot_log_file"
+                _log_masked "reboot_log_file" "EXECUTE: ${reboot_cmd}"
+                _log_masked "reboot_log_file" "  Instance: ${rv_name} (${rv_state}) K8s=${rv_k8s}"
 
                 local reboot_result
                 reboot_result=$(oci compute instance action \
@@ -34576,18 +34659,18 @@ manage_compute_instances() {
                 
                 if [[ $? -eq 0 ]]; then
                     echo -e "  ${GREEN}✓ ${reboot_action} initiated: ${rv_name}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: ${reboot_action} ${rv_name} (${rv_ocid})" >> "$reboot_log_file"
+                    _log_masked "reboot_log_file" "SUCCESS: ${reboot_action} ${rv_name} (${rv_ocid})"
                     ((reboot_success++))
                 else
                     echo -e "  ${RED}✗ Failed to ${reboot_action}: ${rv_name}${NC}"
                     echo -e "  ${GRAY}${reboot_result}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${reboot_action} ${rv_name} (${rv_ocid}) - ${reboot_result}" >> "$reboot_log_file"
+                    _log_masked "reboot_log_file" "FAILED: ${reboot_action} ${rv_name} (${rv_ocid}) - ${reboot_result}"
                     ((reboot_fail++))
                 fi
                 echo ""
             done
             
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== BULK REBOOT COMPLETE: Success=${reboot_success} Failed=${reboot_fail} Total=${#reboot_valid[@]} =====" >> "$reboot_log_file"
+            _log_masked "reboot_log_file" "===== BULK REBOOT COMPLETE: Success=${reboot_success} Failed=${reboot_fail} Total=${#reboot_valid[@]} ====="
             echo ""
             _ui_subheader "Reboot Complete" 0
             echo -e "  ${GREEN}Success:${NC} $reboot_success  ${RED}Failed:${NC} $reboot_fail  ${WHITE}Total:${NC} ${#reboot_valid[@]}"
@@ -34706,7 +34789,7 @@ manage_compute_instances() {
             echo ""
             _ui_subheader "Executing Terminations" 0
             echo ""
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== BULK TERMINATE: ${#term_valid[@]} instance(s) =====" >> "$term_log_file"
+            _log_masked "term_log_file" "===== BULK TERMINATE: ${#term_valid[@]} instance(s) ====="
             
             local term_success=0 term_fail=0
             for tv in "${term_valid[@]}"; do
@@ -34719,22 +34802,22 @@ manage_compute_instances() {
 
                 echo -e "${WHITE}[${tv_idx}] ${tv_name}${NC}"
                 echo -e "${GRAY}$ ${term_cmd}${NC}"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${term_cmd}" >> "$term_log_file"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')]   Instance: ${tv_name} (${tv_state}) K8s=${tv_k8s}" >> "$term_log_file"
+                _log_masked "term_log_file" "EXECUTE: ${term_cmd}"
+                _log_masked "term_log_file" "  Instance: ${tv_name} (${tv_state}) K8s=${tv_k8s}"
                 
                 if _safe_exec "$term_cmd"; then
                     echo -e "  ${GREEN}✓ Terminate initiated: ${tv_name}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Terminated ${tv_name} (${tv_ocid})" >> "$term_log_file"
+                    _log_masked "term_log_file" "SUCCESS: Terminated ${tv_name} (${tv_ocid})"
                     ((term_success++))
                 else
                     echo -e "  ${RED}✗ Failed to terminate: ${tv_name}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Terminate ${tv_name} (${tv_ocid})" >> "$term_log_file"
+                    _log_masked "term_log_file" "FAILED: Terminate ${tv_name} (${tv_ocid})"
                     ((term_fail++))
                 fi
                 echo ""
             done
             
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== BULK TERMINATE COMPLETE: Success=${term_success} Failed=${term_fail} Total=${#term_valid[@]} =====" >> "$term_log_file"
+            _log_masked "term_log_file" "===== BULK TERMINATE COMPLETE: Success=${term_success} Failed=${term_fail} Total=${#term_valid[@]} ====="
             echo ""
             _ui_subheader "Terminate Complete" 0
             echo -e "  ${GREEN}Success:${NC} $term_success  ${RED}Failed:${NC} $term_fail  ${WHITE}Total:${NC} ${#term_valid[@]}"
@@ -35488,7 +35571,7 @@ compute_boot_volume_replacement() {
     echo ""
     _ui_subheader "Executing Boot Volume Replacement" 0
     echo ""
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $cmd" >> "$log_file"
+    _log_masked "log_file" "EXECUTE: $cmd"
     echo -e "${WHITE}$ ${cmd}${NC}"
     echo ""
     
@@ -35499,7 +35582,7 @@ compute_boot_volume_replacement() {
     echo ""
     if [[ $bvr_exit_code -eq 0 ]]; then
         echo -e "${GREEN}Boot Volume Replacement Completed Successfully${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: BVR completed for nodes: $K8S_NODE_NAME" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: BVR completed for nodes: $K8S_NODE_NAME"
         
         #==================================================================
         # Post-execution: Handle old boot volumes
@@ -35534,15 +35617,15 @@ compute_boot_volume_replacement() {
                         read -r del_confirm
                         if [[ "$del_confirm" == "y" || "$del_confirm" == "Y" ]]; then
                             local del_cmd="oci bv boot-volume delete --boot-volume-id $old_bv_id --region $region --force"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $del_cmd" >> "$log_file"
+                            _log_masked "log_file" "EXECUTE: $del_cmd"
                             echo -e "  ${WHITE}$ ${del_cmd}${NC}"
                             _safe_exec "$del_cmd"
                             if [[ $? -eq 0 ]]; then
                                 echo -e "  ${GREEN}✓ Boot volume deleted${NC}"
-                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted old boot volume $old_bv_id" >> "$log_file"
+                                _log_masked "log_file" "SUCCESS: Deleted old boot volume $old_bv_id"
                             else
                                 echo -e "  ${RED}✗ Failed to delete boot volume${NC}"
-                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete boot volume $old_bv_id" >> "$log_file"
+                                _log_masked "log_file" "FAILED: Delete boot volume $old_bv_id"
                             fi
                         else
                             echo -e "  ${GRAY}Skipped${NC}"
@@ -35558,7 +35641,7 @@ compute_boot_volume_replacement() {
         fi
     else
         echo -e "${RED}Boot Volume Replacement Failed (exit code: $bvr_exit_code)${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: BVR exit code $bvr_exit_code for nodes: $K8S_NODE_NAME" >> "$log_file"
+        _log_masked "log_file" "FAILED: BVR exit code $bvr_exit_code for nodes: $K8S_NODE_NAME"
     fi
     
     echo ""
@@ -35709,7 +35792,7 @@ display_instances_properties_view() {
                     _bv_pids+=($!)
                     ((_bv_batch++))
                     if (( _bv_batch % max_parallel == 0 )); then
-                        wait "${_bv_pids[@]}" 2>/dev/null
+                        _wait_with_timeout 120 "${_bv_pids[@]}"
                         _bv_pids=()
                     fi
                 done
@@ -35773,7 +35856,7 @@ display_instances_properties_view() {
                     _img_pids+=($!)
                     ((_img_batch++))
                     if (( _img_batch % max_parallel == 0 )); then
-                        wait "${_img_pids[@]}" 2>/dev/null
+                        _wait_with_timeout 120 "${_img_pids[@]}"
                         _img_pids=()
                     fi
                 done
@@ -35919,7 +36002,7 @@ display_instances_properties_view() {
                 _resolve_pids+=($!)
                 ((_resolve_batch++))
                 if (( _resolve_batch % _resolve_max == 0 )); then
-                    wait "${_resolve_pids[@]}" 2>/dev/null
+                    _wait_with_timeout 120 "${_resolve_pids[@]}"
                     _resolve_pids=()
                 fi
             done <<< "$_all_ocids"
@@ -36173,7 +36256,7 @@ display_instance_details() {
         fi
     fi
     # Instance work requests (generic work-requests API)
-    (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$instance_ocid" --region "$region" --output json > "$_dtmp/inst_wr.json" 2>/dev/null) &
+    (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$instance_ocid" --region "$region" --all --output json > "$_dtmp/inst_wr.json" 2>/dev/null) &
     _pids+=($!)
     # Run commands (instance agent command executions)
     (oci instance-agent command-execution list --compartment-id "$compartment_id" --instance-id "$instance_ocid" --region "$region" --sort-by TIMECREATED --sort-order DESC --limit 20 --output json > "$_dtmp/inst_rc.json" 2>/dev/null) &
@@ -36232,6 +36315,7 @@ display_instance_details() {
         vnic_ids_list=$(jq -r '.data[]?["vnic-id"] // empty' <<< "$cached_vnic_attachments" 2>/dev/null)
         for vnic_id in $vnic_ids_list; do
             [[ -z "$vnic_id" ]] && continue
+            _oci_throttle
             (oci network vnic get --vnic-id "$vnic_id" --region "$region" --output json > "$_dtmp/vnic_${vnic_id##*.}.json" 2>/dev/null) &
             _pids+=($!)
         done
@@ -36243,6 +36327,7 @@ display_instance_details() {
         bv_ids_list=$(jq -r '.data[]?["boot-volume-id"] // empty' <<< "$cached_boot_vol_attachments" 2>/dev/null)
         for bv_id in $bv_ids_list; do
             [[ -z "$bv_id" ]] && continue
+            _oci_throttle
             (oci bv boot-volume get --boot-volume-id "$bv_id" --region "$region" --output json > "$_dtmp/bv_${bv_id##*.}.json" 2>/dev/null) &
             _pids+=($!)
         done
@@ -36254,6 +36339,7 @@ display_instance_details() {
         vol_ids_list=$(jq -r '.data[]?["volume-id"] // empty' <<< "$cached_block_vol_attachments" 2>/dev/null)
         for vol_id in $vol_ids_list; do
             [[ -z "$vol_id" ]] && continue
+            _oci_throttle
             (oci bv volume get --volume-id "$vol_id" --region "$region" --output json > "$_dtmp/blkvol_${vol_id##*.}.json" 2>/dev/null) &
             _pids+=($!)
         done
@@ -36297,6 +36383,7 @@ display_instance_details() {
     # Fetch subnets in parallel (each writes name + rt_id to temp file)
     for subnet_id in $(echo "$all_subnet_ids" | tr ' ' '\n' | sort -u); do
         [[ -z "$subnet_id" ]] && continue
+        _oci_throttle
         (oci network subnet get --subnet-id "$subnet_id" --region "$region" --output json > "$_dtmp/subnet_${subnet_id##*.}.json" 2>/dev/null) &
         _pids+=($!)
     done
@@ -36304,6 +36391,7 @@ display_instance_details() {
     # Fetch NSGs in parallel
     for nsg_id in $(echo "$all_nsg_ids" | tr ' ' '\n' | sort -u); do
         [[ -z "$nsg_id" ]] && continue
+        _oci_throttle
         (oci network nsg get --nsg-id "$nsg_id" --region "$region" --query 'data."display-name"' --raw-output > "$_dtmp/nsg_${nsg_id##*.}.txt" 2>/dev/null) &
         _pids+=($!)
     done
@@ -36341,6 +36429,7 @@ display_instance_details() {
             cached_subnet_names=$(jq --arg id "$subnet_id" --arg name "$subnet_name" --arg rt "-" --arg rtid "${rt_id:-}" \
                 '. + {($id): {"name": $name, "rt": $rt, "rtid": $rtid}}' <<< "$cached_subnet_names" 2>/dev/null)
             if [[ -n "$rt_id" ]]; then
+                _oci_throttle
                 (oci network route-table get --rt-id "$rt_id" --region "$region" --query 'data."display-name"' --raw-output > "$_dtmp/rt_${rt_id##*.}.txt" 2>/dev/null) &
                 _pids+=($!)
                 rt_ids_to_fetch="$rt_ids_to_fetch ${subnet_id}:${rt_id}"
@@ -36372,6 +36461,7 @@ display_instance_details() {
         local backup_assign=""
         [[ -s "$backup_assign_file" ]] && backup_assign=$(cat "$backup_assign_file")
         if [[ -n "$backup_assign" && "$backup_assign" != "null" && "$backup_assign" != "None" ]]; then
+            _oci_throttle
             (oci bv volume-backup-policy get --policy-id "$backup_assign" --region "$region" --query 'data."display-name"' --raw-output > "$_dtmp/bkup_name_${bv_id##*.}.txt" 2>/dev/null) &
             _pids+=($!)
         else
@@ -36390,6 +36480,7 @@ display_instance_details() {
         local backup_assign=""
         [[ -s "$backup_assign_file" ]] && backup_assign=$(cat "$backup_assign_file")
         if [[ -n "$backup_assign" && "$backup_assign" != "null" && "$backup_assign" != "None" ]]; then
+            _oci_throttle
             (oci bv volume-backup-policy get --policy-id "$backup_assign" --region "$region" --query 'data."display-name"' --raw-output > "$_dtmp/bkup_name_${vol_id##*.}.txt" 2>/dev/null) &
             _pids+=($!)
         else
@@ -37181,7 +37272,7 @@ display_instance_details() {
         _rc_pids+=($!)
         (oci instance-agent command-execution get --command-id "$_cmd_id" --instance-id "$instance_ocid" --region "$region" --output json > "$_inst_rc_dir/detail/exec.json" 2>/dev/null) &
         _rc_pids+=($!)
-        wait "${_rc_pids[@]}" 2>/dev/null
+        _wait_with_timeout 120 "${_rc_pids[@]}"
         _step_complete "command detail"
         _step_finish
         
@@ -37454,7 +37545,7 @@ display_instance_details() {
         [[ "${_confirm,,}" != "y" ]] && { echo -e "  ${YELLOW}Cancelled${NC}"; return; }
 
         echo ""
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${_cmd_display}" >> "$_rc_log"
+        _log_masked "_rc_log" "EXECUTE: ${_cmd_display}"
         log_action "RUN_COMMAND" "$_cmd_display" --quiet
 
         local _result
@@ -37472,7 +37563,7 @@ display_instance_details() {
             local _new_id
             _new_id=$(jq -r '.data.id // "unknown"' <<< "$_result" 2>/dev/null)
             echo -e "  ${GREEN}✓ Command submitted: ${YELLOW}${_new_id}${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Command created ${_new_id}" >> "$_rc_log"
+            _log_masked "_rc_log" "SUCCESS: Command created ${_new_id}"
             log_action_result "SUCCESS" "Command created ${_new_id}"
         else
             echo -e "  ${RED}✗ Failed to create command${NC}"
@@ -37480,7 +37571,7 @@ display_instance_details() {
                 local _err; _err=$(cat "$_inst_rc_dir/create_err.txt")
                 echo -e "  ${RED}${_err}${NC}"
             }
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${_cmd}" >> "$_rc_log"
+            _log_masked "_rc_log" "FAILED: ${_cmd}"
             log_action_result "FAILED" "Run command creation failed"
             _ui_pause "return"
             return
@@ -37529,17 +37620,17 @@ display_instance_details() {
         local _confirm; read -r _confirm
         [[ "${_confirm,,}" != "y" ]] && { echo -e "  ${YELLOW}Cancelled${NC}"; return; }
 
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${_cmd}" >> "$_rc_log"
+        _log_masked "_rc_log" "EXECUTE: ${_cmd}"
 
         oci instance-agent command cancel --command-id "$_cmd_id" --region "$region" --force 2>/dev/null
         local _rc=$?
         
         if [[ $_rc -eq 0 ]]; then
             echo -e "  ${GREEN}✓ Cancel request sent (best-effort)${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Cancelled ${_cmd_id}" >> "$_rc_log"
+            _log_masked "_rc_log" "SUCCESS: Cancelled ${_cmd_id}"
         else
             echo -e "  ${RED}✗ Cancel failed${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Cancel ${_cmd_id}" >> "$_rc_log"
+            _log_masked "_rc_log" "FAILED: Cancel ${_cmd_id}"
         fi
     }
     
@@ -38299,13 +38390,13 @@ display_instance_details() {
                         local _vnc_str; _vnc_str=$(jq -r '.data["vnc-connection-string"] // empty' <<< "$_icc_create_json")
                         [[ -n "$_vnc_str" ]] && echo -e "\n  ${WHITE}VNC Connection String:${NC}\n  ${CYAN}${_vnc_str}${NC}"
                         log_action_result "SUCCESS" "Created ICC: ${_new_id}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE: ${_icc_create_cmd} → ${_new_id} (${_new_state})" >> "$_icc_log"
+                        _log_masked "_icc_log" "CREATE: ${_icc_create_cmd} → ${_new_id} (${_new_state})"
                     else
                         _step_complete "create(failed)"; _step_finish
                         echo -e "  ${RED}✗ Failed to create console connection${NC}"
                         [[ -n "$_icc_create_json" ]] && echo -e "  ${GRAY}$(jq -r '.message // .' <<< "$_icc_create_json" 2>/dev/null | head -3)${NC}"
                         log_action_result "FAILED" "ICC create for ${instance_ocid}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED CREATE: ${_icc_create_cmd}" >> "$_icc_log"
+                        _log_masked "_icc_log" "FAILED CREATE: ${_icc_create_cmd}"
                     fi
                     # Clean up temp key file if we created one
                     [[ -n "$_pub_key_tmp" && -f "$_pub_key_tmp" ]] && rm -f "$_pub_key_tmp"
@@ -38424,12 +38515,12 @@ display_instance_details() {
                                 _step_complete "deleted"; _step_finish
                                 echo -e "  ${GREEN}✓ Console connection deleted${NC}"
                                 log_action_result "SUCCESS" "Deleted ICC: ${_d_id}"
-                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] DELETE: ${_del_cmd}" >> "$_icc_log"
+                                _log_masked "_icc_log" "DELETE: ${_del_cmd}"
                             else
                                 _step_complete "delete(failed)"; _step_finish
                                 echo -e "  ${RED}✗ Failed to delete console connection${NC}"
                                 log_action_result "FAILED" "ICC delete: ${_d_id}"
-                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED DELETE: ${_del_cmd}" >> "$_icc_log"
+                                _log_masked "_icc_log" "FAILED DELETE: ${_del_cmd}"
                             fi
                         else
                             echo -e "  ${GRAY}Cancelled${NC}"
@@ -38477,7 +38568,7 @@ display_instance_details() {
             _ui_subheader "Work Requests for ${display_name}" 0
             echo ""
             echo -e "  ${GRAY}Fetching work requests...${NC}"
-            oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$instance_ocid" --region "$region" --output json > "$_inst_wr_dir/wr.json" 2>/dev/null
+            oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$instance_ocid" --region "$region" --all --output json > "$_inst_wr_dir/wr.json" 2>/dev/null
             _inst_wr_ct=$(jq '(.data // []) | length' "$_inst_wr_dir/wr.json" 2>/dev/null || echo "0")
             _inst_display_wr "$_inst_wr_dir/wr.json"
             if [[ "$_INST_WR_IDX" -gt 0 ]]; then
@@ -41559,7 +41650,7 @@ rename_instance_configuration_interactive() {
     local exit_code=$?
 
     # Log the result
-    echo "$result" >> "$log_file"
+    _log_masked "log_file" "$result"
     
     if [[ $exit_code -eq 0 ]]; then
         echo ""
@@ -41740,7 +41831,7 @@ rename_single_instance_configuration() {
         --display-name "$new_name" 2>&1)
     local exit_code=$?
 
-    echo "$result" >> "$log_file"
+    _log_masked "log_file" "$result"
 
     if [[ $exit_code -eq 0 ]]; then
         echo -e "${GREEN}✓ Renamed successfully!${NC}"
@@ -41879,7 +41970,7 @@ interactive_gpu_management() {
                 echo ""
                 _ui_subheader "Executing GPU Memory Cluster Deletions" 0
                 echo ""
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== BULK DELETE GPU MEMORY CLUSTERS: ${#del_valid[@]} cluster(s) =====" >> "$del_log_file"
+                _log_masked "del_log_file" "===== BULK DELETE GPU MEMORY CLUSTERS: ${#del_valid[@]} cluster(s) ====="
                 
                 local del_success=0 del_fail=0
                 for dv in "${del_valid[@]}"; do
@@ -41890,22 +41981,22 @@ interactive_gpu_management() {
                     
                     echo -e "${WHITE}[${dv_idx}] ${dv_name}${NC} ${GRAY}(${dv_state}, size=${dv_size})${NC}"
                     echo -e "${GRAY}$ ${del_cmd}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${del_cmd}" >> "$del_log_file"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')]   Cluster: ${dv_name} (${dv_state}, size=${dv_size})" >> "$del_log_file"
+                    _log_masked "del_log_file" "EXECUTE: ${del_cmd}"
+                    _log_masked "del_log_file" "  Cluster: ${dv_name} (${dv_state}, size=${dv_size})"
                     
                     if _safe_exec "$del_cmd" >/dev/null 2>&1; then
                         echo -e "  ${GREEN}✓ Delete initiated: ${dv_name}${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted ${dv_name} (${dv_ocid})" >> "$del_log_file"
+                        _log_masked "del_log_file" "SUCCESS: Deleted ${dv_name} (${dv_ocid})"
                         ((del_success++))
                     else
                         echo -e "  ${RED}✗ Failed to delete: ${dv_name}${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete ${dv_name} (${dv_ocid})" >> "$del_log_file"
+                        _log_masked "del_log_file" "FAILED: Delete ${dv_name} (${dv_ocid})"
                         ((del_fail++))
                     fi
                     echo ""
                 done
                 
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== BULK DELETE COMPLETE: Success=${del_success} Failed=${del_fail} Total=${#del_valid[@]} =====" >> "$del_log_file"
+                _log_masked "del_log_file" "===== BULK DELETE COMPLETE: Success=${del_success} Failed=${del_fail} Total=${#del_valid[@]} ====="
                 echo ""
                 _ui_subheader "Delete Complete" 0
                 echo -e "  ${GREEN}Success:${NC} $del_success  ${RED}Failed:${NC} $del_fail  ${WHITE}Total:${NC} ${#del_valid[@]}"
@@ -42100,7 +42191,7 @@ view_gpu_resource() {
                 echo -e "  ${MAGENTA}r${NC}) Refresh"
                 echo -e "  ${CYAN}Enter${NC}) Return"
                 echo ""
-                _ui_prompt "Fabric Details" "j, r, Enter, show"
+                _ui_prompt "Fabric - ${fabric_name}" "j, r, Enter, show"
                 local _f_choice
                 read -r _f_choice
                 [[ "${_f_choice:-}" == :* ]] && _nav_try_jump "$_f_choice" && return
@@ -42213,7 +42304,7 @@ view_gpu_resource() {
                 echo -e "  ${MAGENTA}r${NC}) Refresh"
                 echo -e "  ${CYAN}Enter${NC}) Return"
                 echo ""
-                _ui_prompt "Cluster Details" "j, ${_has_instances:+i, }r, Enter, show"
+                _ui_prompt "Compute Cluster - ${cc_name}" "j, ${_has_instances:+i, }r, Enter, show"
                 local _g_choice
                 read -r _g_choice
                 [[ "${_g_choice:-}" == :* ]] && _nav_try_jump "$_g_choice" && return
@@ -42436,7 +42527,7 @@ manage_firmware_bundles() {
         mkdir -p "$(dirname "$FWB_COLUMNS_CONF")"
         printf "# Column config (auto-generated, format: key[:width])\n" > "$FWB_COLUMNS_CONF"
         for _dk in "${_FWB_COL_DEFAULT_ENABLED[@]}"; do
-            echo "$_dk" >> "$FWB_COLUMNS_CONF"
+            _log_masked "FWB_COLUMNS_CONF" "$_dk"
         done
     fi
     _col_load "FWB"
@@ -42993,7 +43084,7 @@ _fw_view_bundle_detail() {
     echo ""
     while true; do
         echo -e "  ${YELLOW}j${NC}) Raw JSON    ${CYAN}Enter${NC}) Return"
-        _ui_prompt "Bundle Detail" "j, Enter"
+        _ui_prompt "Bundle - ${_dname}" "j, Enter"
         local _dsel
         read -r _dsel
         [[ -z "$_dsel" ]] && return
@@ -43214,7 +43305,7 @@ _fw_update_fabric_firmware() {
 
     # Log the action
     log_action "UPDATE_FIRMWARE" "$_cmd" --context "Fabric: ${_sel_fabric_name}, Bundle: ${_sel_bundle}, Recycle: ${_recycle_level}"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] UPDATE FIRMWARE: $_cmd" >> "$log_file"
+    _log_masked "log_file" "UPDATE FIRMWARE: $_cmd"
 
     # Execute
     local _result
@@ -43235,7 +43326,7 @@ _fw_update_fabric_firmware() {
         echo -e "  ${WHITE}Firmware Update State:${NC} $(color_firmware_state "$_new_state")${_new_state}${NC}"
         echo -e "  ${WHITE}Target Firmware:${NC}       ${YELLOW}${_new_target}${NC}"
         log_action_result "SUCCESS" "Firmware update initiated for ${_sel_fabric_name}: target=${_sel_bundle}, recycle=${_recycle_level}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Firmware update initiated for ${_sel_fabric_name}" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Firmware update initiated for ${_sel_fabric_name}"
 
         # Invalidate fabric cache so it refreshes on next view
         rm -f "$FABRIC_CACHE"
@@ -43243,7 +43334,7 @@ _fw_update_fabric_firmware() {
         echo -e "  ${RED}✗ Failed to update fabric firmware${NC}"
         echo -e "  ${GRAY}${_result}${NC}"
         log_action_result "FAILED" "Firmware update failed for ${_sel_fabric_name}: ${_result}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${_result}" >> "$log_file"
+        _log_masked "log_file" "FAILED: ${_result}"
     fi
 
     echo ""
@@ -43369,12 +43460,16 @@ create_gpu_memory_cluster_interactive() {
     local fabric_input
     read -r fabric_input
     
+    if [[ -z "$fabric_input" ]]; then
+        echo -e "${RED}No fabric selected${NC}"
+        return 1
+    fi
     local fabric_ocid="${FABRIC_INDEX_MAP[$fabric_input]:-}"
     if [[ -z "$fabric_ocid" ]]; then
         echo -e "${RED}Invalid fabric selection: $fabric_input${NC}"
         return 1
     fi
-    
+
     # Check fabric has availability
     local fabric_avail="${FABRIC_AVAIL_MAP[$fabric_input]:-0}"
     if [[ "$fabric_avail" -eq 0 ]] 2>/dev/null; then
@@ -43442,6 +43537,10 @@ create_gpu_memory_cluster_interactive() {
     local cc_input
     read -r cc_input
     
+    if [[ -z "$cc_input" ]]; then
+        echo -e "${RED}No compute cluster selected${NC}"
+        return 1
+    fi
     local cc_ocid="${CC_INDEX_MAP[$cc_input]:-}"
     if [[ -z "$cc_ocid" ]]; then
         echo -e "${RED}Invalid compute cluster selection: $cc_input${NC}"
@@ -43497,6 +43596,10 @@ create_gpu_memory_cluster_interactive() {
     local ic_input
     read -r ic_input
     
+    if [[ -z "$ic_input" ]]; then
+        echo -e "${RED}No instance configuration selected${NC}"
+        return 1
+    fi
     local ic_ocid="${IC_INDEX_MAP[$ic_input]:-}"
     if [[ -z "$ic_ocid" ]]; then
         echo -e "${RED}Invalid instance configuration selection: $ic_input${NC}"
@@ -44039,7 +44142,7 @@ update_gpu_memory_cluster_interactive() {
         echo -e "  ${YELLOW}${gid}${NC} ${MAGENTA}${c_name}${NC} ..."
 
         # Log the command
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${cmd_display}" >> "$log_file"
+        _log_masked "log_file" "EXECUTE: ${cmd_display}"
 
         local result
         log_action "UPDATE" "$cmd_display"
@@ -44059,13 +44162,13 @@ update_gpu_memory_cluster_interactive() {
             
             echo -e "    ${GREEN}✓${NC} State: ${state_color}${updated_state}${NC}  Size: ${CYAN}${updated_size}${NC}"
             log_action_result "SUCCESS" "UPDATE operation"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: ${gid} ${c_name} -> state=${updated_state} size=${updated_size}" >> "$log_file"
+            _log_masked "log_file" "SUCCESS: ${gid} ${c_name} -> state=${updated_state} size=${updated_size}"
             ((success_count++))
         else
             echo -e "    ${RED}✗ Failed${NC}"
             log_action_result "FAILED" "UPDATE operation"
             echo "$result" | head -3 | sed 's/^/      /'
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${gid} ${c_name} -> ${result}" >> "$log_file"
+            _log_masked "log_file" "FAILED: ${gid} ${c_name} -> ${result}"
             ((fail_count++))
         fi
     done
@@ -44588,7 +44691,7 @@ view_compute_cluster_details() {
         echo -e "  ${MAGENTA}r${NC}) Refresh"
         echo -e "  ${CYAN}Enter${NC}) Return"
         echo ""
-        _ui_prompt "Cluster Details" "j, r, Enter, show"
+        _ui_prompt "Compute Cluster - ${cc_name}" "j, r, Enter, show"
         local view_choice
         read -r view_choice
         [[ "${view_choice:-}" == :* ]] && _nav_try_jump "$view_choice" && return
@@ -44805,16 +44908,16 @@ delete_compute_cluster_interactive() {
         result=$(_safe_exec "$cmd")
         local exit_code=$?
 
-        echo "$result" >> "$log_file"
+        _log_masked "log_file" "$result"
 
         if [[ $exit_code -eq 0 ]]; then
             echo -e "${GREEN}✓ Deleted: ${WHITE}${sel_name}${NC} ${GRAY}(#${sel_num})${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted CC '${sel_name}' (${sel_ocid})" >> "$log_file"
+            _log_masked "log_file" "SUCCESS: Deleted CC '${sel_name}' (${sel_ocid})"
             ((success_count++))
         else
             echo -e "${RED}✗ Failed: ${WHITE}${sel_name}${NC} ${GRAY}(#${sel_num})${NC}"
             echo -e "  ${RED}${result}${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete CC '${sel_name}' (${sel_ocid}): ${result}" >> "$log_file"
+            _log_masked "log_file" "FAILED: Delete CC '${sel_name}' (${sel_ocid}): ${result}"
             ((fail_count++))
         fi
         echo ""
@@ -44977,7 +45080,7 @@ create_compute_cluster_interactive() {
     local exit_code=$?
     
     # Log the result
-    echo "$result" >> "$log_file"
+    _log_masked "log_file" "$result"
     
     if [[ $exit_code -eq 0 ]]; then
         local new_ocid
@@ -45353,7 +45456,8 @@ view_instance_pool_details() {
             local _sw_pids=()
             for _sid in "${_rel_inst_ids[@]}"; do
                 local _sk="${_sid##*.}"
-                (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$_sid" --output json > "$_wrtmpd/sub_wr/${_sk}_list.json" 2>/dev/null) &
+                _oci_throttle
+                (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$_sid" --all --output json > "$_wrtmpd/sub_wr/${_sk}_list.json" 2>/dev/null) &
                 _sw_pids+=($!)
             done
             wait "${_sw_pids[@]}"
@@ -45505,7 +45609,7 @@ view_instance_pool_details() {
     if [[ -z "$pool_json" ]] || ! jq -e '.data' <<< "$pool_json" > /dev/null 2>&1; then
         echo -e "${RED}Failed to fetch instance pool details${NC}"
         _ui_policy_hint "read instance-pools in compartment"
-        rm -rf "$_pool_tmpd"
+        rm -rf "${_pool_tmpd:?}"
         _ui_pause "return"
         return 1
     fi
@@ -45779,7 +45883,7 @@ view_instance_pool_details() {
                 fi
                 echo ""
                 _ui_pause "return"
-                rm -rf "$_pool_tmpd"
+                rm -rf "${_pool_tmpd:?}"
                 return
             else
                 echo -e "  ${YELLOW}Terminate cancelled${NC}"
@@ -45823,7 +45927,7 @@ view_instance_pool_details() {
             fi
             ;;
         b|B|"")
-            rm -rf "$_pool_tmpd"
+            rm -rf "${_pool_tmpd:?}"
             return
             ;;
         *)
@@ -45832,7 +45936,7 @@ view_instance_pool_details() {
             ;;
     esac
   done  # while true — pool detail loop
-  rm -rf "$_pool_tmpd"
+  rm -rf "${_pool_tmpd:?}"
 }
 
 #--------------------------------------------------------------------------------
@@ -46039,7 +46143,7 @@ create_instance_pool_interactive() {
         --output json 2>&1)
     local exit_code=$?
 
-    echo "$result" >> "$log_file"
+    _log_masked "log_file" "$result"
 
     if [[ $exit_code -eq 0 ]]; then
         local new_ocid new_state
@@ -46964,7 +47068,7 @@ rm_show_job_detail_direct() {
     echo ""
     echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
     echo ""
-    _ui_prompt "Job Detail" "j, Enter"
+    _ui_prompt "Job - ${job_id}" "j, Enter"
     local _jd_choice
     read -r _jd_choice
     [[ "${_jd_choice:-}" == :* ]] && _nav_try_jump "$_jd_choice" && return
@@ -47102,7 +47206,7 @@ rm_show_stack_detail() {
 
     echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
     echo ""
-    _ui_prompt "Stack Detail" "j, Enter"
+    _ui_prompt "Stack - ${name}" "j, Enter"
     local _sd_choice
     read -r _sd_choice
     [[ "${_sd_choice:-}" == :* ]] && _nav_try_jump "$_sd_choice" && return
@@ -47482,7 +47586,7 @@ _limits_build_search_index() {
     local _total=${#svc_list[@]}
     if [[ $_total -eq 0 ]]; then
         echo -e "  ${YELLOW}No services found — cannot build index${NC}"
-        rm -rf "$_idx_tmp"
+        rm -rf "${_idx_tmp:?}"
         return 1
     fi
     
@@ -47520,7 +47624,7 @@ _limits_build_search_index() {
     _step_complete "indexed ${_line_ct} limits across ${_total} services"
     _step_finish
     
-    rm -rf "$_idx_tmp"
+    rm -rf "${_idx_tmp:?}"
     return 0
 }
 
@@ -48407,7 +48511,7 @@ for x in d.get('data', []):
         # Filter mode: show results and return (no interactive menu)
         if [[ -n "$_filter" ]]; then
             echo ""
-            rm -rf "$_gtmp"
+            rm -rf "${_gtmp:?}"
             _ui_pause "return"
             return
         fi
@@ -48427,7 +48531,7 @@ for x in d.get('data', []):
         read -r _sel
         [[ "${_sel:-}" == :* ]] && _nav_try_jump "$_sel" && return
         
-        rm -rf "$_gtmp"
+        rm -rf "${_gtmp:?}"
         
         case "$_sel" in
             s|S)
@@ -48459,7 +48563,7 @@ for x in d.get('data', []):
                     read -r _fterm
                 fi
                 if [[ -n "$_fterm" ]]; then
-                    rm -rf "$_gtmp"
+                    rm -rf "${_gtmp:?}"
                     _limits_gpu_report "$tenancy_id" "$compartment_id" "$region" "$_fterm"
                 fi
                 continue
@@ -48621,7 +48725,7 @@ _capacity_report() {
             echo ""
         fi
         
-        rm -rf "$_ctmp"
+        rm -rf "${_ctmp:?}"
         
         # ── Display ──
         # Group shapes by category
@@ -48976,7 +49080,7 @@ _limits_quick_view() {
                 # Skip caching errors/empty — next entry will re-fetch
             done
         done
-        rm -rf "$_ltmp"
+        rm -rf "${_ltmp:?}"
         
         _step_complete "$(( _fetch_total / 2 )) services"
         _step_finish
@@ -49578,7 +49682,7 @@ _limits_service_detail() {
         local ad_limits_json region_limits_json
         ad_limits_json=$(cat "$_ltmp/ad.json" 2>/dev/null)
         region_limits_json=$(cat "$_ltmp/region.json" 2>/dev/null)
-        rm -rf "$_ltmp"
+        rm -rf "${_ltmp:?}"
         _step_complete "${service_name} limits(AD + Region)"
         _step_finish
         
@@ -49895,7 +49999,7 @@ _limits_availability_detail() {
         fi
         # Merge per-AD JSON files for j viewer
         _avail_detail_json=$(jq -s '{ data: [ .[] | .data // . ] }' "$_atmp"/*.json 2>/dev/null || echo "")
-        rm -rf "$_atmp"
+        rm -rf "${_atmp:?}"
     else
         # Region-scoped limit
         local avail_json _avail_err=""
@@ -50218,7 +50322,7 @@ _limits_quota_detail() {
     echo ""
     echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
     echo ""
-    _ui_prompt "Quota Detail" "j, Enter"
+    _ui_prompt "Quota - ${q_name}" "j, Enter"
     local _qd_choice
     read -r _qd_choice
     [[ "${_qd_choice:-}" == :* ]] && _nav_try_jump "$_qd_choice" && return
@@ -50277,11 +50381,14 @@ fetch_fss_data() {
     while IFS= read -r ad; do
         [[ -z "$ad" ]] && continue
         ((_ad_idx++))
+        _oci_throttle
         (oci fs file-system list --compartment-id "$compartment_id" --availability-domain "$ad" --region "$region" --all --output json > "$_ftmp/fs_${_ad_idx}.json" 2>/dev/null) &
         _pids+=($!)
+        _oci_throttle
         (oci fs mount-target list --compartment-id "$compartment_id" --availability-domain "$ad" --region "$region" --all --output json > "$_ftmp/mt_${_ad_idx}.json" 2>/dev/null) &
         _pids+=($!)
     done <<< "$ads"
+    _oci_throttle
     (oci fs export list --compartment-id "$compartment_id" --region "$region" --all --output json > "$_ftmp/exports.json" 2>/dev/null) &
     _pids+=($!)
     [[ ${#_pids[@]} -gt 0 ]] && wait "${_pids[@]}"
@@ -50349,7 +50456,7 @@ fetch_fss_data() {
     _step_complete "mount target IPs(${_ip_ct})"
     
     # Cleanup temp
-    rm -rf "$_ftmp"
+    rm -rf "${_ftmp:?}"
     _step_finish
 }
 
@@ -50718,7 +50825,7 @@ fss_guided_setup() {
     echo ""
     echo -e "${GRAY}Note: Ensure NSGs/Security Lists allow NFS traffic (TCP 111, 2048-2050; UDP 111, 2048).${NC}"
     echo ""
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] GUIDED SETUP COMPLETE: FS=$new_fs_id MT=$new_mt_id Export=$new_export_id" >> "$log_file"
+    _log_masked "log_file" "GUIDED SETUP COMPLETE: FS=$new_fs_id MT=$new_mt_id Export=$new_export_id"
     
     _ui_pause
 }
@@ -50908,7 +51015,7 @@ fss_recursive_delete_file_system() {
     fi
     
     echo ""
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RECURSIVE DELETE STARTED for file system: $fs_name ($fs_id)" >> "$log_file"
+    _log_masked "log_file" "RECURSIVE DELETE STARTED for file system: $fs_name ($fs_id)"
     
     # ==================== Phase 1: Delete Exports ====================
     if [[ $export_idx -gt 0 ]]; then
@@ -50920,7 +51027,7 @@ fss_recursive_delete_file_system() {
 
             echo -e "  ${CYAN}Deleting export: ${WHITE}$exp_path${NC}"
             echo -e "  ${GRAY}$delete_cmd${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTING: $delete_cmd" >> "$log_file"
+            _log_masked "log_file" "EXECUTING: $delete_cmd"
             
             local result
             log_action "DELETE" "$delete_cmd"
@@ -50929,11 +51036,11 @@ fss_recursive_delete_file_system() {
             if [[ $? -eq 0 ]]; then
                 echo -e "  ${GREEN}✓ Export deleted${NC}"
                 log_action_result "SUCCESS" "DELETE operation"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted export $exp_id" >> "$log_file"
+                _log_masked "log_file" "SUCCESS: Deleted export $exp_id"
             else
                 echo -e "  ${RED}✗ Failed to delete export: $result${NC}"
                 log_action_result "FAILED" "DELETE operation"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete export $exp_id - $result" >> "$log_file"
+                _log_masked "log_file" "FAILED: Delete export $exp_id - $result"
             fi
         done
         echo ""
@@ -50954,7 +51061,7 @@ fss_recursive_delete_file_system() {
             
             echo -e "  ${CYAN}Deleting mount target: ${WHITE}$mt_name${NC}"
             echo -e "  ${GRAY}$delete_cmd${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTING: $delete_cmd" >> "$log_file"
+            _log_masked "log_file" "EXECUTING: $delete_cmd"
             
             local result
             log_action "DELETE" "$delete_cmd"
@@ -50963,11 +51070,11 @@ fss_recursive_delete_file_system() {
             if [[ $? -eq 0 ]]; then
                 echo -e "  ${GREEN}✓ Mount target deleted${NC}"
                 log_action_result "SUCCESS" "DELETE operation"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted mount target $mt_id" >> "$log_file"
+                _log_masked "log_file" "SUCCESS: Deleted mount target $mt_id"
             else
                 echo -e "  ${RED}✗ Failed to delete mount target: $result${NC}"
                 log_action_result "FAILED" "DELETE operation"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete mount target $mt_id - $result" >> "$log_file"
+                _log_masked "log_file" "FAILED: Delete mount target $mt_id - $result"
             fi
         done
         echo ""
@@ -50981,7 +51088,7 @@ fss_recursive_delete_file_system() {
     local delete_cmd="oci fs file-system delete --file-system-id \"$fs_id\" --region \"$region\" --force"
     echo -e "  ${CYAN}Deleting file system: ${WHITE}$fs_name${NC}"
     echo -e "  ${GRAY}$delete_cmd${NC}"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTING: $delete_cmd" >> "$log_file"
+    _log_masked "log_file" "EXECUTING: $delete_cmd"
     
     local result
     log_action "DELETE" "$delete_cmd"
@@ -50990,15 +51097,15 @@ fss_recursive_delete_file_system() {
     if [[ $? -eq 0 ]]; then
         echo -e "  ${GREEN}✓ File system deletion initiated${NC}"
         log_action_result "SUCCESS" "DELETE operation"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted file system $fs_id" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Deleted file system $fs_id"
     else
         echo -e "  ${RED}✗ Failed to delete file system: $result${NC}"
         log_action_result "FAILED" "DELETE operation"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete file system $fs_id - $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: Delete file system $fs_id - $result"
     fi
     
     echo ""
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RECURSIVE DELETE COMPLETED for: $fs_name ($fs_id)" >> "$log_file"
+    _log_masked "log_file" "RECURSIVE DELETE COMPLETED for: $fs_name ($fs_id)"
     echo -e "${GREEN}Recursive delete complete.${NC}"
     echo ""
     _ui_pause
@@ -51640,7 +51747,7 @@ _fss_delete_resource() {
         return
     fi
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTING: $delete_cmd" >> "$log_file"
+    _log_masked "log_file" "EXECUTING: $delete_cmd"
     echo -e "${GRAY}$delete_cmd${NC}"
 
     local result
@@ -51650,11 +51757,11 @@ _fss_delete_resource() {
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}${display_label} deletion initiated${NC}"
         log_action_result "SUCCESS" "DELETE operation"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted $resource_ocid" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Deleted $resource_ocid"
     else
         echo -e "${RED}Failed to delete ${display_label,,}: $result${NC}"
         log_action_result "FAILED" "DELETE operation"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete $resource_ocid - $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: Delete $resource_ocid - $result"
     fi
 }
 
@@ -51824,13 +51931,13 @@ _fss_do_create_file_system() {
         echo -e "${GREEN}✓ File system created: ${WHITE}$_name${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${GRAY}$FSS_CREATED_ID${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created FS $FSS_CREATED_ID" >> "$_log"
+        _log_masked "_log" "SUCCESS: Created FS $FSS_CREATED_ID"
         return 0
     else
         echo -e "${RED}✗ Failed to create file system${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$_result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $_result" >> "$_log"
+        _log_masked "_log" "FAILED: $_result"
         return 1
     fi
 }
@@ -51861,13 +51968,13 @@ _fss_do_create_mount_target() {
         echo -e "${GREEN}✓ Mount target created: ${WHITE}$_name${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${GRAY}$FSS_CREATED_ID${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created MT $FSS_CREATED_ID" >> "$_log"
+        _log_masked "_log" "SUCCESS: Created MT $FSS_CREATED_ID"
         return 0
     else
         echo -e "${RED}✗ Failed to create mount target${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$_result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $_result" >> "$_log"
+        _log_masked "_log" "FAILED: $_result"
         return 1
     fi
 }
@@ -51895,13 +52002,13 @@ _fss_do_create_export() {
         echo -e "${GREEN}✓ Export created: ${WHITE}$_path${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${GRAY}$FSS_CREATED_ID${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created Export $FSS_CREATED_ID" >> "$_log"
+        _log_masked "_log" "SUCCESS: Created Export $FSS_CREATED_ID"
         return 0
     else
         echo -e "${RED}✗ Failed to create export${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$_result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $_result" >> "$_log"
+        _log_masked "_log" "FAILED: $_result"
         return 1
     fi
 }
@@ -52323,7 +52430,7 @@ fss_create_snapshot() {
     fi
     
     local log_file="${LOGS_DIR}/fss_actions_$(date +%Y%m%d).log"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE SNAPSHOT: $create_cmd" >> "$log_file"
+    _log_masked "log_file" "CREATE SNAPSHOT: $create_cmd"
     
     echo ""
     echo -e "${CYAN}Creating snapshot...${NC}"
@@ -52342,12 +52449,12 @@ fss_create_snapshot() {
         echo -e "${GREEN}✓ Snapshot created successfully${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${YELLOW}$new_snap_id${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created $new_snap_id" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Created $new_snap_id"
     else
         echo -e "${RED}Failed to create snapshot${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -53205,7 +53312,7 @@ lfs_create_file_system() {
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE LUSTRE: $create_cmd" >> "$log_file"
+    _log_masked "log_file" "CREATE LUSTRE: $create_cmd"
     
     echo ""
     echo -e "${CYAN}Creating Lustre file system (this may take several minutes)...${NC}"
@@ -53276,13 +53383,13 @@ lfs_create_file_system() {
         new_lfs_id=$(jq -r '.data.id' <<< "$result")
         echo -e "${GREEN}✓ Lustre file system creation initiated${NC}"
         echo -e "  ${CYAN}OCID:${NC} ${YELLOW}$new_lfs_id${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created $new_lfs_id" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Created $new_lfs_id"
         rm -f "$LUSTRE_FS_CACHE"
     else
         echo -e "${RED}Failed to create Lustre file system${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -53522,7 +53629,7 @@ lfs_update_file_system() {
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] UPDATE LUSTRE: $update_cmd" >> "$log_file"
+    _log_masked "log_file" "UPDATE LUSTRE: $update_cmd"
     
     local result
     if [[ "$update_type" == "1" ]]; then
@@ -53574,7 +53681,7 @@ lfs_update_file_system() {
             echo -e "  ${CYAN}New capacity:${NC} ${new_capacity_tb} TB / ${new_capacity_gb} GB (was ${current_capacity_tb} TB / ${current_capacity_gb} GB)"
         fi
         [[ "$has_nsg" == "true" ]] && echo -e "  ${CYAN}NSG:${NC} Preserved"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Updated $LFS_SELECTED" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Updated $LFS_SELECTED"
         rm -f "$LUSTRE_FS_CACHE"
     elif [[ -n "$work_request_id" ]]; then
         echo -e "${GREEN}✓ Lustre file system update initiated${NC}"
@@ -53584,13 +53691,13 @@ lfs_update_file_system() {
         [[ "$has_nsg" == "true" ]] && echo -e "  ${CYAN}NSG:${NC} Preserved"
         echo -e "  ${CYAN}Work Request:${NC} ${YELLOW}$work_request_id${NC}"
         echo -e "  ${GRAY}File system will show UPDATING state until complete${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Update initiated, work-request: $work_request_id" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Update initiated, work-request: $work_request_id"
         rm -f "$LUSTRE_FS_CACHE"
     else
         echo -e "${RED}Failed to update Lustre file system${NC}"
         log_action_result "FAILED" "UPDATE operation"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -53843,7 +53950,7 @@ lfs_delete_file_system() {
     fi
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] DELETE LUSTRE: $delete_cmd" >> "$log_file"
+    _log_masked "log_file" "DELETE LUSTRE: $delete_cmd"
     
     echo ""
     echo -e "${CYAN}Deleting Lustre file system...${NC}"
@@ -53858,13 +53965,13 @@ lfs_delete_file_system() {
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}✓ Lustre file system deletion initiated${NC}"
         log_action_result "SUCCESS" "DELETE operation"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted $LFS_SELECTED" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Deleted $LFS_SELECTED"
         rm -f "$LUSTRE_FS_CACHE"
     else
         echo -e "${RED}Failed to delete Lustre file system${NC}"
         log_action_result "FAILED" "DELETE operation"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -54007,7 +54114,7 @@ lfs_create_object_storage_link() {
     fi
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE OS LINK: $create_cmd" >> "$log_file"
+    _log_masked "log_file" "CREATE OS LINK: $create_cmd"
     
     echo ""
     echo -e "${CYAN}Creating Object Storage link...${NC}"
@@ -54028,12 +54135,12 @@ lfs_create_object_storage_link() {
         echo -e "${GREEN}✓ Object Storage link created${NC}"
         log_action_result "SUCCESS" "CREATE operation"
         echo -e "  ${CYAN}OCID:${NC} ${YELLOW}$new_link_id${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created $new_link_id" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Created $new_link_id"
     else
         echo -e "${RED}Failed to create Object Storage link${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -54076,7 +54183,7 @@ _lfs_object_storage_transfer() {
     fi
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] START ${direction^^}: $cmd" >> "$log_file"
+    _log_masked "log_file" "START ${direction^^}: $cmd"
     
     echo ""
     echo -e "${CYAN}Starting ${direction}...${NC}"
@@ -54088,11 +54195,11 @@ _lfs_object_storage_transfer() {
     
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}✓ ${action_label} started${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: ${action_label} started for $LFS_SELECTED_LINK" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: ${action_label} started for $LFS_SELECTED_LINK"
     else
         echo -e "${RED}Failed to start ${direction}${NC}"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -54129,7 +54236,7 @@ lfs_delete_object_storage_link() {
     fi
     
     local log_file="${LOGS_DIR}/lustre_actions_$(date +%Y%m%d).log"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] DELETE OS LINK: $delete_cmd" >> "$log_file"
+    _log_masked "log_file" "DELETE OS LINK: $delete_cmd"
     
     echo ""
     echo -e "${CYAN}Deleting Object Storage link...${NC}"
@@ -54144,12 +54251,12 @@ lfs_delete_object_storage_link() {
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}✓ Object Storage link deleted${NC}"
         log_action_result "SUCCESS" "DELETE operation"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted $LFS_SELECTED_LINK" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Deleted $LFS_SELECTED_LINK"
     else
         echo -e "${RED}Failed to delete Object Storage link${NC}"
         log_action_result "FAILED" "DELETE operation"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -55747,7 +55854,7 @@ _ch_view_host() {
         host_ocid="$prefill"
     else
         echo ""
-        _ui_prompt "Host Details" "OCID, Enter=back"
+        _ui_prompt "Host - ${host_id}" "OCID, Enter=back"
         local input
         read -r input
         [[ -z "$input" ]] && return
@@ -55777,7 +55884,7 @@ _ch_view_instance() {
         instance_ocid="$prefill"
     else
         echo ""
-        _ui_prompt "Instance Details" "OCID, Enter=back"
+        _ui_prompt "Instance - ${display_name}" "OCID, Enter=back"
         local input
         read -r input
         [[ -z "$input" ]] && return
@@ -56426,7 +56533,7 @@ manage_compute_hosts() {
         mkdir -p "$(dirname "$CHOST_COLUMNS_CONF")"
         printf "# Column config (auto-generated, format: key[:width])\n" > "$CHOST_COLUMNS_CONF"
         for _dk in "${_CHOST_COL_DEFAULT_ENABLED[@]}"; do
-            echo "$_dk" >> "$CHOST_COLUMNS_CONF"
+            _log_masked "CHOST_COLUMNS_CONF" "$_dk"
         done
     else
         # Migrate: add new columns if missing from existing config
@@ -56499,7 +56606,7 @@ manage_compute_hosts() {
             local _empty_choice
             read -r _empty_choice
             case "$_empty_choice" in
-                r|R) rm -f "$COMPUTE_HOST_CACHE" "$COMPUTE_HOST_IMPACT_CACHE"; [[ -n "$COMPUTE_HOST_DETAIL_DIR" && "$COMPUTE_HOST_DETAIL_DIR" == */compute_host_detail ]] && rm -rf "$COMPUTE_HOST_DETAIL_DIR" 2>/dev/null; echo -e "${YELLOW}Cache cleared, refreshing...${NC}"; sleep 1; continue ;;
+                r|R) rm -f "$COMPUTE_HOST_CACHE" "$COMPUTE_HOST_IMPACT_CACHE"; [[ -n "$COMPUTE_HOST_DETAIL_DIR" && "$COMPUTE_HOST_DETAIL_DIR" == */compute_host_detail ]] && rm -rf "${COMPUTE_HOST_DETAIL_DIR:?}" 2>/dev/null; echo -e "${YELLOW}Cache cleared, refreshing...${NC}"; sleep 1; continue ;;
                 *) return ;;
             esac
         fi
@@ -56988,7 +57095,7 @@ manage_compute_hosts() {
                 ;;
             r|R)
                 rm -f "$COMPUTE_HOST_CACHE" "$COMPUTE_HOST_JSON_CACHE" "$COMPUTE_HOST_IMPACT_CACHE"
-                [[ -n "$COMPUTE_HOST_DETAIL_DIR" && "$COMPUTE_HOST_DETAIL_DIR" == */compute_host_detail ]] && rm -rf "$COMPUTE_HOST_DETAIL_DIR" 2>/dev/null
+                [[ -n "$COMPUTE_HOST_DETAIL_DIR" && "$COMPUTE_HOST_DETAIL_DIR" == */compute_host_detail ]] && rm -rf "${COMPUTE_HOST_DETAIL_DIR:?}" 2>/dev/null
                 echo -e "${YELLOW}Cache cleared, refreshing...${NC}"
                 sleep 1
                 ;;
@@ -57560,7 +57667,7 @@ declare -gA XID_DESCRIPTIONS=(
 #       $2..N = "index|node_name" pairs (e.g., "1|oke-node-abc" "2|oke-node-def")
 # Sets: _PCOLLECT_DIR  = temp directory containing <index>.raw files
 #       _PCOLLECT_CT   = number of nodes collected
-# Caller must rm -rf "$_PCOLLECT_DIR" when done.
+# Caller must rm -rf "${_PCOLLECT_DIR:?}" when done.
 #--------------------------------------------------------------------------------
 _k8s_parallel_collect() {
     local _fn="$1"; shift
@@ -58151,7 +58258,7 @@ k8s_node_storage() {
                             fi
                         fi
                     done
-                    rm -rf "$_PCOLLECT_DIR" 2>/dev/null
+                    rm -rf "${_PCOLLECT_DIR:?}" 2>/dev/null
                 else
                     # Single node: direct collection
                     local _tidx="${_SEL_INDICES[0]}"
@@ -58553,7 +58660,7 @@ k8s_node_network() {
                             fi
                         fi
                     done
-                    rm -rf "$_PCOLLECT_DIR" 2>/dev/null
+                    rm -rf "${_PCOLLECT_DIR:?}" 2>/dev/null
                 else
                     # Single node: direct collection
                     local _tidx="${_SEL_INDICES[0]}"
@@ -59046,7 +59153,7 @@ k8s_node_gpu_health() {
                     (( _total_ret >= GPU_RETIRED_PAGES_WARN )) && [[ "$_verdict" == "HEALTHY" ]] && _verdict="WARN"
                     echo "${_nname}|${_gpus}|${_max_temp}|${_total_ecc}|${_total_ret}|${_verdict}" >> "$_gh_summary_file"
                 done
-                rm -rf "$_PCOLLECT_DIR" 2>/dev/null
+                rm -rf "${_PCOLLECT_DIR:?}" 2>/dev/null
 
                 # Print fleet summary
                 if [[ -s "$_gh_summary_file" ]]; then
@@ -59434,7 +59541,7 @@ k8s_node_dmesg_xid() {
                     [[ $_xid_ct -gt 0 ]] && _sv="HAS_XIDS"
                     echo "${_nname}|${_xid_ct}|${_sv}" >> "$_xd_summary"
                 done
-                rm -rf "$_PCOLLECT_DIR" 2>/dev/null
+                rm -rf "${_PCOLLECT_DIR:?}" 2>/dev/null
 
                 if [[ -s "$_xd_summary" ]]; then
                     echo ""
@@ -59708,7 +59815,7 @@ k8s_node_rdma_diagnostics() {
                     [[ -f "$_PCOLLECT_DIR/${_ri}.raw" ]] && _raw=$(cat "$_PCOLLECT_DIR/${_ri}.raw")
                     _rdma_display_node "$_nname" "$_raw"
                 done
-                rm -rf "$_PCOLLECT_DIR" 2>/dev/null
+                rm -rf "${_PCOLLECT_DIR:?}" 2>/dev/null
                 echo ""; _ui_pause
                 ;;
             i[0-9]*)
@@ -60095,7 +60202,7 @@ bulk_runcommand() {
 
         local _cmd_display="oci instance-agent command create --compartment-id ${_compartment} --timeout-in-seconds ${_timeout} --display-name \"${_label}-${_iname}\" --content file://${_brc_tmp}/content.json --target file://${_brc_tmp}/target_${_tid}.json --output json"
         echo -e "  ${YELLOW}→ ${_iname}${NC}..."
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${_cmd_display}" >> "$_log_file"
+        _log_masked "_log_file" "EXECUTE: ${_cmd_display}"
         log_action "BULK_RUN_COMMAND" "$_cmd_display" --quiet
 
         local _result _rc_err_file="$_brc_tmp/err_${_tid}.txt"
@@ -60110,7 +60217,7 @@ bulk_runcommand() {
         if [[ $_rc_exit -eq 0 && -n "$_result" ]] && jq -e '.data.id' <<< "$_result" >/dev/null 2>&1; then
             local _cid; _cid=$(jq -r '.data.id // "?"' <<< "$_result" 2>/dev/null)
             echo -e "    ${GREEN}✓ Submitted${NC} ${GRAY}(${_cid})${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: ${_cid} → ${_iname}" >> "$_log_file"
+            _log_masked "_log_file" "SUCCESS: ${_cid} → ${_iname}"
             log_action_result "SUCCESS" "Bulk run command ${_cid} → ${_iname}"
             ((_success++))
         else
@@ -60125,7 +60232,7 @@ bulk_runcommand() {
             [[ -z "$_err_msg" && $_rc_exit -ne 0 ]] && _err_msg="exit code $_rc_exit"
             echo -e "    ${RED}✗ Failed${NC}"
             [[ -n "$_err_msg" ]] && echo -e "      ${GRAY}${_err_msg:0:200}${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${_iname} — ${_err_msg:-unknown}" >> "$_log_file"
+            _log_masked "_log_file" "FAILED: ${_iname} — ${_err_msg:-unknown}"
             log_action_result "FAILED" "Bulk run command failed for ${_iname}: ${_err_msg:-unknown}"
             ((_fail++))
         fi
@@ -60187,7 +60294,7 @@ multi_cluster_fleet_summary() {
         ) &
         _fleet_pids+=($!)
     done
-    wait "${_fleet_pids[@]}" 2>/dev/null
+    _wait_with_timeout 120 "${_fleet_pids[@]}"
     _step_complete "fleet data"
     _step_finish
 
@@ -60957,7 +61064,7 @@ audit_show_event_detail() {
         echo -e "  ${YELLOW}j${NC}     - View JSON ${GRAY}| j <key> Search JSON${NC}"
         echo -e "  ${YELLOW}b${NC}     - Back to event list"
         echo ""
-        _ui_prompt "Event Detail" "j, j <key>, b"
+        _ui_prompt "Event - ${_evt_name}" "j, j <key>, b"
         local _dchoice; read -r _dchoice
 
         case "$_dchoice" in
@@ -62370,6 +62477,7 @@ k8s_storage_provisioning_check() {
                 while IFS= read -r _ad; do
                     [[ -z "$_ad" ]] && continue
                     ((_mi++))
+                    _oci_throttle
                     (oci fs mount-target list --compartment-id "$compartment_id" --availability-domain "$_ad" --region "$region" --all --output json > "$_stv_ptmp/mt/mt_${_mi}.json" 2>/dev/null) &
                     _mt_pids+=($!)
                 done <<< "$_ads"
@@ -63506,7 +63614,7 @@ DSEOF
                     if [[ $_ds_rc -eq 0 ]]; then
                         echo -e "  ${GREEN}✓ ConfigMap + DaemonSet created successfully${NC}"
                         log_action_result "SUCCESS" "SSH keys: ${#_new_keys[@]} keys, DaemonSet deployed"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE: ${#_new_keys[@]} keys deployed via ConfigMap + DaemonSet" >> "$_ask_log"
+                        _log_masked "_ask_log" "CREATE: ${#_new_keys[@]} keys deployed via ConfigMap + DaemonSet"
                     else
                         echo -e "  ${RED}✗ DaemonSet deployment failed${NC}"
                         log_action_result "FAILED" "SSH keys DaemonSet deploy"
@@ -63583,7 +63691,7 @@ DSEOF
                         echo -e "  ${GREEN}✓ Key '${_key_fname}' added to ConfigMap${NC}"
                         echo -e "  ${GRAY}Run ${WHITE}Restart${GRAY} (option 4) to distribute to nodes${NC}"
                         log_action_result "SUCCESS" "Added key ${_key_fname}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ADD_KEY: ${_key_fname}" >> "$_ask_log"
+                        _log_masked "_ask_log" "ADD_KEY: ${_key_fname}"
                     else
                         _step_complete "patch failed"; _step_finish
                         echo -e "  ${RED}✗ Failed to add key${NC}"
@@ -63635,7 +63743,7 @@ DSEOF
                     echo -e "  ${GREEN}✓ Key '${_rm_name}' removed${NC}"
                     echo -e "  ${GRAY}Run ${WHITE}Restart${GRAY} (option 4) to apply to nodes${NC}"
                     log_action_result "SUCCESS" "Removed key ${_rm_name}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] REMOVE_KEY: ${_rm_name}" >> "$_ask_log"
+                    _log_masked "_ask_log" "REMOVE_KEY: ${_rm_name}"
                 else
                     _step_complete "failed"; _step_finish
                     echo -e "  ${RED}✗ Failed to remove key${NC}"
@@ -63656,7 +63764,7 @@ DSEOF
                 echo ""
                 echo -e "  ${GRAY}Run ${WHITE}Restart${GRAY} (option 4) to distribute updated keys${NC}"
                 log_action_result "SUCCESS" "Edited SSH keys ConfigMap"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] EDIT: ${_edit_cmd}" >> "$_ask_log"
+                _log_masked "_ask_log" "EDIT: ${_edit_cmd}"
                 _ui_pause
                 ;;
 
@@ -63681,7 +63789,7 @@ DSEOF
                     _step_complete "rollout complete"; _step_finish
 
                     log_action_result "SUCCESS" "Restarted SSH keys DaemonSet"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESTART: ${_restart_cmd}" >> "$_ask_log"
+                    _log_masked "_ask_log" "RESTART: ${_restart_cmd}"
                 else
                     _step_complete "failed"; _step_finish
                     echo -e "  ${RED}✗ Failed to restart DaemonSet${NC}"
@@ -63734,7 +63842,7 @@ DSEOF
                         _step_complete "deployed"; _step_finish
                         echo -e "  ${GREEN}✓ DaemonSet deployed${NC}"
                         log_action_result "SUCCESS" "Deployed SSH keys DaemonSet"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] DEPLOY_DS" >> "$_ask_log"
+                        _log_masked "_ask_log" "DEPLOY_DS"
                     else
                         _step_complete "failed"; _step_finish
                         echo -e "  ${RED}✗ Failed to deploy DaemonSet${NC}"
@@ -63776,7 +63884,7 @@ DSEOF
                 _step_finish
                 echo -e "  ${GREEN}✓ SSH key resources removed${NC}"
                 log_action_result "SUCCESS" "Deleted SSH keys ConfigMap + DaemonSet"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] DELETE: ConfigMap + DaemonSet removed" >> "$_ask_log"
+                _log_masked "_ask_log" "DELETE: ConfigMap + DaemonSet removed"
                 echo ""
                 _ui_pause
                 ;;
@@ -64086,19 +64194,19 @@ k8s_kubelet_deregister() {
         local drain_cmd="kubectl drain ${sel_k8s_node} --ignore-daemonsets --delete-emptydir-data"
         _ui_subheader "Step 1: Draining Node" 0
         echo -e "${GRAY}\$ ${drain_cmd}${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${drain_cmd}" >> "$log_file"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Instance: ${sel_name} (${sel_ocid})" >> "$log_file"
+        _log_masked "log_file" "EXECUTE: ${drain_cmd}"
+        _log_masked "log_file" "Instance: ${sel_name} (${sel_ocid})"
         
         log_action "DRAIN" "$drain_cmd"
         if kubectl drain "$sel_k8s_node" --ignore-daemonsets --delete-emptydir-data 2>&1 | tee -a "$log_file"; then
             echo ""
             echo -e "${GREEN}✓ Node drained successfully${NC}"
             log_action_result "SUCCESS" "DRAIN operation"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESULT: Drain succeeded" >> "$log_file"
+            _log_masked "log_file" "RESULT: Drain succeeded"
         else
             echo ""
             echo -e "${YELLOW}⚠ Drain encountered errors (see above). Continuing with delete...${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESULT: Drain had errors" >> "$log_file"
+            _log_masked "log_file" "RESULT: Drain had errors"
         fi
         
         # Step 2: Delete node
@@ -64106,19 +64214,19 @@ k8s_kubelet_deregister() {
         local delete_cmd="kubectl delete node ${sel_k8s_node}"
         _ui_subheader "Step 2: Deleting Node from Cluster" 0
         echo -e "${GRAY}\$ ${delete_cmd}${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: ${delete_cmd}" >> "$log_file"
+        _log_masked "log_file" "EXECUTE: ${delete_cmd}"
         
         log_action "DELETE" "$delete_cmd"
         if kubectl delete node "$sel_k8s_node" 2>&1 | tee -a "$log_file"; then
             echo ""
             echo -e "${GREEN}✓ Node deleted from cluster${NC}"
             log_action_result "SUCCESS" "DELETE operation"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESULT: Delete succeeded" >> "$log_file"
+            _log_masked "log_file" "RESULT: Delete succeeded"
         else
             echo ""
             echo -e "${RED}✗ Failed to delete node${NC}"
             log_action_result "FAILED" "DELETE operation"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESULT: Delete failed" >> "$log_file"
+            _log_masked "log_file" "RESULT: Delete failed"
         fi
         
         # Step 3: Show manual recovery steps
@@ -65577,7 +65685,7 @@ create_instance_configuration_interactive() {
                 [[ -s "$_nptmp_names/wn" ]] && _wn_name=$(<"$_nptmp_names/wn")
                 [[ -s "$_nptmp_names/ps" ]] && _ps_name=$(<"$_nptmp_names/ps")
                 [[ -s "$_nptmp_names/pn" ]] && _pn_name=$(<"$_nptmp_names/pn")
-                rm -rf "$_nptmp_names" 2>/dev/null
+                rm -rf "${_nptmp_names:?}" 2>/dev/null
 
                 # Display with resolved names
                 if [[ -n "$worker_subnet" ]]; then
@@ -66579,7 +66687,7 @@ create_instance_configuration_interactive() {
                 
                 local _add_cmd="oci compute image-shape-compatibility-entry add --image-id \"$image_id\" --shape-name \"$shape_name\" --region \"$region\""
                 echo -e "  ${WHITE}$ ${_add_cmd}${NC}"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $_add_cmd" >> "$_compat_log"
+                _log_masked "_compat_log" "EXECUTE: $_add_cmd"
                 
                 local _add_result
                 _add_result=$(oci compute image-shape-compatibility-entry add \
@@ -66590,7 +66698,7 @@ create_instance_configuration_interactive() {
 
                 if echo "$_add_result" | jq -e '.data' >/dev/null 2>&1 || [[ -z "$_add_result" ]]; then
                     echo -e "  ${GREEN}✓ Added shape compatibility: ${WHITE}${shape_name}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Added shape compat ${shape_name} to image ${image_id}" >> "$_compat_log"
+                    _log_masked "_compat_log" "SUCCESS: Added shape compat ${shape_name} to image ${image_id}"
                     
                     # Re-verify shape availability after adding
                     echo ""
@@ -66617,7 +66725,7 @@ create_instance_configuration_interactive() {
                 else
                     echo -e "  ${RED}✗ Failed to add shape compatibility${NC}"
                     echo -e "  ${GRAY}${_add_result}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: ${shape_name} — ${_add_result}" >> "$_compat_log"
+                    _log_masked "_compat_log" "FAILED: ${shape_name} — ${_add_result}"
                 fi
                 ;;
             *) ;; # Continue anyway
@@ -67735,7 +67843,7 @@ EOF
     local exit_code=$?
     
     # Log the result
-    echo "$result" >> "$log_file"
+    _log_masked "log_file" "$result"
     
     if [[ $exit_code -eq 0 ]]; then
         local new_ocid
@@ -67805,7 +67913,7 @@ delete_instance_configuration_interactive() {
     fi
     
     _step_active "IC + GPU clusters(${_del_stale} parallel)"
-    wait "${_del_pids[@]}" 2>/dev/null
+    _wait_with_timeout 120 "${_del_pids[@]}"
     _step_complete "instance configs($(_clc "$INSTANCE_CONFIG_CACHE"))"
     _step_complete "GPU clusters($(_clc "$CLUSTER_CACHE"))"
     _QUIET_SPINNERS=0
@@ -67997,7 +68105,7 @@ delete_instance_configuration_interactive() {
         _ui_subheader "Command to Execute" 0
         echo -e "${GRAY}$ ${cmd}${NC}"
         
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $cmd" >> "$log_file"
+        _log_masked "log_file" "EXECUTE: $cmd"
         
         local result
         result=$(_safe_exec "$cmd")
@@ -68005,12 +68113,12 @@ delete_instance_configuration_interactive() {
         
         if [[ $exit_code -eq 0 ]]; then
             echo -e "${GREEN}✓ Deleted: ${WHITE}${ic_name}${NC} ${GRAY}(${iid})${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted IC '${ic_name}' (${ic_ocid})" >> "$log_file"
+            _log_masked "log_file" "SUCCESS: Deleted IC '${ic_name}' (${ic_ocid})"
             ((success_count++))
         else
             echo -e "${RED}✗ Failed: ${WHITE}${ic_name}${NC} ${GRAY}(${iid})${NC}"
             echo -e "  ${RED}${result}${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete IC '${ic_name}' (${ic_ocid}): ${result}" >> "$log_file"
+            _log_masked "log_file" "FAILED: Delete IC '${ic_name}' (${ic_ocid}): ${result}"
             ((fail_count++))
         fi
         echo ""
@@ -68063,9 +68171,11 @@ manage_object_storage() {
         local _os_tmp="${TEMP_DIR}/os_$$"
         mkdir -p "$_os_tmp"
         
-        (oci os bucket list --compartment-id "$compartment_id" --namespace-name "$namespace" --region "$region" --output json > "$_os_tmp/buckets.json" 2>/dev/null) &
+        _oci_throttle
+        (oci os bucket list --compartment-id "$compartment_id" --namespace-name "$namespace" --region "$region" --all --output json > "$_os_tmp/buckets.json" 2>/dev/null) &
         local _pid_b=$!
-        (oci os private-endpoint list --compartment-id "$compartment_id" --region "$region" --output json > "$_os_tmp/pe.json" 2>/dev/null) &
+        _oci_throttle
+        (oci os private-endpoint list --compartment-id "$compartment_id" --region "$region" --all --output json > "$_os_tmp/pe.json" 2>/dev/null) &
         local _pid_p=$!
         wait "$_pid_b" "$_pid_p" 2>/dev/null
         
@@ -68084,7 +68194,7 @@ manage_object_storage() {
         fi
         [[ -z "$pe_count" || "$pe_count" == "null" ]] && pe_count=0
         
-        rm -rf "$_os_tmp" 2>/dev/null
+        rm -rf "${_os_tmp:?}" 2>/dev/null
         _step_complete "buckets(${bucket_count}), endpoints(${pe_count})"
         _step_finish
         
@@ -68661,7 +68771,7 @@ os_view_private_endpoint_details() {
     
     if [[ ${#_pe_pids[@]} -gt 0 ]]; then
         _step_active "subnet+NSGs(${_pe_stale} parallel)"
-        wait "${_pe_pids[@]}" 2>/dev/null
+        _wait_with_timeout 120 "${_pe_pids[@]}"
     fi
     
     # Read subnet results
@@ -69650,7 +69760,7 @@ EOF
             # Log the action
             local log_file="${LOGS_DIR}/object_storage_actions_$(date +%Y%m%d).log"
             mkdir -p "$(dirname "$log_file")" 2>/dev/null
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] UPDATE SECURITY LIST: oci network security-list update --security-list-id \"$sl_id\" --ingress-security-rules '...' " >> "$log_file"
+            _log_masked "$log_file" "UPDATE SECURITY LIST: oci network security-list update --security-list-id $sl_id --ingress-security-rules ..."
             
             # Execute the command
             local result
@@ -69665,12 +69775,12 @@ EOF
             if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
                 echo -e "${GREEN}✓ Rules added successfully to $m_sl_name${NC}"
                 log_action_result "SUCCESS" "UPDATE operation"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Added rules to $m_sl_name" >> "$log_file"
+                _log_masked "log_file" "SUCCESS: Added rules to $m_sl_name"
             else
                 echo -e "${RED}✗ Failed to add rules to $m_sl_name${NC}"
                 log_action_result "FAILED" "UPDATE operation"
                 echo "$result"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+                _log_masked "log_file" "FAILED: $result"
             fi
         else
             echo -e "${YELLOW}Skipped adding rules to $m_sl_name${NC}"
@@ -69932,7 +70042,7 @@ pe_add_nsg_rules_wizard() {
             # Log the action
             local log_file="${LOGS_DIR}/object_storage_actions_$(date +%Y%m%d).log"
             mkdir -p "$(dirname "$log_file")" 2>/dev/null
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ADD NSG RULES: oci network nsg rules add --nsg-id \"$nsg_id\" --security-rules '...' " >> "$log_file"
+            _log_masked "$log_file" "ADD NSG RULES: oci network nsg rules add --nsg-id $nsg_id --security-rules ..."
             
             # Execute the command
             local result
@@ -69944,7 +70054,7 @@ pe_add_nsg_rules_wizard() {
             
             if jq -e '.data' <<< "$result" > /dev/null 2>&1; then
                 echo -e "${GREEN}✓ Rules added successfully to $m_nsg_name${NC}"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Added rules to $m_nsg_name" >> "$log_file"
+                _log_masked "log_file" "SUCCESS: Added rules to $m_nsg_name"
                 
                 # Invalidate cache for this NSG
                 local cache_file="${NSG_CACHE_DIR}/${nsg_id}.json"
@@ -69952,7 +70062,7 @@ pe_add_nsg_rules_wizard() {
             else
                 echo -e "${RED}✗ Failed to add rules to $m_nsg_name${NC}"
                 echo "$result"
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+                _log_masked "log_file" "FAILED: $result"
             fi
         else
             echo -e "${YELLOW}Skipped adding rules to $m_nsg_name${NC}"
@@ -70051,7 +70161,7 @@ os_create_private_endpoint() {
             subnets_json=""
         fi
     fi
-    [[ -z "$_pe_sub_cached" ]] && subnets_json=$(oci network subnet list --compartment-id "$compartment_id" --region "$region" --output json 2>/dev/null)
+    [[ -z "$_pe_sub_cached" ]] && subnets_json=$(oci network subnet list --compartment-id "$compartment_id" --region "$region" --all --output json 2>/dev/null)
     _step_complete "subnets${_pe_sub_cached}"
     _step_finish
     
@@ -70131,7 +70241,7 @@ os_create_private_endpoint() {
                 [[ -z "$_pe_nsg_cached" ]] && nsgs_json=""
             fi
         fi
-        [[ -z "$_pe_nsg_cached" ]] && nsgs_json=$(oci network nsg list --compartment-id "$compartment_id" --region "$region" --output json 2>/dev/null)
+        [[ -z "$_pe_nsg_cached" ]] && nsgs_json=$(oci network nsg list --compartment-id "$compartment_id" --region "$region" --all --output json 2>/dev/null)
         
         if [[ -n "$nsgs_json" && "$nsgs_json" != "null" ]]; then
             local nsg_count
@@ -70300,7 +70410,7 @@ os_create_private_endpoint() {
     # Log the action
     local log_file="${LOGS_DIR}/object_storage_actions_$(date +%Y%m%d).log"
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] CREATE PRIVATE ENDPOINT: $create_cmd" >> "$log_file"
+    _log_masked "log_file" "CREATE PRIVATE ENDPOINT: $create_cmd"
     
     local result
     if [[ -n "$nsg_ids_json" ]]; then
@@ -70343,19 +70453,19 @@ os_create_private_endpoint() {
         echo -e "  ${CYAN}Work Request:${NC} ${YELLOW}$work_request_id${NC}"
         echo -e "  ${GRAY}Endpoint will show CREATING state until complete${NC}"
         echo -e "  ${GRAY}Use 'w' from Object Storage menu to view work request status${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Creation initiated, work-request: $work_request_id" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Creation initiated, work-request: $work_request_id"
     elif jq -e '.data.name' <<< "$result" > /dev/null 2>&1; then
         echo -e "${GREEN}✓ Private endpoint created${NC}"
         echo -e "  ${CYAN}Name:${NC}      ${WHITE}$pe_name${NC}"
         echo -e "  ${CYAN}Namespace:${NC} ${WHITE}$namespace${NC}"
         echo -e "  ${CYAN}Prefix:${NC}    ${WHITE}$pe_prefix${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created $pe_name in namespace $namespace" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Created $pe_name in namespace $namespace"
     else
         echo -e "${RED}Failed to create private endpoint${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
         echo -e "  ${GRAY}Use 'w' from Object Storage menu to view work request errors${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -70458,7 +70568,7 @@ os_delete_private_endpoints() {
         local delete_cmd="oci os private-endpoint delete --pe-name \"$_name\" --namespace-name \"$_ns\" --region \"$region\" --force"
         
         echo -e "  ${CYAN}Deleting: ${WHITE}${_name}${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTING: $delete_cmd" >> "$log_file"
+        _log_masked "log_file" "EXECUTING: $delete_cmd"
         
         local result
         log_action "DELETE" "$delete_cmd"
@@ -70467,12 +70577,12 @@ os_delete_private_endpoints() {
         if [[ $? -eq 0 ]]; then
             echo -e "  ${GREEN}✓ Deletion initiated${NC}"
             log_action_result "SUCCESS" "DELETE operation"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted $_name (namespace: $_ns)" >> "$log_file"
+            _log_masked "log_file" "SUCCESS: Deleted $_name (namespace: $_ns)"
             ((_success++))
         else
             echo -e "  ${RED}✗ Failed: $result${NC}"
             log_action_result "FAILED" "DELETE operation"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete $_name - $result" >> "$log_file"
+            _log_masked "log_file" "FAILED: Delete $_name - $result"
             ((_failed++))
         fi
     done
@@ -71015,7 +71125,7 @@ custom_image_import() {
     # Execute import — use direct invocation (not _safe_exec) to preserve spaces in OS name/display name
     echo ""
     echo -e "${GRAY}Importing image (this may take several minutes)...${NC}"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $cmd" >> "$log_file"
+    _log_masked "log_file" "EXECUTE: $cmd"
     echo -e "${WHITE}$ $cmd${NC}"
 
     local -a _import_args=(
@@ -71037,7 +71147,7 @@ custom_image_import() {
         echo -e "${GREEN}✓ Image import initiated successfully${NC}"
         echo -e "  ${CYAN}Image OCID:${NC} ${YELLOW}$new_image_id${NC}"
         echo -e "  ${GRAY}Image will be available once import completes${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Imported image $image_name (OS: $os_name) -> $new_image_id" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Imported image $image_name (OS: $os_name) -> $new_image_id"
         
         # ── Auto-add GPU shape compatibility (vendor + architecture aware) ──
         echo ""
@@ -71059,7 +71169,7 @@ custom_image_import() {
             _gpu_vendor="nvidia"
         fi
         
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SHAPE_DETECT: vendor=${_gpu_vendor} arch=${_img_arch} (from name: $image_name)" >> "$log_file"
+        _log_masked "log_file" "SHAPE_DETECT: vendor=${_gpu_vendor} arch=${_img_arch} (from name: $image_name)"
         
         # Build detection label
         local _detect_parts=()
@@ -71193,11 +71303,11 @@ custom_image_import() {
                     echo "$_gs" | grep -qi 'HPC' && _gs_color="$CYAN"
                     _is_arm_shape "$_gs" "" && _gs_color="$BLUE"
                     echo -e "  ${GREEN}✓${NC} ${_gs_color}${_gs}${NC}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SHAPE_COMPAT: Added ${_gs} to ${new_image_id}" >> "$log_file"
+                    _log_masked "log_file" "SHAPE_COMPAT: Added ${_gs} to ${new_image_id}"
                     ((_gs_ok++))
                 else
                     echo -e "  ${RED}✗${NC} ${_gs}"
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SHAPE_COMPAT_FAIL: ${_gs} — ${_gs_result}" >> "$log_file"
+                    _log_masked "log_file" "SHAPE_COMPAT_FAIL: ${_gs} — ${_gs_result}"
                     ((_gs_fail++))
                 fi
             done
@@ -71218,7 +71328,7 @@ custom_image_import() {
     else
         echo -e "${RED}Failed to import image${NC}"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -71411,7 +71521,7 @@ custom_image_create_from_instance() {
     # Execute creation
     echo ""
     echo -e "${GRAY}Creating image (this may take several minutes)...${NC}"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $cmd" >> "$log_file"
+    _log_masked "log_file" "EXECUTE: $cmd"
     echo -e "${WHITE}$ $cmd${NC}"
 
     # Use direct invocation (not _safe_exec) to preserve spaces in display name
@@ -71436,11 +71546,11 @@ custom_image_create_from_instance() {
         echo -e "  ${CYAN}Image OCID:${NC} ${YELLOW}$new_image_id${NC}"
         echo -e "  ${CYAN}Launch Mode:${NC} ${WHITE}$inst_launch_mode${NC}"
         echo -e "  ${GRAY}Image will be available once creation completes${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Created image $image_name (launch-mode: $inst_launch_mode) from $instance_name -> $new_image_id" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Created image $image_name (launch-mode: $inst_launch_mode) from $instance_name -> $new_image_id"
     else
         echo -e "${RED}Failed to create image${NC}"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -71560,7 +71670,7 @@ custom_image_export() {
     _step_init
     _step_active "buckets"
     local buckets_json
-    buckets_json=$(oci os bucket list --compartment-id "$compartment_id" --namespace-name "$namespace" --region "$region" --output json 2>/dev/null)
+    buckets_json=$(oci os bucket list --compartment-id "$compartment_id" --namespace-name "$namespace" --region "$region" --all --output json 2>/dev/null)
     _step_complete "buckets"
     _step_finish
     
@@ -71649,7 +71759,7 @@ custom_image_export() {
     # Execute export — use direct invocation (not _safe_exec) to preserve spaces in names
     echo ""
     echo -e "${GRAY}Exporting image (this may take several minutes)...${NC}"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $cmd" >> "$log_file"
+    _log_masked "log_file" "EXECUTE: $cmd"
 
     local -a _export_args=(
         oci compute image export to-object
@@ -71668,11 +71778,11 @@ custom_image_export() {
         echo -e "${GREEN}✓ Image export initiated successfully${NC}"
         echo -e "  ${CYAN}Destination:${NC} ${WHITE}$selected_bucket/$object_name${NC}"
         echo -e "  ${GRAY}Export will complete in background${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Exported $selected_image_name to $selected_bucket/$object_name" >> "$log_file"
+        _log_masked "log_file" "SUCCESS: Exported $selected_image_name to $selected_bucket/$object_name"
     else
         echo -e "${RED}Failed to export image${NC}"
         echo "$result"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $result" >> "$log_file"
+        _log_masked "log_file" "FAILED: $result"
     fi
     
     echo ""
@@ -71800,6 +71910,7 @@ custom_image_shape_compatibility() {
         _ci_co_tmp=$(create_temp_file); _ci_sh_tmp=$(create_temp_file)
 
         _step_active "compat+shapes(2 parallel)"
+        _oci_throttle
         ( oci compute image-shape-compatibility-entry list --image-id "$selected_image" --region "$_img_region" --output json > "$_ci_co_tmp" 2>/dev/null ) &
         local _cip1=$!
         ( _get_shapes_json "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" > "$_ci_sh_tmp" ) &
@@ -71928,15 +72039,15 @@ custom_image_shape_compatibility() {
                     local _confirm
                     read -r _confirm
                     if [[ "$_confirm" == "y" || "$_confirm" == "Y" ]]; then
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $_add_cmd" >> "$log_file"
+                        _log_masked "log_file" "EXECUTE: $_add_cmd"
                         local _result
                         _result=$(oci compute image-shape-compatibility-entry add --image-id "$selected_image" --shape-name "$_cust_shape" --region "$region" --output json 2>&1)
                         if echo "$_result" | jq -e '.data' >/dev/null 2>&1 || [[ -z "$_result" ]]; then
                             echo -e "  ${GREEN}✓ Added: $_cust_shape${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Added shape compat $_cust_shape to $selected_image_name" >> "$log_file"
+                            _log_masked "log_file" "SUCCESS: Added shape compat $_cust_shape to $selected_image_name"
                         else
                             echo -e "  ${RED}✗ Failed: $_cust_shape${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $_cust_shape — $_result" >> "$log_file"
+                            _log_masked "log_file" "FAILED: $_cust_shape — $_result"
                         fi
                     else
                         echo -e "  ${YELLOW}Cancelled${NC}"
@@ -72020,15 +72131,15 @@ custom_image_shape_compatibility() {
                     for _sr in "${_shapes_to_rm[@]}"; do
                         local _rm_cmd="oci compute image-shape-compatibility-entry remove --image-id \"$selected_image\" --shape-name \"$_sr\" --region \"$region\" --force"
                         echo -e "  ${WHITE}$ $_rm_cmd${NC}"
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $_rm_cmd" >> "$log_file"
+                        _log_masked "log_file" "EXECUTE: $_rm_cmd"
                         oci compute image-shape-compatibility-entry remove --image-id "$selected_image" --shape-name "$_sr" --region "$region" --force 2>/dev/null
                         if [[ $? -eq 0 ]]; then
                             echo -e "  ${GREEN}✓ Removed: $_sr${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Removed shape compat $_sr from $selected_image_name" >> "$log_file"
+                            _log_masked "log_file" "SUCCESS: Removed shape compat $_sr from $selected_image_name"
                             ((_rm_ok++))
                         else
                             echo -e "  ${RED}✗ Failed: $_sr${NC}"
-                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Remove $_sr" >> "$log_file"
+                            _log_masked "log_file" "FAILED: Remove $_sr"
                             ((_rm_fail++))
                         fi
                     done
@@ -72070,16 +72181,16 @@ custom_image_shape_compatibility() {
                             for _sa in "${_shapes_to_add[@]}"; do
                                 local _add_cmd="oci compute image-shape-compatibility-entry add --image-id \"$selected_image\" --shape-name \"$_sa\" --region \"$region\""
                                 echo -e "  ${WHITE}$ $_add_cmd${NC}"
-                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $_add_cmd" >> "$log_file"
+                                _log_masked "log_file" "EXECUTE: $_add_cmd"
                                 local _add_result
                                 _add_result=$(oci compute image-shape-compatibility-entry add --image-id "$selected_image" --shape-name "$_sa" --region "$region" --output json 2>&1)
                                 if echo "$_add_result" | jq -e '.data' >/dev/null 2>&1 || [[ -z "$_add_result" ]]; then
                                     echo -e "  ${GREEN}✓ Added: $_sa${NC}"
-                                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Added shape compat $_sa to $selected_image_name" >> "$log_file"
+                                    _log_masked "log_file" "SUCCESS: Added shape compat $_sa to $selected_image_name"
                                     ((_add_ok++))
                                 else
                                     echo -e "  ${RED}✗ Failed: $_sa${NC}"
-                                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: $_sa — $_add_result" >> "$log_file"
+                                    _log_masked "log_file" "FAILED: $_sa — $_add_result"
                                     ((_add_fail++))
                                 fi
                             done
@@ -72272,7 +72383,7 @@ custom_image_delete() {
         local cmd="oci compute image delete --image-id ${img_ocid} --region ${region} --force"
         
         echo -e "${WHITE}$ ${cmd}${NC}"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] EXECUTE: $cmd" >> "$log_file"
+        _log_masked "log_file" "EXECUTE: $cmd"
         
         local result
         result=$(_safe_exec "$cmd")
@@ -72280,12 +72391,12 @@ custom_image_delete() {
         
         if [[ $exit_code -eq 0 || -z "$result" || "$result" == "{}" ]]; then
             echo -e "${GREEN}✓ Deleted: ${WHITE}${img_name}${NC} ${GRAY}(${img_idx})${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: Deleted image '${img_name}' (${img_ocid})" >> "$log_file"
+            _log_masked "log_file" "SUCCESS: Deleted image '${img_name}' (${img_ocid})"
             ((success_count++))
         else
             echo -e "${RED}✗ Failed: ${WHITE}${img_name}${NC} ${GRAY}(${img_idx})${NC}"
             echo -e "  ${RED}${result}${NC}"
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAILED: Delete image '${img_name}' (${img_ocid}): ${result}" >> "$log_file"
+            _log_masked "log_file" "FAILED: Delete image '${img_name}' (${img_ocid}): ${result}"
             ((fail_count++))
         fi
         echo ""
