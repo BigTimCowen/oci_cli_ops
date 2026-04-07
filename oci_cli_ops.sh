@@ -13511,9 +13511,9 @@ display_gpu_management_menu() {
             _cl_clique_set["$_cq_cname"]="${_cl_clique_set[$_cq_cname]:-} $_cq_clique"
             _cl_clique_nodes["$_cq_cname"]=$(( ${_cl_clique_nodes[$_cq_cname]:-0} + 1 ))
         done < "$INSTANCE_CLUSTER_MAP_CACHE"
-        # Deduplicate and sort clique IDs
+        # Deduplicate and sort clique IDs (strip leading space from accumulation)
         for _cq_name in "${!_cl_clique_set[@]}"; do
-            _cl_clique_map["$_cq_name"]=$(echo "${_cl_clique_set[$_cq_name]}" | tr ' ' '\n' | sort -u | paste -sd', ' | sed 's/^, //')
+            _cl_clique_map["$_cq_name"]=$(echo "${_cl_clique_set[$_cq_name]}" | tr ' ' '\n' | sed '/^$/d' | sort -u | paste -sd', ')
         done
     fi
 
@@ -13743,7 +13743,7 @@ display_gpu_management_menu() {
                         local _cq_tree="├─"
                         [[ "$_has_cc" != "true" && "$_has_ic" != "true" ]] && _cq_tree="└─"
                         if [[ "$_cq_ids" != "-" ]]; then
-                            local _cq_count; _cq_count=$(echo "$_cq_ids" | tr ',' '\n' | wc -l)
+                            local _cq_count; _cq_count=$(echo "$_cq_ids" | tr ',' '\n' | sed '/^$/d' | wc -l)
                             printf "${_sub_pfx}${WHITE}${_cq_tree}${NC} ${GRAY}Cliques: ${NC}${CYAN}%s${NC}  ${GRAY}(%s cliques, %s nodes)${NC}\n" \
                                 "$_cq_ids" "$_cq_count" "$_cq_node_ct"
                         else
