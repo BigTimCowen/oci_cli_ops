@@ -26,7 +26,7 @@
 #   Optional: OKE_CLUSTER_ID to specify which OKE cluster to manage
 #
 # Author: Tim Cowen
-# Version: 3.31.2 (2026-03-30)
+# Version: 3.32.0 (2026-04-07)
 # Please use at your own risk.
 #
 #===============================================================================
@@ -432,8 +432,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.31.2"
-readonly SCRIPT_VERSION_DATE="2026-03-30"
+readonly SCRIPT_VERSION="3.32.0"
+readonly SCRIPT_VERSION_DATE="2026-04-07"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -13231,6 +13231,7 @@ list_instances_by_gpu_cluster() {
 
 # Toggle flags for c4 sub-line visibility (persist across redraws)
 declare -g _C4_SHOW_FW="${_C4_SHOW_FW:-true}"    # Firmware line
+declare -g _C4_SHOW_CQ="${_C4_SHOW_CQ:-true}"     # Clique sub-line
 declare -g _C4_SHOW_CC="${_C4_SHOW_CC:-true}"     # Compute Cluster sub-line
 declare -g _C4_SHOW_IC="${_C4_SHOW_IC:-true}"     # Instance Config sub-line
 
@@ -13410,6 +13411,21 @@ display_gpu_management_menu() {
     _step_complete "maintenance events(${_me_time})"
     _step_complete "firmware bundles(${_fw_time})"
 
+    # K8s clique lookup: instance OCID → clique ID (from nvidia.com/gpu.clique label)
+    _step_active "K8s cliques"
+    declare -gA _C4_INST_CLIQUE=()
+    local _c4_k8s_json
+    _c4_k8s_json=$(kubectl get nodes -o json 2>/dev/null)
+    local _c4_k8s_ct=0
+    if [[ -n "$_c4_k8s_json" ]]; then
+        while IFS='|' read -r _ck_prov _ck_clique; do
+            [[ -z "$_ck_prov" ]] && continue
+            local _ck_ocid="${_ck_prov##*/}"
+            [[ "$_ck_clique" != "N/A" && -n "$_ck_clique" && -n "$_ck_ocid" ]] && { _C4_INST_CLIQUE["$_ck_ocid"]="$_ck_clique"; ((_c4_k8s_ct++)); }
+        done < <(jq -r '.items[] | "\(.spec.providerID // "")|\(.metadata.labels["nvidia.com/gpu.clique"] // "N/A")"' <<< "$_c4_k8s_json" 2>/dev/null)
+    fi
+    _step_complete "K8s cliques(${_c4_k8s_ct})"
+
     fi  # end skip if no fabrics
 
     # Total discovery time
@@ -13423,6 +13439,7 @@ display_gpu_management_menu() {
     # Show hidden sub-lines notice (only when something is toggled off)
     local _hidden_parts=""
     [[ "$_C4_SHOW_FW" != "true" ]] && _hidden_parts+="firmware "
+    [[ "$_C4_SHOW_CQ" != "true" ]] && _hidden_parts+="cliques "
     [[ "$_C4_SHOW_CC" != "true" ]] && _hidden_parts+="compute-cluster "
     [[ "$_C4_SHOW_IC" != "true" ]] && _hidden_parts+="instance-config "
     if [[ -n "$_hidden_parts" ]]; then
@@ -13466,6 +13483,25 @@ display_gpu_management_menu() {
                 _cl_degraded_map["$_mc_cname"]=$(( ${_cl_degraded_map["$_mc_cname"]:-0} + 1 ))
             fi
         done < "$INSTANCE_CLUSTER_MAP_CACHE"
+    fi
+
+    # Pre-compute clique summary per cluster: cluster_name → "0,1,2" (sorted unique clique IDs)
+    # Also track node count per cluster for the summary: cluster_name → count
+    declare -A _cl_clique_map=()
+    declare -A _cl_clique_nodes=()
+    if [[ ${#_C4_INST_CLIQUE[@]} -gt 0 && -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
+        declare -A _cl_clique_set=()  # cluster_name → space-separated clique IDs (for dedup+sort)
+        while IFS='|' read -r _cq_inst _cq_cid _cq_cname; do
+            [[ "$_cq_inst" == "#"* || -z "$_cq_inst" || -z "$_cq_cname" ]] && continue
+            local _cq_clique="${_C4_INST_CLIQUE[$_cq_inst]:-}"
+            [[ -z "$_cq_clique" ]] && continue
+            _cl_clique_set["$_cq_cname"]="${_cl_clique_set[$_cq_cname]:-} $_cq_clique"
+            _cl_clique_nodes["$_cq_cname"]=$(( ${_cl_clique_nodes[$_cq_cname]:-0} + 1 ))
+        done < "$INSTANCE_CLUSTER_MAP_CACHE"
+        # Deduplicate and sort clique IDs
+        for _cq_name in "${!_cl_clique_set[@]}"; do
+            _cl_clique_map["$_cq_name"]=$(echo "${_cl_clique_set[$_cq_name]}" | tr ' ' '\n' | sort -un | paste -sd',' | sed 's/^,//')
+        done
     fi
 
     if [[ -f "$FABRIC_CACHE" ]]; then
@@ -13681,16 +13717,36 @@ display_gpu_management_menu() {
                         _sub_pfx="          "
                     fi
 
-                    # Cluster detail sub-lines (toggleable via _C4_SHOW_CC / _C4_SHOW_IC)
-                    if [[ "$_C4_SHOW_CC" == "true" ]]; then
-                        # Use └─ if instance config is hidden (this is the last sub-line)
+                    # Determine which sub-lines are visible (for correct └─ on last line)
+                    local _has_cq="false" _has_cc="false" _has_ic="false"
+                    [[ "$_C4_SHOW_CQ" == "true" ]] && _has_cq="true"
+                    [[ "$_C4_SHOW_CC" == "true" ]] && _has_cc="true"
+                    [[ "$_C4_SHOW_IC" == "true" ]] && _has_ic="true"
+
+                    # Clique sub-line (toggleable via _C4_SHOW_CQ)
+                    if [[ "$_has_cq" == "true" ]]; then
+                        local _cq_ids="${_cl_clique_map[$cluster_name]:-"-"}"
+                        local _cq_node_ct="${_cl_clique_nodes[$cluster_name]:-0}"
+                        local _cq_tree="├─"
+                        [[ "$_has_cc" != "true" && "$_has_ic" != "true" ]] && _cq_tree="└─"
+                        if [[ "$_cq_ids" != "-" ]]; then
+                            local _cq_count; _cq_count=$(echo "$_cq_ids" | tr ',' '\n' | wc -l)
+                            printf "${_sub_pfx}${WHITE}${_cq_tree}${NC} ${GRAY}Cliques: ${NC}${CYAN}%-20s${NC} ${GRAY}(%s cliques, %s nodes)${NC}\n" \
+                                "$_cq_ids" "$_cq_count" "$_cq_node_ct"
+                        else
+                            printf "${_sub_pfx}${WHITE}${_cq_tree}${NC} ${GRAY}Cliques: ${NC}${GRAY}-${NC}\n"
+                        fi
+                    fi
+
+                    # Compute Cluster sub-line (toggleable via _C4_SHOW_CC)
+                    if [[ "$_has_cc" == "true" ]]; then
                         local _cc_tree="├─"
-                        [[ "$_C4_SHOW_IC" != "true" ]] && _cc_tree="└─"
+                        [[ "$_has_ic" != "true" ]] && _cc_tree="└─"
                         printf "${_sub_pfx}${WHITE}${_cc_tree}${NC} ${GRAY}%-18s${NC}${BLUE}%-33s${NC}%15s${_cc_state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC}\n" \
                             "Compute Cluster: " "${cc_name:0:33}" "" "${_cc_state:-}" "$_cc_date" "$_cc_age"
                     fi
 
-                    if [[ "$_C4_SHOW_IC" == "true" ]]; then
+                    if [[ "$_has_ic" == "true" ]]; then
                         # Align Created on same line — target col 92 to fit long IC names
                         # prefix(10) + tree(3) + label(18) + name + pad = 92
                         local _ic_total=$(( 31 + ${#ic_name} ))
@@ -32420,13 +32476,13 @@ _PROP_SEARCH_INDICES=()
 # Colors: @1=state, @2=k8s, @3=cordon, @4=taint, @5=pods, @6=imp, @7=k8s_node
 #--------------------------------------------------------------------------------
 _INST_COL_CONF="$INST_COLUMNS_CONF"
-_INST_COL_KEYS=(           "id"     "imp"    "name"         "state"  "k8s"   "k8s_node"       "cordon"  "taint"    "pods"  "shape"  "ad"   "fd"   "created"  "age"    "host_id"      "rack_id"      "sn"           "fabric"           "fw_ver"           "ocid"           )
-_INST_COL_LABELS=(         "ID"     "I"      "Display Name" "State"  "K8s"   "K8s Node"       "Cordon"  "Taint"    "Pods"  "Shape"  "AD"   "FD"   "Created"  "(Age)"  "Host ID"      "Rack ID"      "SN"           "GPU Cluster"      "FW Ver"           "Instance OCID"  )
-_INST_COL_DEFAULT_WIDTHS=( 5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 98               )
-_INST_COL_WIDTHS=(         5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 98               )
-_INST_COL_ALIGN=(          "-"      "-"      "-"            "-"      "-"     "-"              "-"       "-"        "-"     "-"      "-"    "-"    "-"        "-"      "-"            "-"            "-"            "-"                "-"                "-"              )
-_INST_COL_FMTS=(           "%-5.5s" "%-1.1s" "%-55.55s"     "%-9.9s" "%-8.8s" "%-20.20s"     "%-8.8s"  "%-10.10s" "%-5.5s" "%-20.20s" "%-3.3s" "%-3.3s" "%-18.18s" "%-6.6s" "%-14.14s"     "%-12.12s"     "%-12.12s"     "%-13.13s"         "%-10.10s"         "%-98.98s"       )
-_INST_COL_COLORS=(         "YELLOW" "@6"     ""             "@1"     "@2"    "@7"             "@3"      "@4"       "@5"    ""       ""     ""     "GRAY"     "GRAY"   "CYAN"         "CYAN"         "CYAN"         "MAGENTA"          "ORANGE"           "YELLOW"         )
+_INST_COL_KEYS=(           "id"     "imp"    "name"         "state"  "k8s"   "k8s_node"       "cordon"  "taint"    "pods"  "shape"  "ad"   "fd"   "created"  "age"    "host_id"      "rack_id"      "sn"           "fabric"           "fw_ver"           "clique"           "ocid"           )
+_INST_COL_LABELS=(         "ID"     "I"      "Display Name" "State"  "K8s"   "K8s Node"       "Cordon"  "Taint"    "Pods"  "Shape"  "AD"   "FD"   "Created"  "(Age)"  "Host ID"      "Rack ID"      "SN"           "GPU Cluster"      "FW Ver"           "Clique"           "Instance OCID"  )
+_INST_COL_DEFAULT_WIDTHS=( 5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 7                  98               )
+_INST_COL_WIDTHS=(         5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 7                  98               )
+_INST_COL_ALIGN=(          "-"      "-"      "-"            "-"      "-"     "-"              "-"       "-"        "-"     "-"      "-"    "-"    "-"        "-"      "-"            "-"            "-"            "-"                "-"                "-"                "-"              )
+_INST_COL_FMTS=(           "%-5.5s" "%-1.1s" "%-55.55s"     "%-9.9s" "%-8.8s" "%-20.20s"     "%-8.8s"  "%-10.10s" "%-5.5s" "%-20.20s" "%-3.3s" "%-3.3s" "%-18.18s" "%-6.6s" "%-14.14s"     "%-12.12s"     "%-12.12s"     "%-13.13s"         "%-10.10s"         "%-7.7s"           "%-98.98s"       )
+_INST_COL_COLORS=(         "YELLOW" "@6"     ""             "@1"     "@2"    "@7"             "@3"      "@4"       "@5"    ""       ""     ""     "GRAY"     "GRAY"   "CYAN"         "CYAN"         "CYAN"         "MAGENTA"          "ORANGE"           "CYAN"             "YELLOW"         )
 _INST_COL_LOCKED=( "id" )
 _INST_COL_DEFAULTS=( "id" "imp" "name" "state" "k8s" "k8s_node" "cordon" "taint" "pods" "shape" "ad" "fd" "created" "age" "rack_id" "sn" )
 
@@ -33380,7 +33436,7 @@ _compute_search_instances() {
         
         # K8s info
         local k8s_node="" k8s_status="No" cordon_status="-" taint_status="-" pod_count="-"
-        local host_id="-" rack_id="-" serial_num="-"
+        local host_id="-" rack_id="-" serial_num="-" clique_id="-"
         local k8s_match
         k8s_match=$(echo "$k8s_lookup" | grep -F "$ocid" 2>/dev/null)
         if [[ -n "$k8s_match" ]]; then
@@ -33391,6 +33447,8 @@ _compute_search_instances() {
             host_id=$(echo "$k8s_match" | cut -d'|' -f7)
             rack_id=$(echo "$k8s_match" | cut -d'|' -f8)
             serial_num=$(echo "$k8s_match" | cut -d'|' -f9)
+            clique_id=$(echo "$k8s_match" | cut -d'|' -f10)
+            [[ -z "$clique_id" ]] && clique_id="-"
 
             [[ "$k8s_ready" == "True" ]] && k8s_status="Ready" || k8s_status="NotRdy"
             [[ "$unschedulable" == "true" ]] && cordon_status="Yes"
@@ -33457,7 +33515,7 @@ _compute_search_instances() {
         fi
 
         # Output: searchable_text|display fields
-        echo "${iid}|${imp_indicator}|${name}|${state}|${k8s_status}|${k8s_node:-"-"}|${cordon_status}|${taint_status}|${pod_count}|${shape_trunc}|${ad_short}|${fd_short}|${time_display}|${host_id}|${rack_id}|${serial_num}|${fabric_name}|${fw_ver}|${ocid}|${k8s_node}"
+        echo "${iid}|${imp_indicator}|${name}|${state}|${k8s_status}|${k8s_node:-"-"}|${cordon_status}|${taint_status}|${pod_count}|${shape_trunc}|${ad_short}|${fd_short}|${time_display}|${host_id}|${rack_id}|${serial_num}|${fabric_name}|${fw_ver}|${clique_id}|${ocid}|${k8s_node}"
     done)
     
     while true; do
@@ -33516,14 +33574,14 @@ _compute_search_instances() {
         printf "${BOLD}${_INST_HDR_FMT}${NC}\n" "${_INST_HDR_ARGS[@]}"
         print_separator $_INST_SEP_WIDTH
 
-        echo "$matched_lines" | while IFS='|' read -r iid imp_indicator name state k8s_status k8s_node_name cordon_status taint_status pod_count shape_trunc ad_short fd_short time_display host_id rack_id serial_num fabric_name fw_ver ocid k8s_node; do
+        echo "$matched_lines" | while IFS='|' read -r iid imp_indicator name state k8s_status k8s_node_name cordon_status taint_status pod_count shape_trunc ad_short fd_short time_display host_id rack_id serial_num fabric_name fw_ver clique_id ocid k8s_node; do
             [[ -z "$iid" ]] && continue
 
             # Build plain-text row (dynamic columns)
             local row
             local _s_age=""
             _s_age=$(_days_since "$time_display" 2>/dev/null) || _s_age=""
-            row=$(_col_print_row_plain "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_name:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_s_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "${fw_ver:0:10}" "$ocid")
+            row=$(_col_print_row_plain "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_name:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_s_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "${fw_ver:0:10}" "$clique_id" "$ocid")
             
             # Apply BG_YELLOW highlight to all matching terms (case-insensitive)
             local highlighted="$row"
@@ -33664,6 +33722,9 @@ manage_compute_instances() {
         fi
         if ! grep -q "^fw_ver" "$INST_COLUMNS_CONF" 2>/dev/null; then
             sed -i '/^fabric/a fw_ver' "$INST_COLUMNS_CONF" 2>/dev/null
+        fi
+        if ! grep -q "^clique" "$INST_COLUMNS_CONF" 2>/dev/null; then
+            sed -i '/^fw_ver/a clique' "$INST_COLUMNS_CONF" 2>/dev/null
         fi
     fi
 
@@ -33818,14 +33879,14 @@ manage_compute_instances() {
         pods_per_node=$(sort "$_pods_tmp" 2>/dev/null | uniq -c | awk '{print $2"|"$1}')
         rm -f "$_pods_tmp"
 
-        # Build lookup: providerID|nodeName|readyStatus|newNodeTaint|unschedulable|maintenanceTaint|hostId|rackId|serialNumber
+        # Build lookup: providerID|nodeName|readyStatus|newNodeTaint|unschedulable|maintenanceTaint|hostId|rackId|serialNumber|cliqueId
         local k8s_lookup
         k8s_lookup=$(jq -r '
             .items[] |
             (.spec.taints // [] | map(select(.key == "newNode")) | if length > 0 then .[0].effect else "N/A" end) as $newNodeTaint |
             (.spec.taints // [] | map(select(.key == "Maintenance")) | if length > 0 then .[0].effect else "N/A" end) as $maintenanceTaint |
             (.spec.unschedulable // false) as $unschedulable |
-            "\(.spec.providerID)|\(.metadata.name)|\(.status.conditions[] | select(.type=="Ready") | .status)|\($newNodeTaint)|\($unschedulable)|\($maintenanceTaint)|\(.metadata.labels["oci.oraclecloud.com/host.id"] // "-")|\(.metadata.labels["oci.oraclecloud.com/host.rack_id"] // "-")|\(.metadata.labels["oci.oraclecloud.com/host.serial_number"] // "-")"
+            "\(.spec.providerID)|\(.metadata.name)|\(.status.conditions[] | select(.type=="Ready") | .status)|\($newNodeTaint)|\($unschedulable)|\($maintenanceTaint)|\(.metadata.labels["oci.oraclecloud.com/host.id"] // "-")|\(.metadata.labels["oci.oraclecloud.com/host.rack_id"] // "-")|\(.metadata.labels["oci.oraclecloud.com/host.serial_number"] // "-")|\(.metadata.labels["nvidia.com/gpu.clique"] // "-")"
         ' <<< "$k8s_nodes_json" 2>/dev/null)
         local _nc=$(echo "$k8s_lookup" | grep -c . 2>/dev/null || true)
         _step_complete "k8s nodes(${_nc})"
@@ -33944,13 +34005,15 @@ manage_compute_instances() {
             local pod_color="$GRAY"
             local k8s_node_name=""
             local host_id="-" rack_id="-" serial_num="-"
+            local clique_id="-"
 
             # O(1) associative array lookup instead of grep per row
             local k8s_match="${_k8s_map[$ocid]:-}"
 
             if [[ -n "$k8s_match" ]]; then
                 local k8s_ready unschedulable new_node_taint maintenance_taint _discard_pid
-                IFS='|' read -r _discard_pid k8s_node_name k8s_ready new_node_taint unschedulable maintenance_taint host_id rack_id serial_num <<< "$k8s_match"
+                IFS='|' read -r _discard_pid k8s_node_name k8s_ready new_node_taint unschedulable maintenance_taint host_id rack_id serial_num clique_id <<< "$k8s_match"
+                [[ -z "$clique_id" ]] && clique_id="-"
 
                 if [[ "$k8s_ready" == "True" ]]; then
                     k8s_status="Ready"
@@ -34044,7 +34107,7 @@ manage_compute_instances() {
                 k8s_node_color="$CYAN"
             fi
 
-            _col_print_row "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_display:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_inst_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "${fw_ver:0:10}" "$ocid" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pod_color" "$imp_color" "$k8s_node_color"
+            _col_print_row "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_display:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_inst_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "${fw_ver:0:10}" "$clique_id" "$ocid" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pod_color" "$imp_color" "$k8s_node_color"
         done < <(jq -r '
             .data[] |
             select(.["lifecycle-state"] != "TERMINATED") |
@@ -42115,17 +42178,19 @@ interactive_gpu_management() {
                         _tsel="${BASH_REMATCH[1]}"
                     else
                         echo ""
-                        local _fw_icon _cc_icon _ic_icon
+                        local _fw_icon _cq_icon _cc_icon _ic_icon
                         [[ "$_C4_SHOW_FW" == "true" ]] && _fw_icon="${GREEN}ON${NC}" || _fw_icon="${RED}OFF${NC}"
+                        [[ "$_C4_SHOW_CQ" == "true" ]] && _cq_icon="${GREEN}ON${NC}" || _cq_icon="${RED}OFF${NC}"
                         [[ "$_C4_SHOW_CC" == "true" ]] && _cc_icon="${GREEN}ON${NC}" || _cc_icon="${RED}OFF${NC}"
                         [[ "$_C4_SHOW_IC" == "true" ]] && _ic_icon="${GREEN}ON${NC}" || _ic_icon="${RED}OFF${NC}"
                         echo -e "  ${BOLD}${WHITE}Toggle sub-line visibility:${NC}"
                         echo -e "    ${YELLOW}1${NC}) Firmware           [${_fw_icon}]"
-                        echo -e "    ${YELLOW}2${NC}) Compute Cluster    [${_cc_icon}]"
-                        echo -e "    ${YELLOW}3${NC}) Instance Config    [${_ic_icon}]"
+                        echo -e "    ${YELLOW}2${NC}) Cliques            [${_cq_icon}]"
+                        echo -e "    ${YELLOW}3${NC}) Compute Cluster    [${_cc_icon}]"
+                        echo -e "    ${YELLOW}4${NC}) Instance Config    [${_ic_icon}]"
                         echo -e "    ${CYAN}Enter${NC}) Cancel"
                         echo ""
-                        echo -e "  ${GRAY}Select: 1, 2, 3, 1,3, 1-3, all${NC}"
+                        echo -e "  ${GRAY}Select: 1, 2, 3, 4, 1,3, 1-4, all${NC}"
                         echo -n -e "  ${CYAN}Toggle #: ${NC}"
                         read -r _tsel
                     fi
@@ -42133,7 +42198,7 @@ interactive_gpu_management() {
                     # Expand selection into individual numbers
                     local -a _tnums=()
                     if [[ "${_tsel,,}" == "all" ]]; then
-                        _tnums=(1 2 3)
+                        _tnums=(1 2 3 4)
                     else
                         # Split on commas, expand ranges
                         local _tpart
@@ -42154,8 +42219,9 @@ interactive_gpu_management() {
                     for _tn in "${_tnums[@]}"; do
                         case "$_tn" in
                             1) [[ "$_C4_SHOW_FW" == "true" ]] && _C4_SHOW_FW=false || _C4_SHOW_FW=true ;;
-                            2) [[ "$_C4_SHOW_CC" == "true" ]] && _C4_SHOW_CC=false || _C4_SHOW_CC=true ;;
-                            3) [[ "$_C4_SHOW_IC" == "true" ]] && _C4_SHOW_IC=false || _C4_SHOW_IC=true ;;
+                            2) [[ "$_C4_SHOW_CQ" == "true" ]] && _C4_SHOW_CQ=false || _C4_SHOW_CQ=true ;;
+                            3) [[ "$_C4_SHOW_CC" == "true" ]] && _C4_SHOW_CC=false || _C4_SHOW_CC=true ;;
+                            4) [[ "$_C4_SHOW_IC" == "true" ]] && _C4_SHOW_IC=false || _C4_SHOW_IC=true ;;
                         esac
                     done
                     break  # Redraw display with new toggle state
