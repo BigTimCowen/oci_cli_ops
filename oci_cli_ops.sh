@@ -26,7 +26,7 @@
 #   Optional: OKE_CLUSTER_ID to specify which OKE cluster to manage
 #
 # Author: Tim Cowen
-# Version: 3.32.0 (2026-04-07)
+# Version: 3.32.1 (2026-04-07)
 # Please use at your own risk.
 #
 #===============================================================================
@@ -432,7 +432,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.32.0"
+readonly SCRIPT_VERSION="3.32.1"
 readonly SCRIPT_VERSION_DATE="2026-04-07"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -13412,17 +13412,23 @@ display_gpu_management_menu() {
     _step_complete "firmware bundles(${_fw_time})"
 
     # K8s clique lookup: instance OCID → clique ID (from nvidia.com/gpu.clique label)
+    # Also builds per-node-name lookup for cases where providerID doesn't match
     _step_active "K8s cliques"
     declare -gA _C4_INST_CLIQUE=()
+    declare -gA _C4_NODE_CLIQUE=()
     local _c4_k8s_json
     _c4_k8s_json=$(kubectl get nodes -o json 2>/dev/null)
     local _c4_k8s_ct=0
     if [[ -n "$_c4_k8s_json" ]]; then
-        while IFS='|' read -r _ck_prov _ck_clique; do
-            [[ -z "$_ck_prov" ]] && continue
+        while IFS='|' read -r _ck_prov _ck_name _ck_clique; do
+            [[ -z "$_ck_prov" || "$_ck_clique" == "N/A" || -z "$_ck_clique" ]] && continue
+            # Key by instance OCID (strip oci:// prefix if present)
             local _ck_ocid="${_ck_prov##*/}"
-            [[ "$_ck_clique" != "N/A" && -n "$_ck_clique" && -n "$_ck_ocid" ]] && { _C4_INST_CLIQUE["$_ck_ocid"]="$_ck_clique"; ((_c4_k8s_ct++)); }
-        done < <(jq -r '.items[] | "\(.spec.providerID // "")|\(.metadata.labels["nvidia.com/gpu.clique"] // "N/A")"' <<< "$_c4_k8s_json" 2>/dev/null)
+            [[ -n "$_ck_ocid" ]] && _C4_INST_CLIQUE["$_ck_ocid"]="$_ck_clique"
+            # Also key by node name for fallback matching
+            [[ -n "$_ck_name" ]] && _C4_NODE_CLIQUE["$_ck_name"]="$_ck_clique"
+            ((_c4_k8s_ct++))
+        done < <(jq -r '.items[] | "\(.spec.providerID // "")|\(.metadata.name)|\(.metadata.labels["nvidia.com/gpu.clique"] // "N/A")"' <<< "$_c4_k8s_json" 2>/dev/null)
     fi
     _step_complete "K8s cliques(${_c4_k8s_ct})"
 
@@ -13487,20 +13493,27 @@ display_gpu_management_menu() {
 
     # Pre-compute clique summary per cluster: cluster_name → "0,1,2" (sorted unique clique IDs)
     # Also track node count per cluster for the summary: cluster_name → count
+    # Lookup chain: INSTANCE_CLUSTER_MAP (inst→cluster_name) + _C4_INST_CLIQUE (inst→clique)
     declare -A _cl_clique_map=()
     declare -A _cl_clique_nodes=()
-    if [[ ${#_C4_INST_CLIQUE[@]} -gt 0 && -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
+    if [[ $(( ${#_C4_INST_CLIQUE[@]} + ${#_C4_NODE_CLIQUE[@]} )) -gt 0 && -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
         declare -A _cl_clique_set=()  # cluster_name → space-separated clique IDs (for dedup+sort)
         while IFS='|' read -r _cq_inst _cq_cid _cq_cname; do
             [[ "$_cq_inst" == "#"* || -z "$_cq_inst" || -z "$_cq_cname" ]] && continue
+            # Try by instance OCID first, then strip oci:// prefix variants
             local _cq_clique="${_C4_INST_CLIQUE[$_cq_inst]:-}"
+            if [[ -z "$_cq_clique" ]]; then
+                # Try with just the OCID portion (strip any prefix)
+                local _cq_bare="${_cq_inst##*/}"
+                _cq_clique="${_C4_INST_CLIQUE[$_cq_bare]:-}"
+            fi
             [[ -z "$_cq_clique" ]] && continue
             _cl_clique_set["$_cq_cname"]="${_cl_clique_set[$_cq_cname]:-} $_cq_clique"
             _cl_clique_nodes["$_cq_cname"]=$(( ${_cl_clique_nodes[$_cq_cname]:-0} + 1 ))
         done < "$INSTANCE_CLUSTER_MAP_CACHE"
         # Deduplicate and sort clique IDs
         for _cq_name in "${!_cl_clique_set[@]}"; do
-            _cl_clique_map["$_cq_name"]=$(echo "${_cl_clique_set[$_cq_name]}" | tr ' ' '\n' | sort -un | paste -sd',' | sed 's/^,//')
+            _cl_clique_map["$_cq_name"]=$(echo "${_cl_clique_set[$_cq_name]}" | tr ' ' '\n' | sort -u | paste -sd', ' | sed 's/^, //')
         done
     fi
 
@@ -13731,7 +13744,7 @@ display_gpu_management_menu() {
                         [[ "$_has_cc" != "true" && "$_has_ic" != "true" ]] && _cq_tree="└─"
                         if [[ "$_cq_ids" != "-" ]]; then
                             local _cq_count; _cq_count=$(echo "$_cq_ids" | tr ',' '\n' | wc -l)
-                            printf "${_sub_pfx}${WHITE}${_cq_tree}${NC} ${GRAY}Cliques: ${NC}${CYAN}%-20s${NC} ${GRAY}(%s cliques, %s nodes)${NC}\n" \
+                            printf "${_sub_pfx}${WHITE}${_cq_tree}${NC} ${GRAY}Cliques: ${NC}${CYAN}%s${NC}  ${GRAY}(%s cliques, %s nodes)${NC}\n" \
                                 "$_cq_ids" "$_cq_count" "$_cq_node_ct"
                         else
                             printf "${_sub_pfx}${WHITE}${_cq_tree}${NC} ${GRAY}Cliques: ${NC}${GRAY}-${NC}\n"
@@ -32478,10 +32491,10 @@ _PROP_SEARCH_INDICES=()
 _INST_COL_CONF="$INST_COLUMNS_CONF"
 _INST_COL_KEYS=(           "id"     "imp"    "name"         "state"  "k8s"   "k8s_node"       "cordon"  "taint"    "pods"  "shape"  "ad"   "fd"   "created"  "age"    "host_id"      "rack_id"      "sn"           "fabric"           "fw_ver"           "clique"           "ocid"           )
 _INST_COL_LABELS=(         "ID"     "I"      "Display Name" "State"  "K8s"   "K8s Node"       "Cordon"  "Taint"    "Pods"  "Shape"  "AD"   "FD"   "Created"  "(Age)"  "Host ID"      "Rack ID"      "SN"           "GPU Cluster"      "FW Ver"           "Clique"           "Instance OCID"  )
-_INST_COL_DEFAULT_WIDTHS=( 5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 7                  98               )
-_INST_COL_WIDTHS=(         5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 7                  98               )
+_INST_COL_DEFAULT_WIDTHS=( 5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 40                 98               )
+_INST_COL_WIDTHS=(         5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 40                 98               )
 _INST_COL_ALIGN=(          "-"      "-"      "-"            "-"      "-"     "-"              "-"       "-"        "-"     "-"      "-"    "-"    "-"        "-"      "-"            "-"            "-"            "-"                "-"                "-"                "-"              )
-_INST_COL_FMTS=(           "%-5.5s" "%-1.1s" "%-55.55s"     "%-9.9s" "%-8.8s" "%-20.20s"     "%-8.8s"  "%-10.10s" "%-5.5s" "%-20.20s" "%-3.3s" "%-3.3s" "%-18.18s" "%-6.6s" "%-14.14s"     "%-12.12s"     "%-12.12s"     "%-13.13s"         "%-10.10s"         "%-7.7s"           "%-98.98s"       )
+_INST_COL_FMTS=(           "%-5.5s" "%-1.1s" "%-55.55s"     "%-9.9s" "%-8.8s" "%-20.20s"     "%-8.8s"  "%-10.10s" "%-5.5s" "%-20.20s" "%-3.3s" "%-3.3s" "%-18.18s" "%-6.6s" "%-14.14s"     "%-12.12s"     "%-12.12s"     "%-13.13s"         "%-10.10s"         "%-40.40s"         "%-98.98s"       )
 _INST_COL_COLORS=(         "YELLOW" "@6"     ""             "@1"     "@2"    "@7"             "@3"      "@4"       "@5"    ""       ""     ""     "GRAY"     "GRAY"   "CYAN"         "CYAN"         "CYAN"         "MAGENTA"          "ORANGE"           "CYAN"             "YELLOW"         )
 _INST_COL_LOCKED=( "id" )
 _INST_COL_DEFAULTS=( "id" "imp" "name" "state" "k8s" "k8s_node" "cordon" "taint" "pods" "shape" "ad" "fd" "created" "age" "rack_id" "sn" )
