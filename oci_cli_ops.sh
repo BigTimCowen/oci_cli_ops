@@ -432,8 +432,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.32.1"
-readonly SCRIPT_VERSION_DATE="2026-04-07"
+readonly SCRIPT_VERSION="3.32.2"
+readonly SCRIPT_VERSION_DATE="2026-04-08"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -9219,7 +9219,7 @@ list_maintenance_events() {
     local compartment_id="${1:-$FOCUS_COMPARTMENT_ID}"
     local region="${2:-$FOCUS_REGION}"
     local force_refresh="${3:-false}"
-    local filter_type="${4:-named}"
+    local filter_type="${4:-active}"
     local me_view_mode="${5:-compact}"
     local me_link_announcements="${6:-false}"
     
@@ -9252,6 +9252,7 @@ list_maintenance_events() {
     [[ "$me_link_announcements" == "true" ]] && _ann_status="${GREEN}ON${NC}"
     echo -e "${GRAY}View: ${WHITE}${me_view_mode}${NC} ${GRAY}(type 'view' to toggle)  Announcements: ${_ann_status} ${GRAY}(type 'ann' to toggle)${NC}"
     case "$filter_type" in
+        active)      echo -e "${YELLOW}Filter: Active events — excluding CANCELED, SUCCEEDED, FAILED${NC}" ;;
         named)       echo -e "${YELLOW}Filter: SCHEDULED events — named instances with unhealthy host health${NC}" ;;
         PROCESSING)  echo -e "${YELLOW}Filter: Showing only PROCESSING events${NC}" ;;
         SUCCEEDED)   echo -e "${YELLOW}Filter: Showing only SUCCEEDED events${NC}" ;;
@@ -9460,8 +9461,11 @@ list_maintenance_events() {
         [[ -z "$_filt_id" ]] && continue
 
         # Apply same filters as the events display table
-        if [[ "$filter_type" == "named" ]]; then
-            # Default filter: only SCHEDULED events with named instances on non-healthy hosts
+        if [[ "$filter_type" == "active" ]]; then
+            # Default filter: exclude CANCELED, SUCCEEDED, FAILED
+            [[ "${_filt_lifecycle^^}" == "CANCELED" || "${_filt_lifecycle^^}" == "CANCELLED" || "${_filt_lifecycle^^}" == "SUCCEEDED" || "${_filt_lifecycle^^}" == "FAILED" ]] && continue
+        elif [[ "$filter_type" == "named" ]]; then
+            # Named filter: only SCHEDULED events with named instances on non-healthy hosts
             [[ "${_filt_lifecycle^^}" != "SCHEDULED" ]] && continue
             local _filt_inst_info="${_ME_INST[$_filt_inst_id]:-}"
             local _filt_inst_name=""
@@ -10460,7 +10464,7 @@ list_maintenance_events() {
         else
             echo -e "    ${CYAN}view${NC}                   - Switch to compact view (single-line)"
         fi
-        echo -e "    ${CYAN}filter${NC}                 - Filter events (${GREEN}n${NC}=named ${GREEN}p${NC}=processing ${GREEN}su${NC}=succeeded ${GREEN}c${NC}=canceled ${GREEN}sc${NC}=scheduled ${GREEN}all${NC}=clear)"
+        echo -e "    ${CYAN}filter${NC}                 - Filter events (${GREEN}a${NC}=active ${GREEN}n${NC}=named ${GREEN}p${NC}=processing ${GREEN}su${NC}=succeeded ${GREEN}c${NC}=canceled ${GREEN}sc${NC}=scheduled ${GREEN}all${NC}=clear)"
         if [[ "$me_link_announcements" == "true" ]]; then
             echo -e "    ${CYAN}list${NC}                   - Show announcement details again"
         fi
@@ -10527,6 +10531,7 @@ list_maintenance_events() {
             if [[ "$filter_arg" == "${me_selection}" || -z "${filter_arg// /}" ]]; then
                 echo ""
                 _ui_subheader "Filter Options" 0
+                echo -e "  ${GREEN}a${NC}   - Active events (exclude canceled/succeeded/failed)"
                 echo -e "  ${GREEN}n${NC}   - Named instances with unhealthy host health"
                 echo -e "  ${GREEN}p${NC}   - PROCESSING events"
                 echo -e "  ${GREEN}su${NC}  - SUCCEEDED events"
@@ -10541,6 +10546,7 @@ list_maintenance_events() {
             
             local new_filter="none"
             case "${filter_arg,,}" in
+                a)   new_filter="active" ;;
                 n)   new_filter="named" ;;
                 p)   new_filter="PROCESSING" ;;
                 su)  new_filter="SUCCEEDED" ;;
@@ -13787,7 +13793,11 @@ display_gpu_management_menu() {
         print_separator 160
         printf "${BOLD}%-3s %-60s%15s%-12s %-10s %-6s %5s %7s %5s${NC}\n" \
             "" "Summary (${fabric_idx} fabrics)" "" "" "" "" "$summary_total" "$summary_healthy" "$summary_avail"
-        printf "%-3s ${GRAY}GPU Memory Clusters: ${WHITE}${summary_clusters}${GRAY}   Cluster Nodes Provisioned: ${WHITE}${summary_cluster_nodes}${NC}\n" ""
+        local prov_pct=0
+        if [[ $summary_total -gt 0 ]]; then
+            prov_pct=$(awk "BEGIN { printf \"%.1f\", ($summary_cluster_nodes / $summary_total) * 100 }")
+        fi
+        printf "%-3s ${GRAY}GPU Memory Clusters: ${WHITE}${summary_clusters}${GRAY}   Cluster Nodes Provisioned: ${WHITE}${summary_cluster_nodes}/${summary_total} (${prov_pct}%%)${NC}\n" ""
     fi
     echo ""
     
@@ -32623,10 +32633,10 @@ _ANN_ENABLED_INDICES=()
 _ME_COL_CONF="$ME_COLUMNS_CONF"
 _ME_COL_KEYS=(           "id"     "inst_name"  "k8s_node"   "serial"     "state"    "k8s"    "cordon"  "taints"  "pods"   "reason"     "category"   "lifecycle"  "event_name"  "window"     "finished"     "resched" "announce"  "fault_code"  "comp_host"  "evt_ocid"     "inst_ocid"    "gpu_cluster"  )
 _ME_COL_LABELS=(         "#"      "Instance Name" "K8s Node" "Serial"   "State"    "K8s"    "Crdn"    "Taints"  "Pods"   "Maint Reason" "Category" "Lifecycle"  "Event Name"  "Window Start" "Time Finished" "Re"   "Announce"  "Fault Code"  "CompHost"   "Event OCID"   "Instance OCID" "GPU Cluster"  )
-_ME_COL_DEFAULT_WIDTHS=( 4        20           15           15           10         8        6         8         5        15           12           11           18            20           20             4         10          22            10           75             45             25             )
-_ME_COL_WIDTHS=(         4        20           15           15           10         8        6         8         5        15           12           11           18            20           20             4         10          22            10           75             45             25             )
+_ME_COL_DEFAULT_WIDTHS=( 4        10           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             )
+_ME_COL_WIDTHS=(         4        10           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             )
 _ME_COL_ALIGN=(          "-"      "-"          "-"          "-"          "-"        "-"      "-"       "-"       "-"      "-"          "-"          "-"          "-"           "-"          "-"            "-"       "-"         "-"           "-"          "-"            "-"            "-"            )
-_ME_COL_FMTS=(           "%-4.4s" "%-25.25s"   "%-20.20s"   "%-14.14s"   "%-10.10s" "%-8.8s" "%-6.6s"  "%-8.8s"  "%-5.5s" "%-22.22s"   "%-12.12s"   "%-11.11s"   "%-28.28s"    "%-20.20s"   "%-20.20s"     "%-4.4s"  "%-10.10s"  "%-22.22s"    "%-10.10s"   "%-45.45s"     "%-45.45s"     "%-30.30s"     )
+_ME_COL_FMTS=(           "%-4.4s" "%-10.10s"   "%-13.13s"   "%-12.12s"   "%-4.4s"   "%-4.4s" "%-6.6s"  "%-6.6s"  "%-4.4s" "%-22.22s"   "%-12.12s"   "%-11.11s"   "%-28.28s"    "%-20.20s"   "%-20.20s"     "%-4.4s"  "%-10.10s"  "%-17.17s"    "%-10.10s"   "%-100s"       "%-100s"       "%-13.13s"     )
 _ME_COL_COLORS=(         "YELLOW" ""           "@1"         "@2"         "@3"       "@4"     "@5"      "@6"      "@7"     "@8"         ""           "@9"         ""            "@10"        "@11"          "@12"     "@13"       "@14"         "@15"        "@16"          "@17"          "@18"          )
 _ME_COL_LOCKED=( "id" )
 _ME_COL_DEFAULTS=( "id" "inst_name" "k8s_node" "serial" "state" "k8s" "cordon" "taints" "pods" "reason" "lifecycle" "event_name" "window" "finished" "resched" "fault_code" "comp_host" "gpu_cluster" )
