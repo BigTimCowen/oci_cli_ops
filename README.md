@@ -487,6 +487,160 @@ Sample terminal output for key management screens.
 
 ---
 
+### Host Groups (`--manage c,11`)
+
+```
+  ◆ Existing Host Groups
+
+  #    Display Name                                       Availability Domain       State        Targeted   Created
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1)   skip_recycle_ad_X                                  AP-OSAKA-1-AD-1           ACTIVE       No         2026-04-09
+  2)   skip_recycle_BM.GPU4.8_ap-osaka-1_AD_1_HG          AP-OSAKA-1-AD-1           ACTIVE       No         2026-04-10
+
+  Total: 2 host group(s)
+
+  #) View    - View host group details (enter number)
+  c) Create  - Create a new host group
+  d) Delete  - Delete host group(s) (d 1, d 1,2, d 1-2, d all)
+  j) JSON    - View raw JSON (j <keyword> to search)
+  r) Refresh - Refresh host group list
+  b) Back    - Return to compute menu
+
+  [Host Groups] Selection (#, c, d [#|#,#|#-#|all], j, r, b, show):
+```
+
+### Host Group Detail (`--manage c,11` → `1`)
+
+```
+  ◆ Properties
+  Display Name:        skip_recycle_ad_X
+  OCID:                ocid1.computehostgroup.oc1.ap-osaka-1.anvwsljr2bemolaawsyjzqsvylhutnghlauxdbkumfbgo4bwe45c3476yfka
+  Availability Domain: AP-OSAKA-1-AD-1
+  Lifecycle State:     ACTIVE
+  Targeted Placement:  No
+  Time Created:        2026-04-09T22:58:22.626000+00:00
+  Time Updated:        2026-04-09T22:58:22.626000+00:00
+
+  ◆ Configurations (1)
+  #    Target Shape       Recycle Level        Firmware Bundle                State
+  ───────────────────────────────────────────────────────────────────────────────────────────────
+  1    BM.GPU4.8          SKIP_RECYCLE         -                              -
+
+  ◆ Attached Bare Metal Hosts (1)
+  #    Display Name                             Shape           State        Health     Bare Metal Host OCID
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1    computebaremetalhost-pefjq               BM.GPU4.8       AVAILABLE    HEALTHY    ocid1.computebaremetalhost.oc1.ap-osaka-1.anvwsljr2bemolaczibwi7u37sddwdlznszwfk3jih72oz3wz5ommhopefjq
+
+  a)      Attach  - Attach a bare metal host to this group
+  dt #)   Detach  - Detach a bare metal host (dt 1)
+  notify) Notify  - Set up event notifications for host changes
+  j)      JSON    - View raw JSON
+  r)      Refresh - Refresh details
+  Enter)  Back    - Return to host group list
+
+  [Host Group - skip_recycle_ad_X] Selection (a, dt #, notify, j, r, Enter):
+```
+
+### Host Group Create (`--manage c,11` → `c`)
+
+```
+  ◆ Pre-flight Check — Capacity Topology (c5)
+
+  Checking capacity topology in ap-osaka-1 / AP-OSAKA-1-AD-1...
+  ✓ capacity topology (AP-OSAKA-1-AD-1), 2.1s
+  ✓ Found 8 capacity topology host(s) in ap-osaka-1 / AP-OSAKA-1-AD-1
+
+  ◆ Target Shape
+
+  Fetching BM.GPU shapes...
+    1) BM.GPU.A10.4
+    2) BM.GPU3.8
+    3) BM.GPU4.8
+
+  Select shape: 3
+  ✓ Target: BM.GPU4.8
+
+  ◆ Recycle Level
+  1) SKIP_RECYCLE  - Skip host recycling (default)
+  2) RECYCLE       - Standard recycling
+  Select recycle level [1]: 1
+  ✓ Recycle Level: SKIP_RECYCLE
+
+  ◆ Display Name
+  Suggested: skip_recycle_BM.GPU4.8_ap-osaka-1_AD_1_HG
+  Enter display name [skip_recycle_BM.GPU4.8_ap-osaka-1_AD_1_HG]:
+  ✓ Display Name: skip_recycle_BM.GPU4.8_ap-osaka-1_AD_1_HG
+
+  ◆ Targeted Placement
+  Targeted placement required? (y/N): n
+  ✓ Targeted Placement: false
+
+  Command:
+  oci compute compute-host-group create \
+    --availability-domain "jLaG:AP-OSAKA-1-AD-1" \
+    --compartment-id "ocid1.compartment..." \
+    --region "ap-osaka-1" \
+    --display-name "skip_recycle_BM.GPU4.8_ap-osaka-1_AD_1_HG" \
+    --configurations '[{"target":"BM.GPU4.8","recycleLevel":"SKIP_RECYCLE"}]' \
+    --is-targeted-placement-required false
+
+  Type 'CREATE' to confirm:
+```
+
+---
+
+### Notifications (`--manage c,12`)
+
+```
+  ◆ ONS Topics (2)
+
+  #    Name                                     State        Topic OCID
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1)   compute-host-events                      ACTIVE       ocid1.onstopic.oc1.ap-osaka-1...
+  2)   gpu-alerts                                ACTIVE       ocid1.onstopic.oc1.ap-osaka-1...
+
+  ◆ Event Rules (1)
+
+  #    Display Name                             State      Enabled  Event Types
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────
+  e1)  host-events-skip_recycle_ad_X            ACTIVE     Yes      compute.computehost.upda...
+
+  #)     View        - View topic subscriptions
+  c)     Create      - Create a new ONS topic
+  s)     Subscribe   - Add subscription to a topic (email, webhook, PagerDuty)
+  d #)   Delete      - Delete topic
+  e#)    View Rule   - View event rule details (e1, e2...)
+  ed #)  Delete Rule - Delete event rule (ed 1, ed 2...)
+  r)     Refresh
+  b)     Back
+
+  [Notifications] Selection (#, c, s, d #, e#, ed #, r, b):
+```
+
+### Event Rule Detail (`--manage c,12` → `e1`)
+
+```
+  ◆ Event Rule: host-events-skip_recycle_ad_X
+
+  Name:        host-events-skip_recycle_ad_X
+  OCID:        ocid1.eventrule.oc1.ap-osaka-1...
+  State:       ACTIVE
+  Enabled:     Yes
+  Created:     2026-04-10T06:10:12Z
+
+  Event Types:
+    • com.oraclecloud.compute.computehost.update
+    • com.oraclecloud.compute.computehost.healthchange
+    • com.oraclecloud.compute.computehostgroup.update
+    • com.oraclecloud.compute.computehost.attach
+    • com.oraclecloud.compute.computehost.detach
+
+  Actions:
+    ONS → ocid1.onstopic.oc1.ap-osaka-1...
+```
+
+---
+
 ### GPU Memory Fabrics & Clusters (`--manage c,4`)
 
 ```
