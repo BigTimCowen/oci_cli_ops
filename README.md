@@ -60,15 +60,49 @@ Resource Manager Stacks (Terraform state!), Work Requests, Maintenance Events wi
 
 ## Configuration
 
-The script reads from `variables.sh` in the same directory. Run `--setup` to auto-populate from instance metadata, or configure manually:
+### variables.sh
+
+`variables.sh` is the environment configuration file that tells the script where to operate. It's sourced at startup and sets the default region, tenancy, compartment, availability domain, and OKE cluster for all queries.
+
+**Auto-setup:** Run `./oci_cli_ops.sh --setup` (or just launch the script without a `variables.sh`). The setup wizard detects your environment automatically:
+
+| Environment | Detection Method |
+|-------------|-----------------|
+| **OCI Instance** | IMDS metadata at `169.254.169.254` (tenancy, compartment, region, AD) |
+| **Cloud Shell** | `OCI_TENANCY` / `OCI_REGION` environment variables |
+| **Mac / Laptop** | `~/.oci/config` API key config (DEFAULT profile, or `OCI_CLI_PROFILE` env var) |
+
+After detection, the setup walks through interactive selection of region, availability domain, compartment (if defaulting to root), and OKE cluster. The result is saved to `variables.sh`:
 
 ```bash
+#!/bin/bash
+# OCI Environment Configuration
 REGION="us-ashburn-1"
 TENANCY_ID="ocid1.tenancy.oc1..aaaa..."
 COMPARTMENT_ID="ocid1.compartment.oc1..aaaa..."
+AD="jLaG:US-ASHBURN-AD-1"
+
+# OKE Cluster
+OKE_CLUSTER_ID="ocid1.cluster.oc1..aaaa..."
+CLUSTER_NAME="oke-gpu-quickstart"
+
+# Instance filter for listing: "gpu", "non-gpu", or "all"
+INSTANCE_FILTER="all"
 ```
 
-Global options available on any invocation:
+| Variable | Purpose |
+|----------|---------|
+| `REGION` | Default OCI region for all API calls |
+| `TENANCY_ID` | Tenancy OCID — used for compute hosts, capacity topology, service limits |
+| `COMPARTMENT_ID` | Default compartment for resource queries |
+| `AD` | Availability domain — used for host group creation, compute cluster placement |
+| `OKE_CLUSTER_ID` | Default OKE cluster for Kubernetes operations |
+| `CLUSTER_NAME` | Display name for the OKE cluster |
+| `INSTANCE_FILTER` | Filter instance list: `gpu` (GPU shapes only), `non-gpu`, or `all` |
+
+All values can be overridden at runtime using the `env` menu (change region, compartment, OKE cluster, VCN) without editing the file. Use `env` → `s` to save runtime changes back to `variables.sh`.
+
+### Global CLI Options
 
 ```
 --compartment-id <ocid>   Override compartment
