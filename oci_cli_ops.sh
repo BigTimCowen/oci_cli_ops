@@ -1487,8 +1487,11 @@ _step_finish() {
         wait "$_STEP_ANIM_PID" 2>/dev/null
         _STEP_ANIM_PID=""
     fi
-    _step_clear_wrapped_lines
-    printf "\r  %b\n" "$_STEP_COMPLETED_TEXT"
+    # If there's completed text, it's already on screen from _step_complete — just newline.
+    # If _step_finish is called without any prior _step_complete (empty bar), print nothing.
+    if [[ -n "$_STEP_COMPLETED_TEXT" ]]; then
+        echo ""
+    fi
     _STEP_COMPLETED_TEXT=""
     _LOG_QUIET=0
     _QUIET_SPINNERS=0
