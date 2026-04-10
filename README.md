@@ -420,6 +420,139 @@ Sample terminal output for key management screens.
 
 ---
 
+### Initial Setup (`./oci_cli_ops.sh`)
+
+When `variables.sh` is not found, the setup wizard runs automatically:
+
+```
+  variables.sh not found.
+
+  Would you like to run initial setup? (Y/n): Y
+
+  ═══════════════════════════════════════════════════════════════════════════════
+                            INITIAL SETUP - CREATING VARIABLES.SH
+  ═══════════════════════════════════════════════════════════════════════════════
+  Discovering:
+  ✓ IMDS, 0.2s  ✓ metadata, 0.3s  ✓ OCI CLI, 1.8s  ✓ names, 4.2s
+
+  Base environment detected:
+    Tenancy:     naciegpu [ocid1.tenancy.oc1..aaaa...]
+    Compartment: tim [ocid1.compartment.oc1..aaaa...]
+    Region:      us-ashburn-1
+    AD:          US-ASHBURN-AD-1
+
+  ◆ Region Selection
+   1) ap-chuncheon-1        7) ap-singapore-1      13) eu-frankfurt-1      19) me-abudhabi-1
+   ...
+  27) us-ashburn-1           (home) ← detected
+  28) us-chicago-1
+  Select region [Enter to keep us-ashburn-1]:
+  ✓ Region: us-ashburn-1 (kept)
+
+  ◆ Availability Domain
+   1) jLaG:US-ASHBURN-AD-1   ← detected
+   2) jLaG:US-ASHBURN-AD-2
+   3) jLaG:US-ASHBURN-AD-3
+  Select AD [Enter to keep US-ASHBURN-AD-1]:
+  ✓ AD: US-ASHBURN-AD-1 (kept)
+
+  ◆ OKE Clusters
+  Auto-selected (only cluster):
+    Name:    oke-gpu-quickstart-npejxs
+    Version: v1.34.1
+
+  Save configuration to variables.sh? (Y/n): Y
+  Configuration saved to: ./variables.sh
+```
+
+On macOS / laptop (no IMDS), setup falls back to `~/.oci/config`:
+
+```
+  Discovering:
+  ✓ IMDS(unavailable), 1.2s  ✓ OCI config, 2.1s  ✓ names, 1.8s
+
+  Base environment detected (local OCI config):
+    Tenancy:     mytenancy [ocid1.tenancy.oc1..aaaa...]
+    Compartment: mytenancy [ocid1.tenancy.oc1..aaaa...]
+    Region:      us-ashburn-1
+
+  ◆ Compartment Selection
+  Currently set to root (tenancy). Select a sub-compartment or keep root.
+   1) gpu-workloads
+   2) networking
+   0) Keep root compartment (tenancy)
+  Select compartment [Enter to keep root]: 1
+  ✓ Compartment: gpu-workloads
+```
+
+---
+
+### Main Menu (`--manage`)
+
+```
+  ═══════════════════════════════════════════════════════════════════════════════
+                                OCI RESOURCE MANAGEMENT
+  ═══════════════════════════════════════════════════════════════════════════════
+  Focus: (variables.sh configured │ manually selected │ derived)
+    Tenancy: naciegpu [ocid1.tenancy.oc1..aaaa...]
+    Region: us-ashburn-1  │  AD: US-ASHBURN-AD-1  │  Compartment: naciegpu > krupa > thiago > tim  │  OKE: oke-gpu-quickstart
+    OCI CLI: 3.74.0 (instance_principal)  │  kubectl: v1.34.1  │  helm: v3.20.0
+
+  ─── Actions ────────────────────────────────────────────────
+  » Categories
+  c)  Compute         - Instances, configs, clusters, GPU fabrics, images, topology
+  k)  Kubernetes      - OKE cluster environment, GPU stack health, node management
+  n)  Network         - VCN subnets, NSGs, route tables, DRGs, security lists
+  s)  Storage         - File Storage (FSS), Lustre, Object Storage
+  i)  Identity        - Compartments, identity domains, policies
+  o)  Operations      - Resource Manager, work requests, maintenance, announcements
+
+  » Utilities
+  r)     Overview      - Full environment view
+  env)   Change Focus  - Change region, compartment, OKE cluster, VCN
+  cache) Cache Stats   - View cache status, age, and refresh options
+  /)     Search        - Search resources by OCID, name, or free text
+
+  » Env Setup
+  setup) Env Setup    - Configure local dev tools (tmux, etc.)
+
+  q)     Quit
+
+  Shortcuts: c1, k2, s3, etc. jump directly to a resource
+  Global nav: type :c, :k1, :n2, etc. from any prompt to jump
+  Quick env: env c (compartment), env r (region), env oke, env vcn
+
+  [OCI Management] Selection (c, k, n, s, i, o, r, env [c|r|oke|vcn], /, setup, q):
+```
+
+---
+
+### Compute Menu (`--manage c`)
+
+```
+  ═══════════════════════════════════════════════════════════════════════════════
+                                      COMPUTE
+  ═══════════════════════════════════════════════════════════════════════════════
+  Main > Compute
+
+   1) Compute Instances             - View instance details, IPs, and volumes
+   2) Instance Configurations       - Create, view, compare, and delete instance configs
+   3) Compute Clusters              - Create, view, and delete compute clusters
+   4) GPU Memory Fabrics & Clusters - Manage GPU memory fabrics and clusters
+   5) Capacity Topology             - View host lifecycle states and details summary
+   6) Custom Images                 - List, import, create, and export custom images
+   7) GPU Instance Tagging          - Manage ComputeInstanceHostActions namespace and tags
+   8) Instance Pools                - Create, view, and manage instance pools
+   9) Cluster Networks              - View cluster networks and instance details
+  10) Compute Hosts                 - View bare-metal host health, state, and topology
+  11) Host Groups                   - Create, view, attach/detach BM hosts to host groups
+  12) Notifications                 - ONS topics, subscriptions for compute host events
+
+  [Compute] Selection (1-12, env [c|r|oke|vcn], b):
+```
+
+---
+
 ### Compute Instances (`--manage c,1`)
 
 ```
