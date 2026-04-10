@@ -42822,7 +42822,9 @@ manage_firmware_bundles() {
         _step_complete "firmware bundles(0)"
         _step_finish
         echo -e "  ${RED}Failed to fetch firmware bundles for platform '${selected_platform}'${NC}"
-        _ui_policy_hint "read firmware-bundles"
+        _ui_policy_hint "read firmware-bundles in tenancy"
+        echo -e "  ${GRAY}For instance principal / dynamic groups:${NC}"
+        echo -e "    ${GRAY}allow dynamic-group '<your-dg>' to {FIRMWARE_BUNDLE_INSPECT, FIRMWARE_BUNDLE_READ} in tenancy${NC}"
         echo ""
         _ui_pause "return"
         return
@@ -43337,7 +43339,9 @@ _fw_view_bundle_detail() {
     if [[ -z "$_detail_json" ]]; then
         echo -e "  ${RED}Failed to fetch firmware bundle details${NC}"
         echo -e "  ${WHITE}OCID:${NC} ${YELLOW}${bundle_id}${NC}"
-        _ui_policy_hint "read firmware-bundles"
+        _ui_policy_hint "read firmware-bundles in tenancy"
+        echo -e "  ${GRAY}For instance principal / dynamic groups:${NC}"
+        echo -e "    ${GRAY}allow dynamic-group '<your-dg>' to {FIRMWARE_BUNDLE_INSPECT, FIRMWARE_BUNDLE_READ} in tenancy${NC}"
         return
     fi
 
