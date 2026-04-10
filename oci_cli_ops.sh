@@ -16226,7 +16226,7 @@ _identity_list_dynamic_groups() {
             [[ -z "$_did" ]] && continue
             (
                 local _detail
-                _detail=$(oci identity-domains dynamic-resource-group get --dynamic-resource-group-id "$_did" --endpoint "$domain_url" --output json 2>/dev/null)
+                _detail=$(oci identity-domains dynamic-resource-group get --dynamic-resource-group-id "$_did" --endpoint "$domain_url" --attribute-sets all --output json 2>/dev/null)
                 [[ -n "$_detail" ]] && _detail=$(jq -r 'if .data then .data else . end | .["matching-rule"] // "N/A"' <<< "$_detail" 2>/dev/null)
                 echo "${_detail:-N/A}" > "${_dg_rules_dir}/${_did}"
             ) >/dev/null 2>&1 &
@@ -16312,7 +16312,7 @@ _identity_dynamic_group_detail() {
     _step_init
     _step_active "dynamic group details"
     local dg_json
-    dg_json=$(oci identity-domains dynamic-resource-group get --dynamic-resource-group-id "$dg_id" --endpoint "$domain_url" --output json 2>/dev/null)
+    dg_json=$(oci identity-domains dynamic-resource-group get --dynamic-resource-group-id "$dg_id" --endpoint "$domain_url" --attribute-sets all --output json 2>/dev/null)
     # Normalize: identity-domains API wraps response in .data envelope
     [[ -n "$dg_json" ]] && dg_json=$(jq 'if .data then .data else . end' <<< "$dg_json" 2>/dev/null)
     _step_complete "dynamic group details"
