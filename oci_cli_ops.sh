@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.32.5"
+readonly SCRIPT_VERSION="3.32.6"
 readonly SCRIPT_VERSION_DATE="2026-04-10"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -22381,7 +22381,7 @@ manage_oke_cluster() {
                     echo "$_cycling_json" > "$_nptmp/cycling_arg.json"
                     
                     # Build display command — resolve file:// to actual JSON for readability
-                    local _display_cmd="oci ce node-pool update --node-pool-id \"${sel_np_id}\" --node-pool-cycling-details '${_cycling_json}'"
+                    local _display_cmd="oci ce node-pool update --node-pool-id \"${sel_np_id}\" --region \"${region}\" --node-pool-cycling-details '${_cycling_json}'"
                     local _darg
                     for _darg in "$@"; do
                         if [[ "$_darg" =~ ^file:// ]]; then
