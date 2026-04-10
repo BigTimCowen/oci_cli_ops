@@ -1,13 +1,13 @@
 **OCI CLI Operations** — Interactive management tool for Oracle Cloud Infrastructure, Kubernetes, and GPU infrastructure.
 
-**Version:** 3.27.2 | **Date:** 2026-03-11
+**Version:** 3.33.1 | **Date:** 2026-04-10
 
 ## Overview
 
 `oci_cli_ops.sh` — bash script that turns your terminal into a full OCI management console. OCI CLI + kubectl, menu-driven, zero web UI required.
 
-🔥 *Compute* (10 sub-sections)
-Instance lifecycle with K8s cordon/drain/taint/terminate workflows, GPU Memory Fabrics & Clusters with firmware tracking, Capacity Topology with RDMA tree visualization, Custom Images, Instance Pools, Cluster Networks, Compute Hosts with impacted component details and recycle status, and more
+🔥 *Compute* (12 sub-sections)
+Instance lifecycle with K8s cordon/drain/taint/terminate workflows, GPU Memory Fabrics & Clusters with firmware tracking, Capacity Topology with RDMA tree visualization, Custom Images, Instance Pools, Cluster Networks, Compute Hosts with impacted component details and recycle status, Host Groups with attach/detach BM hosts, and Notifications (ONS topics, subscriptions, event rules for host monitoring)
 
 ⚡ *Kubernetes* (11 diagnostic tools)
 OKE cluster environment + comparison, NVIDIA GPU Stack Health (Operator + DRA), node-level GPU health, XID error scanning, RDMA/NCCL diagnostics, NVMe SMART logs, NVIDIA bug reports, SOS bundles, GPU tolerations, and SSH key distribution via DaemonSet
@@ -37,6 +37,8 @@ Resource Manager Stacks (Terraform state!), Work Requests, Maintenance Events wi
 | `helm` | Optional | For GPU Operator / DRA stack inspection |
 | `curl` | Optional | For IMDS metadata queries during setup |
 | `base64` / `gunzip` | Optional | For user-data decoding |
+
+**macOS Note:** Requires Bash 4+ (macOS ships with Bash 3.2). Install via `brew install bash`, then run with `/opt/homebrew/bin/bash ./oci_cli_ops.sh`. Setup auto-detects `~/.oci/config` when IMDS is unavailable (laptop/desktop use).
 
 ## Quick Start
 
@@ -106,9 +108,15 @@ Global nav: type `:c`, `:k1`, `:n2`, etc. from any prompt to jump.
 | `c7` | GPU Instance Tagging | ComputeInstanceHostActions namespace and tags |
 | `c8` | Instance Pools | Create, view, and manage instance pools |
 | `c9` | Cluster Networks | View cluster networks and instance details |
-| `c10` | Compute Hosts | Bare-metal host health, state, topology, impacted component details (`h#` drill-down), recycle status |
+| `c10` | Compute Hosts | Bare-metal host health, state, topology, impacted component details (`h#` drill-down), recycle status, `notify` for event rules |
+| `c11` | Host Groups | Create, view, delete host groups; attach/detach BM hosts; capacity topology pre-flight |
+| `c12` | Notifications | ONS topics, subscriptions (email/Slack/PagerDuty/webhook), event rules for host monitoring |
 
 **Instance Actions** (`c1` prompt): `i#` (detail), `/` (search), `taint`, `untaint`, `cordon`, `uncordon`, `drain`, `reboot`, `cdt` (Cordon-Drain-Tag-Terminate), `terminate`, `bvr` (Boot Volume Replacement), `brc` (Bulk Run-Command), `p` (properties view), `col` (column picker)
+
+**Host Group Actions** (`c11` detail): `a` (attach BM host), `dt #` (detach), `notify` (create event rule), `j` (JSON)
+
+**Notification Actions** (`c12`): `c` (create topic), `s` (subscribe), `d #` (delete topic), `e#` (view event rule), `ed #` (delete event rule)
 
 ---
 
@@ -268,6 +276,7 @@ All caches stored in `./cache/` relative to the script. Key caches:
 | Maintenance Events | `maintenance_events.json` | 5m |
 | Compute Hosts | `compute_hosts.json` | 5m |
 | Compute Host Details | `compute_host_detail/*.json` | 5m |
+| Host Groups | `compute_host_groups.json` | 5m |
 | Capacity Topology | `capacity_topology_hosts.json` | 5m |
 | OKE Environment | `oke_environment.txt` | 5m |
 | Network Resources | `network_resources.txt` | 5m |
@@ -356,6 +365,7 @@ Focus can be saved to `variables.sh` via `env` → `s` (save). The current focus
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 3.33.1 | 2026-04-10 | c11 Host Groups (CRUD, attach/detach BM hosts, capacity pre-flight, BM.GPU shape picker). c12 Notifications (ONS topics, subscriptions, event rule list/detail/delete). c10 `notify` for event rules. macOS support (Bash 4 guard, `~/.oci/config` setup, IMDS skip on Darwin). OKE focus fix, BVR `--region`, env r persistence in menus, capacity topology AD filtering |
 | 3.27.2 | 2026-03-11 | o3 summary: monthly fault code/fabric tables with lifecycle columns, fault code reference with component/description/impact. c10 summary: per-fabric GPU memory table, per-row impacted inline, skip k8s without context |
 | 3.26.0 | 2026-03-10 | Dedicated pool GB200 fix, capacity report error diagnostics, `h#` compute host navigation from o3, RDMA alignment, c10 impacted component aggregation |
 | 3.25.73 | 2026-03-04 | Compute host impacted component details via `compute-host get`, recycle-details, `h#` detail drill-down, parallel detail fetch with progress |
