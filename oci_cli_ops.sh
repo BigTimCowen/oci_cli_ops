@@ -40100,11 +40100,12 @@ manage_instance_configurations() {
         echo -e "  ${YELLOW}re${NC}          - Rename an Instance Configuration (e.g., ${YELLOW}re c1${NC})"
         echo -e "  ${RED}d #${NC}         - Delete Instance Configuration (d 1, d 1,2,3, d 1-3, d all)"
         echo -e "  ${CYAN}comp${NC}        - Compare configs (e.g., ${CYAN}comp c1 c2${NC}) (alias: ${CYAN}diff${NC})"
+        echo -e "  ${GREEN}cci${NC}         - Create cloud-init YAML (auto-detects API server + CA from kubeconfig)"
         echo -e "  ${MAGENTA}ua${NC}          - Update GPU memory cluster instance configuration"
         echo -e "  ${MAGENTA}r${NC}           - Refresh data from OCI"
         echo -e "  ${CYAN}back${NC}        - Return to main menu"
         echo ""
-        _ui_prompt "Instance Configs" "c#, c, re, re c#, d #, comp c# c#, ua, r, back, show"
+        _ui_prompt "Instance Configs" "c#, c, cci, re, re c#, d #, comp c# c#, ua, r, back, show"
         
         local input
         read -r input
@@ -40118,6 +40119,9 @@ manage_instance_configurations() {
         case "$input" in
             c|C|create|CREATE)
                 create_instance_configuration_interactive
+                ;;
+            cci|CCI)
+                _create_cloud_init_yaml
                 ;;
             re|RE|rename|RENAME)
                 rename_instance_configuration_interactive
@@ -67396,6 +67400,233 @@ delete_gpu_tagging_namespace() {
         log_action_result "FAILED" "Namespace cascade-delete failed"
     fi
     
+    echo ""
+    _ui_pause
+}
+
+#--------------------------------------------------------------------------------
+# Create Cloud-Init YAML — auto-detects API server + CA from kubeconfig
+#--------------------------------------------------------------------------------
+_create_cloud_init_yaml() {
+    echo ""
+    _ui_menu_header "CREATE CLOUD-INIT CONFIGURATION"
+    echo ""
+
+    local api_server_ip="" ca_cert_b64=""
+
+    # ── Auto-detect from kubeconfig ──
+    _ui_subheader "Auto-detect from kubeconfig" 0
+    echo ""
+    local kubeconfig="${KUBECONFIG:-$HOME/.kube/config}"
+    if [[ -f "$kubeconfig" ]]; then
+        echo -e "  ${GRAY}Checking ${kubeconfig}...${NC}"
+
+        # Extract API server — strip https:// and port
+        local _raw_server
+        _raw_server=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)
+        if [[ -n "$_raw_server" ]]; then
+            # Strip protocol and port: https://10.0.0.5:6443 → 10.0.0.5
+            api_server_ip="${_raw_server#https://}"
+            api_server_ip="${api_server_ip#http://}"
+            api_server_ip="${api_server_ip%%:*}"
+            echo -e "  ${GREEN}✓ API Server:  ${WHITE}${api_server_ip}${NC}"
+        fi
+
+        # Extract CA cert (base64)
+        ca_cert_b64=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' 2>/dev/null)
+        if [[ -n "$ca_cert_b64" ]]; then
+            local _ca_len=${#ca_cert_b64}
+            echo -e "  ${GREEN}✓ CA Cert:     ${WHITE}(${_ca_len} bytes, base64)${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}⚠ ${kubeconfig} not found${NC}"
+    fi
+
+    # Prompt for manual entry if not auto-detected
+    if [[ -z "$api_server_ip" ]]; then
+        echo ""
+        echo -n -e "  ${CYAN}Enter API Server Host IP: ${NC}"
+        read -r api_server_ip
+        [[ -z "$api_server_ip" ]] && { echo -e "  ${RED}Required — cancelled${NC}"; _ui_pause; return; }
+    fi
+    if [[ -z "$ca_cert_b64" ]]; then
+        echo -n -e "  ${CYAN}Enter CA Certificate (base64, single line): ${NC}"
+        read -r ca_cert_b64
+        [[ -z "$ca_cert_b64" ]] && { echo -e "  ${RED}Required — cancelled${NC}"; _ui_pause; return; }
+    fi
+    echo ""
+
+    # ── Kubernetes Version ──
+    _ui_subheader "Kubernetes Version" 0
+    echo ""
+
+    local _cluster_ver=""
+    _cluster_ver=$(kubectl version --short 2>/dev/null | grep "Server" | grep -oP 'v\K[0-9]+\.[0-9]+\.[0-9]+' || true)
+    [[ -z "$_cluster_ver" ]] && _cluster_ver=$(kubectl version 2>/dev/null | grep "Server" | grep -oP 'v\K[0-9]+\.[0-9]+\.[0-9]+' || true)
+
+    local _default_ver="${_cluster_ver:-1.34.2}"
+    [[ -n "$_cluster_ver" ]] && echo -e "  ${GRAY}Current cluster version: ${WHITE}v${_cluster_ver}${NC}"
+    echo -n -e "  ${CYAN}K8s version [${_default_ver}]: ${NC}"
+    local k8s_ver
+    read -r k8s_ver
+    [[ -z "$k8s_ver" ]] && k8s_ver="$_default_ver"
+    # Strip leading v
+    k8s_ver="${k8s_ver#v}"
+    local k8s_minor="${k8s_ver%.*}"
+    echo -e "  ${GREEN}✓ K8s Version: ${WHITE}${k8s_ver}${NC}"
+    echo ""
+
+    # ── OKE Repository Region ──
+    _ui_subheader "OKE Repository Region" 0
+    echo ""
+    echo -e "  ${WHITE}Select region for OKE apt repository:${NC}"
+    echo -e "    ${YELLOW}1${NC}) us-sanjose-1  ${GRAY}(default)${NC}"
+    echo -e "    ${YELLOW}2${NC}) us-ashburn-1"
+    echo -e "    ${YELLOW}3${NC}) us-phoenix-1"
+    echo -e "    ${YELLOW}4${NC}) Enter custom URL"
+    echo ""
+    echo -n -e "  ${CYAN}Select [1]: ${NC}"
+    local _repo_choice
+    read -r _repo_choice
+    [[ -z "$_repo_choice" ]] && _repo_choice=1
+
+    local repo_region="us-sanjose-1"
+    local repo_url=""
+    case "$_repo_choice" in
+        1) repo_region="us-sanjose-1" ;;
+        2) repo_region="us-ashburn-1" ;;
+        3) repo_region="us-phoenix-1" ;;
+        4)
+            echo -n -e "  ${CYAN}Enter full apt source URL: ${NC}"
+            read -r repo_url
+            [[ -z "$repo_url" ]] && { echo -e "  ${RED}Required — cancelled${NC}"; _ui_pause; return; }
+            ;;
+    esac
+
+    if [[ -z "$repo_url" ]]; then
+        repo_url="deb [trusted=yes] https://objectstorage.${repo_region}.oraclecloud.com/p/_Zaa2khW3lPESEbqZ2JB3FijAd0HeKmiP-KA2eOMuWwro85dcG2WAqua2o_a-PlZ/n/odx-oke/b/okn-repositories-private/o/prod/ubuntu-jammy/kubernetes-${k8s_minor} stable main"
+    fi
+    echo -e "  ${GREEN}✓ Repo: ${WHITE}${repo_region}${NC}"
+    echo ""
+
+    # ── Kubelet Extra Args ──
+    _ui_subheader "Kubelet Extra Args" 0
+    echo ""
+    local _default_kubelet_args='--feature-gates=DynamicResourceAllocation=true'
+    echo -e "  ${GRAY}Default: ${WHITE}${_default_kubelet_args}${NC}"
+    echo -n -e "  ${CYAN}Kubelet args [Enter to keep default]: ${NC}"
+    local kubelet_args
+    read -r kubelet_args
+    [[ -z "$kubelet_args" ]] && kubelet_args="$_default_kubelet_args"
+    echo -e "  ${GREEN}✓ Kubelet Args: ${WHITE}${kubelet_args}${NC}"
+    echo ""
+
+    # ── SSH Public Key ──
+    _ui_subheader "SSH Public Key" 0
+    echo ""
+    echo -n -e "  ${CYAN}Paste SSH public key (or path to .pub file): ${NC}"
+    local ssh_key
+    read -r ssh_key
+
+    # If it's a file path, read the file
+    if [[ -f "$ssh_key" ]]; then
+        ssh_key=$(cat "$ssh_key" 2>/dev/null)
+    fi
+
+    if [[ -z "$ssh_key" ]]; then
+        echo -e "  ${YELLOW}⚠ No SSH key — skipping ssh_authorized_keys section${NC}"
+    else
+        local _sk_short="${ssh_key:0:40}..."
+        echo -e "  ${GREEN}✓ SSH Key: ${WHITE}${_sk_short}${NC}"
+    fi
+    echo ""
+
+    # ── Additional runcmd ──
+    _ui_subheader "Additional runcmd" 0
+    echo ""
+    echo -e "  ${GRAY}Default includes:${NC}"
+    echo -e "    ${GRAY}- oke bootstrap --apiserver-host ... --ca ... --kubelet-extra-args ...${NC}"
+    echo -e "    ${GRAY}- systemctl disable --now nvidia-imex.service && systemctl mask nvidia-imex.service${NC}"
+    echo -n -e "  ${CYAN}Add extra runcmd lines? (y/N): ${NC}"
+    local _extra_rc
+    read -r _extra_rc
+    local -a extra_runcmd=()
+    if [[ "$_extra_rc" =~ ^[Yy]$ ]]; then
+        echo -e "  ${GRAY}Enter commands one per line. Empty line to finish:${NC}"
+        while true; do
+            echo -n -e "    ${CYAN}> ${NC}"
+            local _cmd
+            read -r _cmd
+            [[ -z "$_cmd" ]] && break
+            extra_runcmd+=("$_cmd")
+        done
+    fi
+    echo ""
+
+    # ── Output Filename ──
+    echo -n -e "  ${CYAN}Output filename [new_cloud_init.yaml]: ${NC}"
+    local output_file
+    read -r output_file
+    [[ -z "$output_file" ]] && output_file="new_cloud_init.yaml"
+    echo -e "  ${GREEN}✓ File: ${WHITE}${output_file}${NC}"
+    echo ""
+
+    # ── Build YAML ──
+    local _yaml="#cloud-config
+apt:
+  sources:
+    oke-node: {source: '${repo_url}'}
+packages:
+  - oci-oke-node-all-${k8s_ver}
+write_files:
+  - path: /etc/oke/oke-apiserver
+    permissions: '0644'
+    content: ${api_server_ip}
+  - encoding: b64
+    path: /etc/kubernetes/ca.crt
+    permissions: '0644'
+    content: ${ca_cert_b64}
+runcmd:
+  - oke bootstrap --apiserver-host ${api_server_ip} --ca \"${ca_cert_b64}\" --kubelet-extra-args \"${kubelet_args}\"
+  - systemctl disable --now nvidia-imex.service && systemctl mask nvidia-imex.service"
+
+    # Add extra runcmd
+    for _ec in "${extra_runcmd[@]}"; do
+        _yaml+="
+  - ${_ec}"
+    done
+
+    # Add SSH key section
+    if [[ -n "$ssh_key" ]]; then
+        _yaml+="
+ssh_authorized_keys:
+  - ${ssh_key}"
+    fi
+
+    # ── Review ──
+    _ui_subheader "Review" 0
+    echo ""
+    echo -e "  ${GRAY}$(printf '─%.0s' {1..70})${NC}"
+    echo "$_yaml"
+    echo -e "  ${GRAY}$(printf '─%.0s' {1..70})${NC}"
+    echo ""
+
+    echo -n -e "  ${CYAN}Save to ${output_file}? (Y/n): ${NC}"
+    local _save
+    read -r _save
+    if [[ "$_save" =~ ^[Nn]$ ]]; then
+        echo -e "  ${YELLOW}Not saved.${NC}"
+        _ui_pause
+        return
+    fi
+
+    echo "$_yaml" > "$output_file"
+    echo ""
+    echo -e "  ${GREEN}✓ Saved to: ${WHITE}$(pwd)/${output_file}${NC}"
+    echo ""
+    echo -e "  ${YELLOW}⚠ Important:${NC} Verify the apt source URL and package version are correct for your cluster."
+    echo -e "    ${GRAY}The repository URL and package name change with each Kubernetes minor version.${NC}"
+    echo -e "    ${GRAY}Reference: ${WHITE}https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingubuntubasedworkernodes.htm${NC}"
     echo ""
     _ui_pause
 }
