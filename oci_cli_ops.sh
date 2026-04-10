@@ -44494,7 +44494,7 @@ update_gpu_memory_cluster_interactive() {
         else
             echo -e "    ${RED}✗ Failed${NC}"
             log_action_result "FAILED" "UPDATE operation"
-            echo "$result" | head -3 | sed 's/^/      /'
+            echo "$result" | sed 's/^/      /'
             _log_masked "$log_file" "FAILED: ${gid} ${c_name} -> ${result}"
             ((fail_count++))
         fi
@@ -44730,7 +44730,7 @@ update_all_clusters_instance_config() {
         else
             echo -e "${RED}✗${NC}"
             log_action_result "FAILED" "UPDATE operation"
-            echo -e "    ${RED}Error: $(echo "$result" | head -1)${NC}"
+            echo "$result" | sed 's/^/      /'
             ((fail_count++))
         fi
     done
