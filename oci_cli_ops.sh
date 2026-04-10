@@ -1414,16 +1414,16 @@ _step_active() {
     local completed="$_STEP_COMPLETED_TEXT"
     local _sa_cols
     _sa_cols=$(tput cols 2>/dev/null) || _sa_cols=180
+    # Pre-calculate wrapped line count (once, not per-frame)
+    local _sa_vis_len _sa_wrap_lines=0
+    _sa_vis_len=$(echo -e "  ${completed}X ${label}... " | sed 's/\x1b\[[0-9;]*m//g' 2>/dev/null | tr -d '\n' | wc -c)
+    (( _sa_wrap_lines = _sa_vis_len / _sa_cols ))
     (
         local i=0
         trap 'return 0' TERM INT
         while true; do
-            # Clear wrapped lines before redrawing
-            local _sa_vis _sa_vl _sa_lines _sa_j
-            _sa_vis=$(echo -e "  ${completed}" | sed 's/\x1b\[[0-9;]*m//g' 2>/dev/null)
-            _sa_vl=$(( ${#_sa_vis} + ${#label} + 10 ))
-            _sa_lines=$(( _sa_vl / _sa_cols ))
-            for (( _sa_j=0; _sa_j<_sa_lines; _sa_j++ )); do
+            local _sa_j
+            for (( _sa_j=0; _sa_j<_sa_wrap_lines; _sa_j++ )); do
                 printf '\033[A\033[2K'
             done
             printf '\033[2K\r  %b%s %s... ' "$completed" "${_SPINNER_CHARS:$((i % ${#_SPINNER_CHARS})):1}" "$label"
