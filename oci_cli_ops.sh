@@ -2870,11 +2870,15 @@ fetch_firmware_bundles() {
     local platform="$1"
     local region="${2:-${FOCUS_REGION:-$REGION}}"
 
-    # Check if cache is fresh AND for the same platform
+    # Check if cache is fresh AND for the same platform+region
     if is_cache_fresh "$FW_BUNDLE_CACHE"; then
+        local _cached_header=""
+        _cached_header=$(head -1 "$FW_BUNDLE_CACHE" 2>/dev/null || true)
         local _cached_platform=""
-        _cached_platform=$(head -1 "$FW_BUNDLE_CACHE" 2>/dev/null | grep -oP '(?<=platform=).+' || true)
-        if [[ "$_cached_platform" == "$platform" ]]; then
+        _cached_platform=$(echo "$_cached_header" | grep -oP '(?<=platform=)[^ ]+' || true)
+        local _cached_region=""
+        _cached_region=$(echo "$_cached_header" | grep -oP '(?<=region=).+' || true)
+        if [[ "$_cached_platform" == "$platform" && "$_cached_region" == "$region" ]]; then
             return 0
         fi
     fi
@@ -2890,9 +2894,9 @@ fetch_firmware_bundles() {
         return 1
     fi
 
-    # Write JSON with platform tag on first line (_fw_bundle_cache_read strips it)
+    # Write JSON with platform+region tag on first line (_fw_bundle_cache_read strips it)
     {
-        echo "// platform=${platform}"
+        echo "// platform=${platform} region=${region}"
         echo "$_json"
     } | _cache_write "$FW_BUNDLE_CACHE"
 
