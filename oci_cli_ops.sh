@@ -14367,8 +14367,7 @@ display_compartment_selector() {
     [[ $tenancy_children_count -gt 0 ]] && root_info_str="${root_info_str}${GRAY}, ${NC}${tenancy_children_count} sub"
     root_info_str="${root_info_str}${GRAY})${NC}"
     echo -e "  ${root_marker}${BLUE}🏢 ${NC}${YELLOW}${display_idx}${NC}) ${BOLD}${BLUE}${tenancy_name}${NC}${root_info_str}${tenancy_pad}${YELLOW}${tenancy_id}${NC}"
-    echo ""
-    
+
     _print_comp_tree() {
         local parent_id="$1"
         local depth="$2"
