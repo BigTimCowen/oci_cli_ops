@@ -65696,10 +65696,11 @@ manage_kubernetes() {
         echo -e "  ${YELLOW}9${NC}) ${GREEN}GPU Tolerations${NC}             - View/add/remove tolerations on gpu-operator & device-plugin daemonsets"
         echo -e "  ${YELLOW}10${NC}) ${GREEN}Storage Provisioning Check${NC} - Validate BV, FSS, Lustre prerequisites for K8s"
         echo -e "  ${YELLOW}11${NC}) ${GREEN}Authorized SSH Keys${NC}        - Distribute SSH public keys to worker nodes via DaemonSet"
+        echo -e "  ${YELLOW}12${NC}) ${GREEN}Debug DaemonSet${NC}            - Deploy privileged debug pod to selected nodes"
         echo ""
         echo -e "  ${CYAN}b${NC}) Back"
         echo ""
-        _ui_prompt "K8s Management" "1-11, b, show"
+        _ui_prompt "K8s Management" "1-12, b, show"
         
         local choice
         read -r choice
@@ -65739,6 +65740,9 @@ manage_kubernetes() {
             11)
                 k8s_authorized_ssh_keys
                 ;;
+            12)
+                k8s_debug_daemonset
+                ;;
             b|B|back|BACK|"")
                 return
                 ;;
@@ -65751,6 +65755,291 @@ manage_kubernetes() {
                 ;;
         esac
     done
+}
+
+#--------------------------------------------------------------------------------
+# Debug DaemonSet — deploy privileged busybox pod to selected nodes
+# Creates a DaemonSet with hostPID/hostIPC/hostNetwork, chroot /host access
+#--------------------------------------------------------------------------------
+k8s_debug_daemonset() {
+    echo ""
+    _ui_menu_header "CREATE DEBUG DAEMONSET"
+    echo ""
+
+    # Check for existing debug DaemonSet
+    local _existing
+    _existing=$(kubectl get daemonset -A -o json 2>/dev/null | jq -r '.items[] | select(.metadata.labels["app.kubernetes.io/name"] == "node-debug") | "\(.metadata.name)|\(.metadata.namespace)|\(.status.numberReady // 0)"' 2>/dev/null)
+
+    if [[ -n "$_existing" ]]; then
+        local _ex_name _ex_ns _ex_pods
+        IFS='|' read -r _ex_name _ex_ns _ex_pods <<< "$_existing"
+        echo -e "  ${YELLOW}⚠ Existing debug DaemonSet found: ${WHITE}${_ex_name}${NC} ${GRAY}(${_ex_ns}, ${_ex_pods} pods)${NC}"
+        echo ""
+        echo -e "  ${YELLOW}1${NC}) Delete existing and create new"
+        echo -e "  ${YELLOW}2${NC}) Delete existing only (cleanup)"
+        echo -e "  ${YELLOW}3${NC}) Keep and return"
+        echo ""
+        echo -n -e "  ${CYAN}Select [3]: ${NC}"
+        local _ex_choice
+        read -r _ex_choice
+        case "${_ex_choice:-3}" in
+            1)
+                echo -e "  ${GRAY}Deleting ${_ex_name} in ${_ex_ns}...${NC}"
+                kubectl delete daemonset "$_ex_name" -n "$_ex_ns" 2>/dev/null
+                echo -e "  ${GREEN}✓ Deleted${NC}"
+                echo ""
+                ;;
+            2)
+                echo -e "  ${GRAY}Deleting ${_ex_name} in ${_ex_ns}...${NC}"
+                kubectl delete daemonset "$_ex_name" -n "$_ex_ns" 2>/dev/null
+                echo -e "  ${GREEN}✓ Deleted${NC}"
+                _ui_pause
+                return
+                ;;
+            *)
+                return
+                ;;
+        esac
+    fi
+
+    # ── Managed By ──
+    _ui_subheader "Configuration" 0
+    echo ""
+    local _default_managed_by
+    _default_managed_by=$(whoami 2>/dev/null || echo "admin")
+    echo -n -e "  ${CYAN}Enter managed-by label [${_default_managed_by}]: ${NC}"
+    local managed_by
+    read -r managed_by
+    [[ -z "$managed_by" ]] && managed_by="$_default_managed_by"
+    echo -e "  ${GREEN}✓ Managed By: ${WHITE}${managed_by}${NC}"
+    echo ""
+
+    # ── Select Target Nodes ──
+    _ui_subheader "Select Target Nodes" 0
+    echo ""
+    echo -e "  ${GRAY}Fetching K8s nodes...${NC}"
+
+    local _nodes_json
+    _nodes_json=$(kubectl get nodes -o json 2>/dev/null)
+    if [[ -z "$_nodes_json" ]] || ! jq -e '.items[0]' <<< "$_nodes_json" >/dev/null 2>&1; then
+        echo -e "  ${RED}Failed to fetch K8s nodes — ensure kubectl is configured${NC}"
+        _ui_pause
+        return
+    fi
+
+    # Build node list
+    declare -A _DBG_NODE_MAP=()
+    local _ni=0
+
+    echo ""
+    printf "  ${GRAY}%-4s %-25s %-8s %-8s %-25s %-5s %-5s${NC}\n" "#" "Node Name" "Status" "Cordon" "Shape" "AD" "Pods"
+    echo -e "  ${GRAY}$(printf '─%.0s' {1..85})${NC}"
+
+    # Get pods per node for count
+    local _dbg_pods_per_node
+    _dbg_pods_per_node=$(kubectl get pods --all-namespaces --field-selector=status.phase=Running \
+        -o custom-columns=NODE:.spec.nodeName --no-headers 2>/dev/null | sort | uniq -c | awk '{print $2"|"$1}')
+
+    while IFS=$'\t' read -r _nname _nready _nunsch _nshape; do
+        [[ -z "$_nname" ]] && continue
+        ((_ni++))
+        _DBG_NODE_MAP[$_ni]="$_nname"
+
+        local _nstatus="Ready" _nstatus_c="$GREEN"
+        [[ "$_nready" != "True" ]] && { _nstatus="NotRdy"; _nstatus_c="$RED"; }
+        local _ncordon="-" _ncordon_c="$GRAY"
+        [[ "$_nunsch" == "true" ]] && { _ncordon="Yes"; _ncordon_c="$YELLOW"; }
+        local _npods="-"
+        local _np_match
+        _np_match=$(echo "$_dbg_pods_per_node" | grep "^${_nname}|" | cut -d'|' -f2)
+        [[ -n "$_np_match" ]] && _npods="$_np_match"
+
+        # Get AD short from node labels
+        local _nad="-"
+
+        printf "  ${YELLOW}%-4s${NC} ${WHITE}%-25s${NC} ${_nstatus_c}%-8s${NC} ${_ncordon_c}%-8s${NC} %-25s %-5s %-5s\n" \
+            "$_ni" "$_nname" "$_nstatus" "$_ncordon" "${_nshape:0:25}" "$_nad" "$_npods"
+    done < <(jq -r '.items[] | [
+        .metadata.name,
+        ([.status.conditions[] | select(.type=="Ready")] | .[0].status // "Unknown"),
+        (.spec.unschedulable // false | tostring),
+        (.metadata.labels["node.kubernetes.io/instance-type"] // .metadata.labels["beta.kubernetes.io/instance-type"] // "N/A")
+    ] | @tsv' <<< "$_nodes_json" 2>/dev/null | sort)
+
+    if [[ $_ni -eq 0 ]]; then
+        echo -e "  ${RED}No nodes found${NC}"
+        _ui_pause
+        return
+    fi
+
+    echo ""
+    echo -e "  ${GRAY}Select nodes: 1, 1,2,3, 1-4, or all${NC}"
+    echo -n -e "  ${CYAN}Select nodes: ${NC}"
+    local _node_sel
+    read -r _node_sel
+
+    if [[ -z "$_node_sel" ]]; then
+        echo -e "  ${YELLOW}Cancelled${NC}"
+        _ui_pause
+        return
+    fi
+
+    if ! _parse_targets "" "$_node_sel" "$_ni"; then
+        echo -e "  ${RED}No valid nodes selected${NC}"
+        _ui_pause
+        return
+    fi
+
+    # Build selected node list
+    local -a _selected_nodes=()
+    echo ""
+    echo -e "  ${GREEN}✓ Selected ${#_SEL_INDICES[@]} node(s):${NC}"
+    for _si in "${_SEL_INDICES[@]}"; do
+        local _sn="${_DBG_NODE_MAP[$_si]}"
+        _selected_nodes+=("$_sn")
+        echo -e "    ${CYAN}•${NC} ${WHITE}${_sn}${NC}"
+    done
+    echo ""
+
+    # ── Namespace ──
+    echo -n -e "  ${CYAN}Namespace [monitoring]: ${NC}"
+    local _ns
+    read -r _ns
+    [[ -z "$_ns" ]] && _ns="monitoring"
+    echo -e "  ${GREEN}✓ Namespace: ${WHITE}${_ns}${NC}"
+    echo ""
+
+    # ── DaemonSet Name ──
+    echo -n -e "  ${CYAN}DaemonSet name [debug]: ${NC}"
+    local _ds_name
+    read -r _ds_name
+    [[ -z "$_ds_name" ]] && _ds_name="debug"
+    echo -e "  ${GREEN}✓ Name: ${WHITE}${_ds_name}${NC}"
+    echo ""
+
+    # ── Build YAML ──
+    # Build the values list for nodeAffinity
+    local _values_yaml=""
+    for _sn in "${_selected_nodes[@]}"; do
+        _values_yaml+="                  - ${_sn}"$'\n'
+    done
+    # Remove trailing newline
+    _values_yaml="${_values_yaml%$'\n'}"
+
+    local _yaml
+    _yaml="apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ${_ds_name}
+  namespace: ${_ns}
+  labels:
+    app.kubernetes.io/name: node-debug
+    app.kubernetes.io/managed-by: ${managed_by}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: node-debug
+      app.kubernetes.io/instance: node-debug
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: node-debug
+        app.kubernetes.io/instance: node-debug
+    spec:
+      hostPID: true
+      hostIPC: true
+      hostNetwork: true
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      - operator: Exists
+        effect: PreferNoSchedule
+      - operator: Exists
+        effect: NoExecute
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+${_values_yaml}
+      containers:
+      - name: debug
+        image: busybox
+        command: [\"sleep\", \"infinity\"]
+        stdin: true
+        tty: true
+        securityContext:
+          privileged: true
+          capabilities:
+            add: [\"SYS_ADMIN\", \"NET_ADMIN\", \"SYS_PTRACE\"]
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+          readOnly: false
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+          type: Directory"
+
+    # ── Review ──
+    _ui_subheader "Review" 0
+    echo ""
+    echo -e "  ${CYAN}Managed By:${NC}  ${WHITE}${managed_by}${NC}"
+    echo -e "  ${CYAN}Namespace:${NC}   ${WHITE}${_ns}${NC}"
+    echo -e "  ${CYAN}Name:${NC}        ${WHITE}${_ds_name}${NC}"
+    echo -e "  ${CYAN}Target:${NC}      ${WHITE}${#_selected_nodes[@]} node(s)${NC} — ${_selected_nodes[*]}"
+    echo -e "  ${CYAN}Image:${NC}       ${WHITE}busybox${NC}"
+    echo -e "  ${CYAN}Host Access:${NC} ${WHITE}hostPID, hostIPC, hostNetwork, privileged${NC}"
+    echo -e "  ${CYAN}Mounts:${NC}      ${WHITE}/ → /host (read-write)${NC}"
+    echo ""
+    echo -e "  ${WHITE}YAML to apply:${NC}"
+    echo -e "  ${GRAY}$(printf '─%.0s' {1..70})${NC}"
+    echo "$_yaml"
+    echo -e "  ${GRAY}$(printf '─%.0s' {1..70})${NC}"
+    echo ""
+
+    local _yaml_file="${TEMP_DIR}/debug-daemonset-$$.yaml"
+    echo "$_yaml" > "$_yaml_file"
+
+    echo -e "  ${WHITE}Command:${NC} ${GRAY}kubectl apply -f ${_yaml_file}${NC}"
+    echo ""
+
+    if ! _ui_confirm "APPLY" "confirm, or anything else to cancel" "$CYAN"; then
+        echo -e "  ${YELLOW}Cancelled.${NC}"
+        rm -f "$_yaml_file"
+        _ui_pause
+        return
+    fi
+
+    # Ensure namespace exists
+    kubectl get namespace "$_ns" >/dev/null 2>&1 || kubectl create namespace "$_ns" 2>/dev/null
+
+    log_action "CREATE" "kubectl apply -f (debug-daemonset: ${_ds_name} in ${_ns}, ${#_selected_nodes[@]} nodes)"
+    local _apply_result
+    _apply_result=$(kubectl apply -f "$_yaml_file" 2>&1)
+    local _apply_rc=$?
+    rm -f "$_yaml_file"
+
+    if [[ $_apply_rc -eq 0 ]]; then
+        echo ""
+        echo -e "  ${GREEN}✓ DaemonSet ${WHITE}${_ds_name}${GREEN} created in namespace ${WHITE}${_ns}${NC}"
+        log_action_result "SUCCESS" "Created debug DaemonSet: ${_ds_name} (${#_selected_nodes[@]} nodes)"
+        echo ""
+        echo -e "  ${WHITE}Usage:${NC}"
+        echo -e "    ${GRAY}kubectl exec -it ${_ds_name}-xxxxx -n ${_ns} -- chroot /host bash${NC}"
+        echo -e "    ${GRAY}kubectl delete daemonset ${_ds_name} -n ${_ns}${NC}    ${GRAY}(cleanup when done)${NC}"
+    else
+        echo ""
+        echo -e "  ${RED}✗ Failed to create DaemonSet${NC}"
+        echo -e "    ${RED}${_apply_result}${NC}"
+        log_action_result "FAILED" "Create debug DaemonSet: ${_ds_name}"
+    fi
+    echo ""
+    _ui_pause
 }
 
 #--------------------------------------------------------------------------------
