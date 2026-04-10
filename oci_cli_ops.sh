@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.33.1"
+readonly SCRIPT_VERSION="3.34.0"
 readonly SCRIPT_VERSION_DATE="2026-04-10"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -32531,13 +32531,13 @@ _PROP_SEARCH_INDICES=()
 # Colors: @1=state, @2=k8s, @3=cordon, @4=taint, @5=pods, @6=imp, @7=k8s_node
 #--------------------------------------------------------------------------------
 _INST_COL_CONF="$INST_COLUMNS_CONF"
-_INST_COL_KEYS=(           "id"     "imp"    "name"         "state"  "k8s"   "k8s_node"       "cordon"  "taint"    "pods"  "shape"  "ad"   "fd"   "created"  "age"    "host_id"      "rack_id"      "sn"           "fabric"           "fw_ver"           "clique"           "ocid"           )
-_INST_COL_LABELS=(         "ID"     "I"      "Display Name" "State"  "K8s"   "K8s Node"       "Cordon"  "Taint"    "Pods"  "Shape"  "AD"   "FD"   "Created"  "(Age)"  "Host ID"      "Rack ID"      "SN"           "GPU Cluster"      "FW Ver"           "Clique"           "Instance OCID"  )
-_INST_COL_DEFAULT_WIDTHS=( 5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 40                 98               )
-_INST_COL_WIDTHS=(         5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 40                 98               )
-_INST_COL_ALIGN=(          "-"      "-"      "-"            "-"      "-"     "-"              "-"       "-"        "-"     "-"      "-"    "-"    "-"        "-"      "-"            "-"            "-"            "-"                "-"                "-"                "-"              )
-_INST_COL_FMTS=(           "%-5.5s" "%-1.1s" "%-55.55s"     "%-9.9s" "%-8.8s" "%-20.20s"     "%-8.8s"  "%-10.10s" "%-5.5s" "%-20.20s" "%-3.3s" "%-3.3s" "%-18.18s" "%-6.6s" "%-14.14s"     "%-12.12s"     "%-12.12s"     "%-13.13s"         "%-10.10s"         "%-40.40s"         "%-98.98s"       )
-_INST_COL_COLORS=(         "YELLOW" "@6"     ""             "@1"     "@2"    "@7"             "@3"      "@4"       "@5"    ""       ""     ""     "GRAY"     "GRAY"   "CYAN"         "CYAN"         "CYAN"         "MAGENTA"          "ORANGE"           "CYAN"             "YELLOW"         )
+_INST_COL_KEYS=(           "id"     "imp"    "name"         "state"  "k8s"   "k8s_node"       "cordon"  "taint"    "pods"  "shape"  "ad"   "fd"   "created"  "age"    "host_id"      "rack_id"      "sn"           "fabric"           "fw_ver"           "clique"           "ocid"           "np"               "oke_cluster"      )
+_INST_COL_LABELS=(         "ID"     "I"      "Display Name" "State"  "K8s"   "K8s Node"       "Cordon"  "Taint"    "Pods"  "Shape"  "AD"   "FD"   "Created"  "(Age)"  "Host ID"      "Rack ID"      "SN"           "GPU Cluster"      "FW Ver"           "Clique"           "Instance OCID"  "Node Pool"        "OKE Cluster"      )
+_INST_COL_DEFAULT_WIDTHS=( 5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 40                 98               20                 25                 )
+_INST_COL_WIDTHS=(         5        1        55             9        8       20               8         10         5       20       3      3      18         6        14             12             12             13                 10                 40                 98               20                 25                 )
+_INST_COL_ALIGN=(          "-"      "-"      "-"            "-"      "-"     "-"              "-"       "-"        "-"     "-"      "-"    "-"    "-"        "-"      "-"            "-"            "-"            "-"                "-"                "-"                "-"              "-"                "-"                )
+_INST_COL_FMTS=(           "%-5.5s" "%-1.1s" "%-55.55s"     "%-9.9s" "%-8.8s" "%-20.20s"     "%-8.8s"  "%-10.10s" "%-5.5s" "%-20.20s" "%-3.3s" "%-3.3s" "%-18.18s" "%-6.6s" "%-14.14s"     "%-12.12s"     "%-12.12s"     "%-13.13s"         "%-10.10s"         "%-40.40s"         "%-98.98s"       "%-20.20s"         "%-25.25s"         )
+_INST_COL_COLORS=(         "YELLOW" "@6"     ""             "@1"     "@2"    "@7"             "@3"      "@4"       "@5"    ""       ""     ""     "GRAY"     "GRAY"   "CYAN"         "CYAN"         "CYAN"         "MAGENTA"          "ORANGE"           "CYAN"             "YELLOW"         "GREEN"            "CYAN"             )
 _INST_COL_LOCKED=( "id" )
 _INST_COL_DEFAULTS=( "id" "imp" "name" "state" "k8s" "k8s_node" "cordon" "taint" "pods" "shape" "ad" "fd" "created" "age" "rack_id" "sn" )
 
@@ -33570,7 +33570,7 @@ _compute_search_instances() {
         fi
 
         # Output: searchable_text|display fields
-        echo "${iid}|${imp_indicator}|${name}|${state}|${k8s_status}|${k8s_node:-"-"}|${cordon_status}|${taint_status}|${pod_count}|${shape_trunc}|${ad_short}|${fd_short}|${time_display}|${host_id}|${rack_id}|${serial_num}|${fabric_name}|${fw_ver}|${clique_id}|${ocid}|${k8s_node}"
+        echo "${iid}|${imp_indicator}|${name}|${state}|${k8s_status}|${k8s_node:-"-"}|${cordon_status}|${taint_status}|${pod_count}|${shape_trunc}|${ad_short}|${fd_short}|${time_display}|${host_id}|${rack_id}|${serial_num}|${fabric_name}|${fw_ver}|${clique_id}|${ocid}|${k8s_node}|-|-"
     done)
     
     while true; do
@@ -33629,14 +33629,14 @@ _compute_search_instances() {
         printf "${BOLD}${_INST_HDR_FMT}${NC}\n" "${_INST_HDR_ARGS[@]}"
         print_separator $_INST_SEP_WIDTH
 
-        echo "$matched_lines" | while IFS='|' read -r iid imp_indicator name state k8s_status k8s_node_name cordon_status taint_status pod_count shape_trunc ad_short fd_short time_display host_id rack_id serial_num fabric_name fw_ver clique_id ocid k8s_node; do
+        echo "$matched_lines" | while IFS='|' read -r iid imp_indicator name state k8s_status k8s_node_name cordon_status taint_status pod_count shape_trunc ad_short fd_short time_display host_id rack_id serial_num fabric_name fw_ver clique_id ocid k8s_node np_name oke_cl_name; do
             [[ -z "$iid" ]] && continue
 
             # Build plain-text row (dynamic columns)
             local row
             local _s_age=""
             _s_age=$(_days_since "$time_display" 2>/dev/null) || _s_age=""
-            row=$(_col_print_row_plain "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_name:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_s_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "${fw_ver:0:10}" "$clique_id" "$ocid")
+            row=$(_col_print_row_plain "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_name:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_s_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "${fw_ver:0:10}" "$clique_id" "$ocid" "${np_name:-"-"}" "${oke_cl_name:-"-"}")
             
             # Apply BG_YELLOW highlight to all matching terms (case-insensitive)
             local highlighted="$row"
@@ -33780,6 +33780,12 @@ manage_compute_instances() {
         fi
         if ! grep -q "^clique" "$INST_COLUMNS_CONF" 2>/dev/null; then
             sed -i '/^fw_ver/a clique' "$INST_COLUMNS_CONF" 2>/dev/null
+        fi
+        if ! grep -q "^np" "$INST_COLUMNS_CONF" 2>/dev/null; then
+            echo "np" >> "$INST_COLUMNS_CONF"
+        fi
+        if ! grep -q "^oke_cluster" "$INST_COLUMNS_CONF" 2>/dev/null; then
+            echo "oke_cluster" >> "$INST_COLUMNS_CONF"
         fi
     fi
 
@@ -34031,6 +34037,55 @@ manage_compute_instances() {
             done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
         fi
 
+        # Build nodepool/cluster name maps from system-tags (single jq pass)
+        declare -A _inst_np_map=()
+        declare -A _inst_oke_map=()
+        declare -A _np_name_cache=()
+        declare -A _cl_name_cache=()
+        # Extract unique nodepool and cluster OCIDs
+        local _np_ocids _cl_ocids
+        _np_ocids=$(jq -r '[.data[]? | .["system-tags"]["orcl-containerengine"]["NodePool"] // empty] | unique | .[]' <<< "$instances_json" 2>/dev/null)
+        _cl_ocids=$(jq -r '[.data[]? | .["system-tags"]["orcl-containerengine"]["Cluster"] // empty] | unique | .[]' <<< "$instances_json" 2>/dev/null)
+        # Resolve nodepool names (parallel)
+        local _np_tmp="${TEMP_DIR}/np_names_$$"
+        mkdir -p "$_np_tmp"
+        local _np_pids=()
+        while IFS= read -r _npid; do
+            [[ -z "$_npid" ]] && continue
+            local _npsuf="${_npid##*.}"
+            (oci ce node-pool get --node-pool-id "$_npid" --region "$region" --query 'data.name' --raw-output > "$_np_tmp/${_npsuf}" 2>/dev/null) &
+            _np_pids+=($!)
+        done <<< "$_np_ocids"
+        # Resolve cluster names (parallel)
+        while IFS= read -r _clid; do
+            [[ -z "$_clid" ]] && continue
+            local _clsuf="${_clid##*.}"
+            (oci ce cluster get --cluster-id "$_clid" --region "$region" --query 'data.name' --raw-output > "$_np_tmp/cl_${_clsuf}" 2>/dev/null) &
+            _np_pids+=($!)
+        done <<< "$_cl_ocids"
+        [[ ${#_np_pids[@]} -gt 0 ]] && wait "${_np_pids[@]}" 2>/dev/null
+        # Read resolved names
+        while IFS= read -r _npid; do
+            [[ -z "$_npid" ]] && continue
+            local _npsuf="${_npid##*.}" _npn=""
+            [[ -s "$_np_tmp/${_npsuf}" ]] && _npn=$(cat "$_np_tmp/${_npsuf}")
+            _np_name_cache["$_npid"]="${_npn:-${_npid: -8}}"
+        done <<< "$_np_ocids"
+        while IFS= read -r _clid; do
+            [[ -z "$_clid" ]] && continue
+            local _clsuf="${_clid##*.}" _cln=""
+            [[ -s "$_np_tmp/cl_${_clsuf}" ]] && _cln=$(cat "$_np_tmp/cl_${_clsuf}")
+            _cl_name_cache["$_clid"]="${_cln:-${_clid: -8}}"
+        done <<< "$_cl_ocids"
+        rm -rf "$_np_tmp" 2>/dev/null
+        # Build per-instance maps
+        while IFS=$'\t' read -r _mi_ocid _mi_np _mi_cl; do
+            [[ -z "$_mi_ocid" ]] && continue
+            [[ -n "$_mi_np" ]] && _inst_np_map["$_mi_ocid"]="${_np_name_cache[$_mi_np]:-"-"}"
+            [[ -n "$_mi_cl" ]] && _inst_oke_map["$_mi_ocid"]="${_cl_name_cache[$_mi_cl]:-"-"}"
+        done < <(jq -r '.data[]? | select(.["system-tags"]["orcl-containerengine"] != null) |
+            [.id, (.["system-tags"]["orcl-containerengine"]["NodePool"] // ""), (.["system-tags"]["orcl-containerengine"]["Cluster"] // "")] | @tsv' <<< "$instances_json" 2>/dev/null)
+
         # Display instances table
         _ui_subheader "Instances" 0
         echo ""
@@ -34042,7 +34097,7 @@ manage_compute_instances() {
         # shell — this lets us populate INSTANCE_INDEX_MAP directly and avoids the
         # subshell overhead of a pipeline. All per-row lookups use pre-built associative
         # arrays (_k8s_map, _pods_map, _ch_imp_map) instead of spawning grep/cut per row.
-        while IFS='|' read -r time_created name state shape ad fd ocid; do
+        while IFS='|' read -r time_created name state shape ad fd ocid _sys_np_ocid _sys_cl_ocid; do
             ((instance_idx++))
             local iid="i${instance_idx}"
 
@@ -34166,11 +34221,15 @@ manage_compute_instances() {
                 k8s_node_color="$CYAN"
             fi
 
-            _col_print_row "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_display:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_inst_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "${fw_ver:0:10}" "$clique_id" "$ocid" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pod_color" "$imp_color" "$k8s_node_color"
+            # Node pool / OKE cluster from system-tags
+            local np_name="${_inst_np_map[$ocid]:-"-"}"
+            local oke_cl_name="${_inst_oke_map[$ocid]:-"-"}"
+
+            _col_print_row "INST" "$iid" "$imp_indicator" "${name:0:${_INST_COL_WIDTHS[2]}}" "${state:0:${_INST_COL_WIDTHS[3]}}" "$k8s_status" "${k8s_node_display:0:20}" "$cordon_status" "$taint_status" "$pod_count" "$shape_trunc" "$ad_short" "$fd_short" "$time_display" "$_inst_age" "$host_id" "$rack_id" "$serial_num" "${fabric_name:0:13}" "${fw_ver:0:10}" "$clique_id" "$ocid" "$np_name" "$oke_cl_name" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pod_color" "$imp_color" "$k8s_node_color"
         done < <(jq -r '
             .data[] |
             select(.["lifecycle-state"] != "TERMINATED") |
-            "\(.["time-created"] // "N/A")|\(.["display-name"])|\(.["lifecycle-state"])|\(.shape)|\(.["availability-domain"])|\(.["fault-domain"] // "N/A")|\(.id)"
+            "\(.["time-created"] // "N/A")|\(.["display-name"])|\(.["lifecycle-state"])|\(.shape)|\(.["availability-domain"])|\(.["fault-domain"] // "N/A")|\(.id)|\(.["system-tags"]["orcl-containerengine"]["NodePool"] // "")|\(.["system-tags"]["orcl-containerengine"]["Cluster"] // "")"
         ' <<< "$instances_json" 2>/dev/null | sort -t'|' -k1,1)
         
         local total_instances=${#INSTANCE_INDEX_MAP[@]}
@@ -35212,7 +35271,22 @@ compute_boot_volume_replacement() {
             _ui_pause
             return
         fi
-        
+
+        # Check if instance is managed by an OKE node pool — block BVR
+        local _ps_np_id
+        _ps_np_id=$(jq -r '.data["system-tags"]["orcl-containerengine"]["NodePool"] // empty' <<< "$ps_inst_json")
+        [[ -z "$_ps_np_id" ]] && _ps_np_id=$(jq -r '.data["defined-tags"]["oke-apisystem"]["NodePoolId"] // empty' <<< "$ps_inst_json")
+        if [[ -n "$_ps_np_id" ]]; then
+            local _ps_np_name=""
+            _ps_np_name=$(oci ce node-pool get --node-pool-id "$_ps_np_id" --region "$region" --query 'data.name' --raw-output 2>/dev/null)
+            echo ""
+            echo -e "  ${RED}⚠ Cannot use instance-level BVR — this instance is managed by OKE node pool ${WHITE}\"${_ps_np_name:-$_ps_np_id}\"${NC}"
+            echo -e "  ${GRAY}Use node pool-level BVR instead: ${WHITE}--manage k 1 → np# → bvr${NC}"
+            echo ""
+            _ui_pause
+            return
+        fi
+
         local ps_inst_name ps_inst_shape ps_inst_ad ps_inst_image_id ps_kubelet_version
         ps_inst_name=$(jq -r '.data["display-name"] // "N/A"' <<< "$ps_inst_json")
         ps_inst_shape=$(jq -r '.data.shape // "N/A"' <<< "$ps_inst_json")
@@ -35338,10 +35412,13 @@ compute_boot_volume_replacement() {
         print_separator 155
         
         # Loop through OCI instances, only show those in K8s
-        while IFS='|' read -r bvr_inst_id bvr_inst_name bvr_inst_state bvr_inst_shape bvr_inst_ad bvr_inst_image_id; do
+        while IFS='|' read -r bvr_inst_id bvr_inst_name bvr_inst_state bvr_inst_shape bvr_inst_ad bvr_inst_image_id bvr_np_ocid; do
             [[ -z "$bvr_inst_id" ]] && continue
             [[ "$bvr_inst_state" == "TERMINATED" ]] && continue
-            
+
+            # Skip nodepool-managed instances — BVR must be done at pool level
+            [[ -n "$bvr_np_ocid" ]] && continue
+
             # Check if this instance is a K8s node
             local bvr_k8s_match
             bvr_k8s_match=$(echo "$bvr_k8s_lookup" | grep -F "$bvr_inst_id" 2>/dev/null)
@@ -35415,9 +35492,9 @@ compute_boot_volume_replacement() {
                 "$bvr_idx" "$bvr_inst_name" "$bvr_inst_state" "$bvr_ready_display" "$bvr_cordon_status" \
                 "${bvr_inst_shape:0:22}" "$bvr_inst_bv_size" "$bvr_kubelet_version" "$bvr_pod_count" "$bvr_ad_short"
                 
-        done < <(jq -r ' 
+        done < <(jq -r '
             .data[] |
-            "\(.id)|\(.["display-name"] // "Unnamed")|\(.["lifecycle-state"])|\(.shape // "N/A")|\(.["availability-domain"] // "N/A")|\(.["image-id"] // "")"
+            "\(.id)|\(.["display-name"] // "Unnamed")|\(.["lifecycle-state"])|\(.shape // "N/A")|\(.["availability-domain"] // "N/A")|\(.["image-id"] // "")|\(.["system-tags"]["orcl-containerengine"]["NodePool"] // "")"
         ' <<< "$bvr_instances_json" 2>/dev/null | sort -t'|' -k2,2)
         
         echo ""
@@ -36395,9 +36472,13 @@ display_instance_details() {
     image_id=$(jq -r '.data["image-id"] // empty' <<< "$instance_json")
     
     # Early-parse OKE tags (needed to add OKE fetches to wave 1)
-    local oke_cluster_id oke_nodepool_id
-    oke_cluster_id=$(jq -r '.data["defined-tags"]["oke-apisystem"]["ClusterId"] // empty' <<< "$instance_json")
-    oke_nodepool_id=$(jq -r '.data["defined-tags"]["oke-apisystem"]["NodePoolId"] // empty' <<< "$instance_json")
+    # Check system-tags first (orcl-containerengine), then defined-tags, then freeform-tags
+    local oke_cluster_id oke_nodepool_id oke_node_type
+    oke_cluster_id=$(jq -r '.data["system-tags"]["orcl-containerengine"]["Cluster"] // empty' <<< "$instance_json")
+    oke_nodepool_id=$(jq -r '.data["system-tags"]["orcl-containerengine"]["NodePool"] // empty' <<< "$instance_json")
+    oke_node_type=$(jq -r '.data["system-tags"]["orcl-containerengine"]["NodeType"] // empty' <<< "$instance_json")
+    [[ -z "$oke_cluster_id" ]] && oke_cluster_id=$(jq -r '.data["defined-tags"]["oke-apisystem"]["ClusterId"] // empty' <<< "$instance_json")
+    [[ -z "$oke_nodepool_id" ]] && oke_nodepool_id=$(jq -r '.data["defined-tags"]["oke-apisystem"]["NodePoolId"] // empty' <<< "$instance_json")
     [[ -z "$oke_cluster_id" ]] && oke_cluster_id=$(jq -r '.data["freeform-tags"]["oke-clusterId"] // empty' <<< "$instance_json")
     [[ -z "$oke_nodepool_id" ]] && oke_nodepool_id=$(jq -r '.data["freeform-tags"]["oke-nodePoolId"] // empty' <<< "$instance_json")
     
@@ -36975,6 +37056,35 @@ display_instance_details() {
         fi
     fi
     
+    # ========== OKE NODE POOL (if instance is nodepool-managed) ==========
+    local _is_nodepool_managed="false"
+    if [[ -n "$oke_nodepool_id" ]]; then
+        _is_nodepool_managed="true"
+        echo ""
+        _ui_subheader "OKE Node Pool" 0
+
+        local _np_name_d="N/A" _np_state_d="" _np_k8s_d="" _np_shape_d="" _cl_name_d="N/A"
+        if [[ -s "$_dtmp/oke_nodepool.json" ]]; then
+            _np_name_d=$(jq -r '.data.name // "N/A"' "$_dtmp/oke_nodepool.json" 2>/dev/null)
+            _np_state_d=$(jq -r '.data["lifecycle-state"] // "N/A"' "$_dtmp/oke_nodepool.json" 2>/dev/null)
+            _np_k8s_d=$(jq -r '.data["kubernetes-version"] // "N/A"' "$_dtmp/oke_nodepool.json" 2>/dev/null)
+            _np_shape_d=$(jq -r '.data["node-shape"] // "N/A"' "$_dtmp/oke_nodepool.json" 2>/dev/null)
+        fi
+        if [[ -s "$_dtmp/oke_cluster.json" ]]; then
+            _cl_name_d=$(jq -r '.data.name // "N/A"' "$_dtmp/oke_cluster.json" 2>/dev/null)
+        fi
+
+        local _np_sc; _np_sc=$(color_resource_state "${_np_state_d}")
+        [[ -n "$oke_node_type" ]] && echo -e "  ${CYAN}Node Type:${NC}           ${WHITE}${oke_node_type}${NC}"
+        echo -e "  ${CYAN}Node Pool:${NC}           ${WHITE}${_np_name_d}${NC}   [${_np_sc}${_np_state_d}${NC}]"
+        echo -e "  ${CYAN}Node Pool OCID:${NC}      ${YELLOW}${oke_nodepool_id}${NC}"
+        echo -e "  ${CYAN}K8s Version:${NC}         ${WHITE}${_np_k8s_d}${NC}"
+        echo -e "  ${CYAN}Shape:${NC}               ${WHITE}${_np_shape_d}${NC}"
+        echo -e "  ${CYAN}Cluster:${NC}             ${WHITE}${_cl_name_d}${NC}"
+        echo -e "  ${CYAN}Cluster OCID:${NC}        ${YELLOW}${oke_cluster_id}${NC}"
+        echo -e "  ${YELLOW}⚠ BVR blocked — use node pool-level BVR: --manage k 1 → np# → bvr${NC}"
+    fi
+
     # ========== KUBERNETES STATUS (Compact - from prefetch cache) ==========
     echo ""
     _ui_subheader "Kubernetes" 0
