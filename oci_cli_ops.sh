@@ -44048,6 +44048,11 @@ create_gpu_memory_cluster_interactive() {
         echo -e "${RED}Failed to create GPU Memory Cluster:${NC}"
         log_action_result "FAILED" "CREATE operation"
         echo "$result"
+        echo ""
+        _ui_policy_hint "manage compute-gpu-memory-clusters in tenancy"
+        echo -e "  ${GRAY}For dynamic groups:${NC}"
+        echo -e "    ${GRAY}allow dynamic-group '<your-dg>' to manage compute-gpu-memory-clusters in tenancy${NC}"
+        echo -e "  ${GRAY}Reference: ${WHITE}https://docs.oracle.com/en-us/iaas/Content/Identity/policyreference/corepolicyreference_topic-ResourceTypes.htm${NC}"
         return 1
     fi
 }
