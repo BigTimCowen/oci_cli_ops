@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.32.6"
+readonly SCRIPT_VERSION="3.33.1"
 readonly SCRIPT_VERSION_DATE="2026-04-10"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -519,6 +519,7 @@ readonly COMPUTE_HOST_CACHE="${CACHE_DIR}/compute_hosts.txt"
 readonly COMPUTE_HOST_JSON_CACHE="${CACHE_DIR}/compute_hosts.json"
 readonly COMPUTE_HOST_DETAIL_DIR="${CACHE_DIR}/compute_host_detail"
 readonly COMPUTE_HOST_IMPACT_CACHE="${CACHE_DIR}/compute_host_impact.txt"
+readonly COMPUTE_HOST_GROUP_CACHE="${CACHE_DIR}/compute_host_groups.json"
 readonly ANNOUNCEMENTS_LIST_CACHE="${CACHE_DIR}/announcements_list.json"
 readonly OKE_ENV_CACHE="${CACHE_DIR}/oke_environment.txt"
 readonly OKE_CLUSTER_JSON_CACHE="${CACHE_DIR}/oke_cluster.json"
@@ -1632,6 +1633,7 @@ refresh_all_caches() {
         "$COMPUTE_HOST_CACHE"
         "$COMPUTE_HOST_JSON_CACHE"
         "$COMPUTE_HOST_IMPACT_CACHE"
+        "$COMPUTE_HOST_GROUP_CACHE"
         "$FW_BUNDLE_CACHE"
         "$BOOT_VOLUME_CACHE"
         "$IMAGE_CACHE"
@@ -2673,17 +2675,23 @@ fetch_node_states() {
 fetch_capacity_topology() {
     [[ -z "$TENANCY_ID" ]] && { log_warn "TENANCY_ID not set. Capacity topology unavailable."; return 1; }
     local region="${FOCUS_REGION:-$REGION}"
+    # Use explicit AD arg, or fall back to focused AD if set
+    local ad_filter="${1:-${FOCUS_AD:-${AD:-}}}"
+    # If multi-AD (comma-separated), use first
+    [[ "$ad_filter" == *","* ]] && ad_filter="${ad_filter%%,*}"
 
     is_cache_fresh "$CAPACITY_TOPOLOGY_CACHE" && return 0
 
     local topologies_json
     topologies_json=$(create_temp_file) || return 1
 
-    if ! oci compute capacity-topology list \
-            --compartment-id "$TENANCY_ID" \
-            --region "$region" \
-            --all \
-            --output json > "$topologies_json" 2>/dev/null; then
+    local -a _ct_cmd=(oci compute capacity-topology list
+        --compartment-id "$TENANCY_ID"
+        --region "$region"
+        --all --output json)
+    [[ -n "$ad_filter" ]] && _ct_cmd+=(--availability-domain "$ad_filter")
+
+    if ! "${_ct_cmd[@]}" > "$topologies_json" 2>/dev/null; then
         rm -f "$topologies_json"
         log_warn "Failed to fetch capacity topologies"
         _ui_policy_hint "read capacity-topologies in compartment"
@@ -7465,8 +7473,10 @@ _menu_compute() {
             echo -e "  ${YELLOW}8${NC}) ${WHITE}Instance Pools${NC}                - Create, view, and manage instance pools"
             echo -e "  ${YELLOW}9${NC}) ${WHITE}Cluster Networks${NC}              - View cluster networks and instance details"
             echo -e "  ${YELLOW}10${NC}) ${WHITE}Compute Hosts${NC}                - View bare-metal host health, state, and topology"
+            echo -e "  ${YELLOW}11${NC}) ${WHITE}Host Groups${NC}                  - Create, view, attach/detach BM hosts to host groups"
+            echo -e "  ${YELLOW}12${NC}) ${WHITE}Notifications${NC}                - ONS topics, subscriptions for compute host events"
             echo ""
-            _ui_prompt "Compute" "1-10, env [c|r|oke|vcn], b"
+            _ui_prompt "Compute" "1-12, env [c|r|oke|vcn], b"
             read -r choice
         fi
 
@@ -7481,11 +7491,13 @@ _menu_compute() {
             8) manage_instance_pools ;;
             9) manage_cluster_networks ;;
             10) manage_compute_hosts ;;
+            11) manage_compute_host_groups ;;
+            12) manage_compute_notifications ;;
             env*|ENV*) _env_dispatch "$choice" ;;
             b|B|"") return ;;
             show|SHOW) continue ;;
             :*) _nav_try_jump "$choice" && return ;;
-            *) echo -e "${RED}Invalid selection. Enter 1-10 or b.${NC}" ;;
+            *) echo -e "${RED}Invalid selection. Enter 1-12 or b.${NC}" ;;
         esac
         [[ -n "${_NAV_JUMP:-}" ]] && return
     done
@@ -57248,10 +57260,11 @@ manage_compute_hosts() {
         echo -e "  ${YELLOW}h${NC}) Host details (paste OCID)"
         echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)"
         echo -e "  ${GREEN}col${NC}) Configure table columns"
+        echo -e "  ${YELLOW}notify${NC}) Set up event notifications for host changes"
         echo -e "  ${MAGENTA}r${NC}) Refresh data"
         echo -e "  ${CYAN}Enter${NC}) Return to menu"
         echo ""
-        _ui_prompt "Compute Hosts" "1-5, /term, i, h, j, col, r, Enter, show"
+        _ui_prompt "Compute Hosts" "1-5, /term, i, h, j, col, notify, r, Enter, show"
 
         local choice
         read -r choice
@@ -57264,6 +57277,7 @@ manage_compute_hosts() {
             4) compute_host_view_by_shape ;;
             5) compute_host_view_impacted ;;
             col|COL|columns|COLUMNS) _col_picker "CHOST" "Compute Hosts" ;;
+            notify|NOTIFY) _create_host_event_rule "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" "${FOCUS_REGION:-$REGION}" "compute-host-events" ;;
             /*) _ch_search_hosts "all" "${choice#/}" ;;
             i|I) _ch_view_instance ;;
             h|H) _ch_view_host ;;
@@ -57638,6 +57652,1419 @@ compute_host_view_impacted() {
     fi
 
     _ch_post_table_actions "Impacted View" "impacted"
+}
+
+#--------------------------------------------------------------------------------
+# Compute Host Groups — List, Create, Delete, Detail, Attach, Detach
+# OCI Commands: oci compute compute-host-group list/get/create/delete
+#               oci compute compute-host attach/detach
+#--------------------------------------------------------------------------------
+
+manage_compute_host_groups() {
+    local compartment_id="${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}"
+    local region="${FOCUS_REGION:-$REGION}"
+    local log_file="${LOGS_DIR}/host_group_actions_$(whoami)_$(date +%Y%m%d).log"
+    mkdir -p "$(dirname "$log_file")" 2>/dev/null
+
+    while true; do
+        # Re-read from globals in case env was switched
+        compartment_id="${FOCUS_COMPARTMENT_ID:-${COMPARTMENT_ID:-$compartment_id}}"
+        region="${FOCUS_REGION:-${REGION:-$region}}"
+
+        echo ""
+        _ui_menu_header "HOST GROUP MANAGEMENT" \
+            --color "$YELLOW" \
+            --breadcrumb "Compute" "Host Groups" \
+            --cmd "oci compute compute-host-group list --compartment-id \$COMPARTMENT_ID --region \$REGION --all" \
+            --env \
+            --cache \
+            "${COMPUTE_HOST_GROUP_CACHE}|Host Groups"
+
+        # ── Discovery ──
+        _step_init
+        _step_active "host groups"
+
+        local hg_json=""
+        if is_cache_fresh "$COMPUTE_HOST_GROUP_CACHE"; then
+            hg_json=$(cat "$COMPUTE_HOST_GROUP_CACHE" 2>/dev/null)
+            _step_complete "host groups(cached)"
+        else
+            hg_json=$(oci compute compute-host-group list \
+                --compartment-id "$compartment_id" \
+                --region "$region" \
+                --all --output json 2>/dev/null)
+            if [[ -n "$hg_json" ]] && jq -e '.data' <<< "$hg_json" >/dev/null 2>&1; then
+                echo "$hg_json" | _cache_write "$COMPUTE_HOST_GROUP_CACHE"
+            fi
+            local _hgc=0
+            _hgc=$(jq '.data.items | length' <<< "$hg_json" 2>/dev/null || echo "0")
+            _step_complete "host groups(${_hgc})"
+        fi
+        _step_finish
+
+        if [[ -z "$hg_json" ]] || ! jq -e '.data' <<< "$hg_json" >/dev/null 2>&1; then
+            echo -e "${RED}Failed to fetch host groups${NC}"
+            _ui_policy_hint "read compute-host-groups in compartment" \
+                "read compute-hosts in tenancy"
+            echo ""
+            _ui_pause "return"
+            return
+        fi
+
+        # ── Display list ──
+        _ui_subheader "Existing Host Groups" 0
+        echo ""
+
+        declare -a HG_LIST=()
+        local hg_count=0
+
+        local _hg_items
+        _hg_items=$(jq -r '.data.items[]? |
+            "\(.id)|\(.["display-name"] // "N/A")|\(.["availability-domain"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["is-targeted-placement-required"] // false)|\(.["time-created"] // "N/A")"
+        ' <<< "$hg_json" 2>/dev/null)
+
+        if [[ -n "$_hg_items" ]]; then
+            printf "  ${GRAY}%-4s %-50s %-25s %-12s %-10s %-12s${NC}\n" "#" "Display Name" "Availability Domain" "State" "Targeted" "Created"
+            echo -e "  ${GRAY}$(printf '─%.0s' {1..120})${NC}"
+
+            while IFS='|' read -r _hg_id _hg_name _hg_ad _hg_state _hg_targeted _hg_created; do
+                [[ -z "$_hg_id" ]] && continue
+                [[ "$_hg_state" == "DELETED" ]] && continue
+                ((hg_count++))
+                HG_LIST+=("${_hg_id}|${_hg_name}|${_hg_ad}|${_hg_state}")
+
+                local _hg_ad_short="${_hg_ad##*:}"
+                local _hg_sc; _hg_sc=$(color_resource_state "$_hg_state")
+                local _hg_tgt="No"
+                [[ "$_hg_targeted" == "true" ]] && _hg_tgt="Yes"
+                local _hg_date="${_hg_created:0:10}"
+
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-50s${NC} ${CYAN}%-25s${NC} ${_hg_sc}%-12s${NC} %-10s %-12s\n" \
+                    "${hg_count})" "$_hg_name" "$_hg_ad_short" "$_hg_state" "$_hg_tgt" "$_hg_date"
+            done <<< "$_hg_items"
+
+            if [[ $hg_count -gt 0 ]]; then
+                echo ""
+                echo -e "  ${WHITE}Total: ${GREEN}${hg_count}${WHITE} host group(s)${NC}"
+            fi
+        fi
+
+        if [[ $hg_count -eq 0 ]]; then
+            echo -e "  ${GRAY}(No host groups found in this compartment/region)${NC}"
+        fi
+        echo ""
+
+        # ── Menu ──
+        _ui_actions
+        echo ""
+        [[ $hg_count -gt 0 ]] && echo -e "  ${CYAN}#${NC}) ${WHITE}View${NC}    - View host group details (enter number)"
+        echo -e "  ${GREEN}c${NC}) ${WHITE}Create${NC}  - Create a new host group"
+        if [[ $hg_count -gt 0 ]]; then
+            echo -e "  ${RED}d${NC}) ${WHITE}Delete${NC}  - Delete host group(s) ${GRAY}(d 1, d 1,2, d 1-2, d all)${NC}"
+        fi
+        echo -e "  ${YELLOW}j${NC}) ${WHITE}JSON${NC}    - View raw JSON (j <keyword> to search)"
+        echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC} - Refresh host group list"
+        echo -e "  ${CYAN}b${NC}) ${WHITE}Back${NC}    - Return to compute menu"
+        echo ""
+        _ui_prompt "Host Groups" "#, c, d [#|#,#|#-#|all], j, r, b, show"
+
+        local choice
+        read -r choice
+        [[ "${choice:-}" == :* ]] && _nav_try_jump "$choice" && return
+
+        case "$choice" in
+            c|C|create|CREATE)
+                _create_compute_host_group "$compartment_id" "$region"
+                rm -f "$COMPUTE_HOST_GROUP_CACHE"
+                ;;
+            d\ *|D\ *)
+                if [[ $hg_count -eq 0 ]]; then
+                    echo -e "${YELLOW}No host groups available to delete${NC}"
+                    sleep 1
+                else
+                    local _del_args="${choice#* }"
+                    _delete_compute_host_groups "$_del_args" "$hg_count" "$region" "$log_file"
+                    rm -f "$COMPUTE_HOST_GROUP_CACHE"
+                fi
+                ;;
+            j|J)
+                _ui_json_viewer "Host Groups JSON" "-f" "$COMPUTE_HOST_GROUP_CACHE" ".data"
+                ;;
+            j\ *|J\ *)
+                _ui_json_viewer "Host Groups JSON" "-f" "$COMPUTE_HOST_GROUP_CACHE" ".data" "${choice#* }"
+                ;;
+            r|R|refresh|REFRESH)
+                rm -f "$COMPUTE_HOST_GROUP_CACHE"
+                echo -e "${GREEN}Cache cleared, refreshing...${NC}"
+                sleep 1
+                ;;
+            b|B|back|BACK|"")
+                return
+                ;;
+            show|SHOW)
+                continue
+                ;;
+            env*|ENV*)
+                _env_dispatch "$choice"
+                rm -f "$COMPUTE_HOST_GROUP_CACHE"
+                ;;
+            [0-9]*)
+                if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le $hg_count ]]; then
+                    local _sel="${HG_LIST[$((choice-1))]}"
+                    local _sel_id _sel_name _sel_ad _sel_state
+                    IFS='|' read -r _sel_id _sel_name _sel_ad _sel_state <<< "$_sel"
+                    _view_compute_host_group_details "$_sel_id" "$_sel_name" "$region" "$log_file"
+                else
+                    echo -e "${RED}Invalid selection${NC}"
+                    sleep 1
+                fi
+                ;;
+            *)
+                echo -e "${RED}Invalid selection${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+#--------------------------------------------------------------------------------
+# Host Group Detail View
+#--------------------------------------------------------------------------------
+_view_compute_host_group_details() {
+    local hg_id="$1"
+    local hg_name="$2"
+    local region="$3"
+    local log_file="$4"
+
+    while true; do
+        echo ""
+        _ui_menu_header "HOST GROUP DETAILS" \
+            --color "$YELLOW" \
+            --breadcrumb "Compute" "Host Groups" "Details: ${hg_name}" \
+            --cmd "oci compute compute-host-group get --compute-host-group-id \$HOST_GROUP_ID --region \$REGION" \
+            --env
+
+        _step_init
+        _step_active "details for: ${hg_name}"
+        local hg_detail
+        hg_detail=$(oci compute compute-host-group get \
+            --compute-host-group-id "$hg_id" \
+            --region "$region" --output json 2>/dev/null)
+        _step_complete "details for: ${hg_name}"
+
+        # Fetch BM hosts in same discovery bar
+        if ! is_cache_fresh "$COMPUTE_HOST_CACHE"; then
+            _step_active "bare metal hosts"
+            fetch_compute_hosts
+            _step_complete "bare metal hosts"
+        fi
+        _step_finish
+
+        if [[ -z "$hg_detail" ]] || ! jq -e '.data' <<< "$hg_detail" >/dev/null 2>&1; then
+            echo -e "${RED}Failed to fetch host group details${NC}"
+            _ui_policy_hint "read compute-host-groups in compartment"
+            echo ""
+            _ui_pause "return"
+            return
+        fi
+
+        # ── Properties ──
+        echo ""
+        _ui_subheader "Properties" 0
+        local _d_name _d_ad _d_state _d_targeted _d_created _d_updated
+        IFS=$'\t' read -r _d_name _d_ad _d_state _d_targeted _d_created _d_updated < <(jq -r '.data | [
+            (.["display-name"] // "N/A"),
+            (.["availability-domain"] // "N/A"),
+            (.["lifecycle-state"] // "N/A"),
+            (.["is-targeted-placement-required"] // false | tostring),
+            (.["time-created"] // "N/A"),
+            (.["time-updated"] // "N/A")
+        ] | @tsv' <<< "$hg_detail" 2>/dev/null)
+
+        local _d_tgt_display="No"
+        [[ "$_d_targeted" == "true" ]] && _d_tgt_display="Yes"
+        local _d_sc; _d_sc=$(color_resource_state "$_d_state")
+
+        echo -e "  ${CYAN}Display Name:${NC}        ${WHITE}${_d_name}${NC}"
+        echo -e "  ${CYAN}OCID:${NC}                ${YELLOW}${hg_id}${NC}"
+        echo -e "  ${CYAN}Availability Domain:${NC} ${WHITE}${_d_ad##*:}${NC}"
+        echo -e "  ${CYAN}Lifecycle State:${NC}     ${_d_sc}${_d_state}${NC}"
+        echo -e "  ${CYAN}Targeted Placement:${NC}  ${WHITE}${_d_tgt_display}${NC}"
+        echo -e "  ${CYAN}Time Created:${NC}        ${WHITE}${_d_created}${NC}"
+        echo -e "  ${CYAN}Time Updated:${NC}        ${WHITE}${_d_updated}${NC}"
+
+        # ── Configurations ──
+        echo ""
+        local _cfg_count
+        _cfg_count=$(jq '.data.configurations | length' <<< "$hg_detail" 2>/dev/null || echo "0")
+        _ui_subheader "Configurations (${_cfg_count})" 0
+        echo ""
+
+        if [[ "${_cfg_count:-0}" -gt 0 ]]; then
+            printf "  ${GRAY}%-4s %-25s %-20s %-30s %-10s${NC}\n" "#" "Target Shape" "Recycle Level" "Firmware Bundle" "State"
+            echo -e "  ${GRAY}$(printf '─%.0s' {1..95})${NC}"
+
+            local _ci=0
+            while IFS=$'\t' read -r _ct _cr _cf _cs; do
+                ((_ci++))
+                [[ "$_cf" == "null" || -z "$_cf" ]] && _cf="-"
+                [[ "$_cs" == "null" || -z "$_cs" ]] && _cs="-"
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-25s${NC} ${CYAN}%-20s${NC} %-30s %-10s\n" \
+                    "$_ci" "$_ct" "$_cr" "$_cf" "$_cs"
+            done < <(jq -r '.data.configurations[]? | [
+                (.target // "N/A"),
+                (.["recycle-level"] // "N/A"),
+                (.["firmware-bundle-id"] // "null"),
+                (.state // "null")
+            ] | @tsv' <<< "$hg_detail" 2>/dev/null)
+        else
+            echo -e "  ${GRAY}(No configurations)${NC}"
+        fi
+
+        # ── Attached Bare Metal Hosts ──
+        echo ""
+
+        local _attached_hosts=""
+        local _attached_count=0
+        if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+            _attached_hosts=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v gid="$hg_id" '$13 == gid')
+            [[ -n "$_attached_hosts" ]] && _attached_count=$(echo "$_attached_hosts" | grep -c .)
+        fi
+
+        _ui_subheader "Attached Bare Metal Hosts (${_attached_count})" 0
+        echo ""
+
+        declare -a _ATT_HOST_LIST=()
+        if [[ "$_attached_count" -gt 0 ]]; then
+            printf "  ${GRAY}%-4s %-40s %-15s %-12s %-10s %s${NC}\n" "#" "Display Name" "Shape" "State" "Health" "Bare Metal Host OCID"
+            echo -e "  ${GRAY}$(printf '─%.0s' {1..170})${NC}"
+
+            local _ai=0
+            while IFS='|' read -r _an _as _ah _ashape _aplatform _aad _afd _ainst _aocid _rest; do
+                [[ -z "$_an" ]] && continue
+                ((_ai++))
+                _ATT_HOST_LIST+=("${_aocid}|${_an}|${_ashape}|${_as}")
+
+                local _asc="$GREEN"
+                case "$_as" in
+                    OCCUPIED) _asc="$GREEN" ;;
+                    AVAILABLE) _asc="$CYAN" ;;
+                    *) _asc="$YELLOW" ;;
+                esac
+                local _ahc="$GREEN"
+                case "$_ah" in
+                    HEALTHY) _ahc="$GREEN" ;;
+                    DEGRADED|IMPAIRED) _ahc="$YELLOW" ;;
+                    *) _ahc="$RED" ;;
+                esac
+
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${_asc}%-12s${NC} ${_ahc}%-10s${NC} ${YELLOW}%s${NC}\n" \
+                    "$_ai" "$_an" "$_ashape" "$_as" "$_ah" "$_aocid"
+            done <<< "$_attached_hosts"
+        else
+            echo -e "  ${GRAY}(No bare metal hosts attached to this group)${NC}"
+        fi
+        echo ""
+
+        # ── Actions ──
+        _ui_actions
+        echo ""
+        echo -e "  ${GREEN}a${NC})      ${WHITE}Attach${NC}  - Attach a bare metal host to this group"
+        [[ $_attached_count -gt 0 ]] && echo -e "  ${RED}dt #${NC})   ${WHITE}Detach${NC}  - Detach a bare metal host (dt 1)"
+        echo -e "  ${YELLOW}notify${NC}) ${WHITE}Notify${NC}  - Set up event notifications for host changes"
+        echo -e "  ${YELLOW}j${NC})      ${WHITE}JSON${NC}    - View raw JSON"
+        echo -e "  ${MAGENTA}r${NC})      ${WHITE}Refresh${NC} - Refresh details"
+        echo -e "  ${CYAN}Enter${NC})   ${WHITE}Back${NC}    - Return to host group list"
+        echo ""
+        _ui_prompt "Host Group - ${hg_name}" "a, dt #, notify, j, r, Enter"
+
+        local _dc
+        read -r _dc
+        [[ "${_dc:-}" == :* ]] && _nav_try_jump "$_dc" && return
+
+        case "$_dc" in
+            a|A|attach|ATTACH)
+                _attach_compute_host_to_group "$hg_id" "$hg_name" "$region" "$log_file"
+                rm -f "$COMPUTE_HOST_GROUP_CACHE" "$COMPUTE_HOST_CACHE" "$COMPUTE_HOST_JSON_CACHE"
+                ;;
+            dt\ *|DT\ *)
+                local _dt_num="${_dc#* }"
+                if [[ "$_dt_num" =~ ^[0-9]+$ ]] && [[ $_dt_num -ge 1 ]] && [[ $_dt_num -le $_attached_count ]]; then
+                    local _dt_entry="${_ATT_HOST_LIST[$((_dt_num-1))]}"
+                    local _dt_ocid _dt_name _dt_shape _dt_state
+                    IFS='|' read -r _dt_ocid _dt_name _dt_shape _dt_state <<< "$_dt_entry"
+                    _detach_compute_host_from_group "$_dt_ocid" "$_dt_name" "$_dt_shape" "$_dt_state" "$hg_id" "$hg_name" "$region" "$log_file"
+                    rm -f "$COMPUTE_HOST_GROUP_CACHE" "$COMPUTE_HOST_CACHE" "$COMPUTE_HOST_JSON_CACHE"
+                else
+                    echo -e "${RED}Invalid host number${NC}"
+                    sleep 1
+                fi
+                ;;
+            notify|NOTIFY)
+                _create_host_event_rule "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" "$region" "host-events-${hg_name}"
+                ;;
+            j|J)
+                echo "$hg_detail" | jq '.' 2>/dev/null
+                ;;
+            r|R)
+                rm -f "$COMPUTE_HOST_CACHE" "$COMPUTE_HOST_JSON_CACHE"
+                continue
+                ;;
+            ""|b|B)
+                return
+                ;;
+            show|SHOW)
+                continue
+                ;;
+            *)
+                echo -e "${RED}Invalid selection${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+#--------------------------------------------------------------------------------
+# Create Host Group
+#--------------------------------------------------------------------------------
+_create_compute_host_group() {
+    local compartment_id="$1"
+    local region="$2"
+    local selected_ad="${FOCUS_AD:-$AD}"
+    # Host group needs a single AD — use first if multi-AD selected
+    [[ "$selected_ad" == *","* ]] && selected_ad="${selected_ad%%,*}"
+
+    echo ""
+    _ui_menu_header "CREATE HOST GROUP"
+    echo ""
+
+    # Validate
+    if [[ -z "$compartment_id" || -z "$selected_ad" ]]; then
+        echo -e "${RED}Missing required focus: compartment and AD must be set.${NC}"
+        echo -e "${YELLOW}Use 'env' to configure focus.${NC}"
+        _ui_pause "return"
+        return 1
+    fi
+
+    echo -e "  ${CYAN}Region:${NC}              ${WHITE}${region}${NC}"
+    echo -e "  ${CYAN}Compartment:${NC}         ${WHITE}${compartment_id}${NC}"
+    echo -e "  ${CYAN}Availability Domain:${NC} ${WHITE}${selected_ad}${NC}"
+    echo ""
+
+    # ── Pre-flight: verify capacity topology per region + AD (same function as c5) ──
+    _ui_subheader "Pre-flight Check — Capacity Topology (c5)" 0
+    echo ""
+    echo -e "  ${GRAY}Checking capacity topology in ${WHITE}${region}${GRAY} / ${WHITE}${selected_ad##*:}${GRAY}...${NC}"
+
+    # Invalidate cache so we query with the correct AD filter
+    rm -f "$CAPACITY_TOPOLOGY_CACHE"
+    _step_init
+    _step_active "capacity topology (${selected_ad##*:})"
+    fetch_capacity_topology "$selected_ad"
+    _step_complete "capacity topology (${selected_ad##*:})"
+    _step_finish
+
+    local _ct_count=0
+    if [[ -f "$CAPACITY_TOPOLOGY_CACHE" ]]; then
+        _ct_count=$(grep -v "^#" "$CAPACITY_TOPOLOGY_CACHE" 2>/dev/null | grep -c . 2>/dev/null)
+        _ct_count="${_ct_count//[^0-9]/}"
+        [[ -z "$_ct_count" ]] && _ct_count=0
+    fi
+
+    if (( _ct_count == 0 )); then
+        echo -e "  ${RED}⚠ No capacity topology hosts found in ${WHITE}${region}${RED} / ${WHITE}${selected_ad##*:}${NC}"
+        echo -e "  ${GRAY}Host groups require dedicated bare-metal hosts in the target region and AD.${NC}"
+        echo -e "  ${GRAY}View full topology detail: ${WHITE}--manage c 5${NC}"
+        echo ""
+        _ui_pause "return"
+        return 0
+    else
+        echo -e "  ${GREEN}✓ Found ${_ct_count} capacity topology host(s) in ${WHITE}${region}${GREEN} / ${WHITE}${selected_ad##*:}${NC}"
+    fi
+    echo ""
+
+    # ── Target Shape ──
+    _ui_subheader "Target Shape" 0
+    echo ""
+    echo -e "  ${GRAY}Fetching BM.GPU shapes...${NC}"
+
+    local _shapes_json
+    _shapes_json=$(oci compute shape list \
+        -c "$compartment_id" \
+        --region "$region" \
+        --all --output json 2>/dev/null)
+
+    declare -A _SHAPE_MAP=()
+    local _si=0
+    if [[ -n "$_shapes_json" ]]; then
+        while IFS= read -r _sname; do
+            [[ -z "$_sname" ]] && continue
+            ((_si++))
+            _SHAPE_MAP[$_si]="$_sname"
+            printf "  ${YELLOW}%3d${NC}) ${WHITE}%s${NC}\n" "$_si" "$_sname"
+        done < <(jq -r '[.data[].shape] | unique | .[] | select(startswith("BM.GPU"))' <<< "$_shapes_json" 2>/dev/null)
+    fi
+
+    if [[ $_si -eq 0 ]]; then
+        echo -e "  ${RED}No BM.GPU shapes available in this compartment/region${NC}"
+        _ui_pause "return"
+        return 1
+    fi
+
+    echo ""
+    echo -n -e "  ${CYAN}Select shape: ${NC}"
+    local _shape_choice
+    read -r _shape_choice
+
+    if [[ ! "$_shape_choice" =~ ^[0-9]+$ ]] || [[ -z "${_SHAPE_MAP[$_shape_choice]:-}" ]]; then
+        echo -e "${RED}Invalid selection — cancelled${NC}"
+        _ui_pause "return"
+        return 1
+    fi
+    local target_shape="${_SHAPE_MAP[$_shape_choice]}"
+    echo -e "  ${GREEN}✓ Target: ${WHITE}${target_shape}${NC}"
+    echo ""
+
+    # ── Recycle Level ──
+    _ui_subheader "Recycle Level" 0
+    echo ""
+    echo -e "  ${YELLOW}1${NC}) SKIP_RECYCLE  ${GRAY}- Skip host recycling (default)${NC}"
+    echo -e "  ${YELLOW}2${NC}) RECYCLE       ${GRAY}- Standard recycling${NC}"
+    echo ""
+    echo -n -e "  ${CYAN}Select recycle level [1]: ${NC}"
+    local _rl_choice
+    read -r _rl_choice
+    local recycle_level="SKIP_RECYCLE"
+    [[ "$_rl_choice" == "2" ]] && recycle_level="RECYCLE"
+    echo -e "  ${GREEN}✓ Recycle Level: ${WHITE}${recycle_level}${NC}"
+    echo ""
+
+    # ── Display Name ──
+    _ui_subheader "Display Name" 0
+    echo ""
+    # Build default: <recyclelevel>_<target>_<region>_AD_X_HG
+    local _rl_lower="${recycle_level,,}"
+    local _ad_num="${selected_ad##*-}"
+    local _default_name="${_rl_lower}_${target_shape}_${region}_AD_${_ad_num}_HG"
+    echo -e "  ${GRAY}Suggested: ${WHITE}${_default_name}${NC}"
+    echo ""
+    echo -n -e "  ${CYAN}Enter display name [${_default_name}]: ${NC}"
+    local display_name
+    read -r display_name
+    [[ -z "$display_name" ]] && display_name="$_default_name"
+    echo -e "  ${GREEN}✓ Display Name: ${WHITE}${display_name}${NC}"
+    echo ""
+
+    # ── Targeted Placement ──
+    _ui_subheader "Targeted Placement" 0
+    echo ""
+    echo -e "  ${GRAY}If true, instances can only be placed on hosts in this group via explicit targeting.${NC}"
+    echo -n -e "  ${CYAN}Targeted placement required? (y/N): ${NC}"
+    local _tp_choice
+    read -r _tp_choice
+    local is_targeted="false"
+    [[ "$_tp_choice" =~ ^[Yy]$ ]] && is_targeted="true"
+    echo -e "  ${GREEN}✓ Targeted Placement: ${WHITE}${is_targeted}${NC}"
+    echo ""
+
+    # ── Build configurations JSON ──
+    local config_json
+    config_json=$(jq -n --arg target "$target_shape" --arg rl "$recycle_level" \
+        '[{"target": $target, "recycleLevel": $rl}]')
+
+    # ── Command preview ──
+    _ui_menu_header "COMMAND TO EXECUTE"
+    echo ""
+    local cmd="oci compute compute-host-group create \\
+    --availability-domain \"${selected_ad}\" \\
+    --compartment-id \"${compartment_id}\" \\
+    --region \"${region}\" \\
+    --display-name \"${display_name}\" \\
+    --configurations '${config_json}' \\
+    --is-targeted-placement-required ${is_targeted}"
+
+    echo -e "  ${WHITE}${cmd}${NC}"
+    echo ""
+
+    local _log_file="${LOGS_DIR}/host_group_create_$(date +%Y%m%d_%H%M%S).log"
+    mkdir -p "$(dirname "$_log_file")" 2>/dev/null
+
+    _ui_subheader "CONFIRM CREATION" 0
+    echo ""
+    echo -e "  ${YELLOW}This will create a new Compute Host Group.${NC}"
+    echo -e "  ${WHITE}Log file: ${CYAN}${_log_file}${NC}"
+    echo ""
+    if ! _ui_confirm "CREATE" "confirm, or anything else to cancel" "$CYAN"; then
+        echo -e "${YELLOW}Cancelled.${NC}"
+        _ui_pause "return"
+        return 0
+    fi
+
+    # ── Execute ──
+    echo ""
+    echo -e "${YELLOW}Creating Host Group...${NC}"
+    log_action "CREATE" "$cmd"
+
+    local _cfg_file="${TEMP_DIR}/hg_config_$$.json"
+    echo "$config_json" > "$_cfg_file"
+
+    local result
+    result=$(oci compute compute-host-group create \
+        --availability-domain "$selected_ad" \
+        --compartment-id "$compartment_id" \
+        --region "$region" \
+        --display-name "$display_name" \
+        --configurations "file://$_cfg_file" \
+        --is-targeted-placement-required "$is_targeted" 2>&1)
+    local exit_code=$?
+    rm -f "$_cfg_file"
+
+    _log_masked "$_log_file" "$result"
+
+    if [[ $exit_code -eq 0 ]]; then
+        local new_ocid new_state
+        new_ocid=$(jq -r '.data.id // empty' <<< "$result" 2>/dev/null)
+        new_state=$(jq -r '.data["lifecycle-state"] // "UNKNOWN"' <<< "$result" 2>/dev/null)
+
+        echo ""
+        echo -e "${GREEN}╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║                                         HOST GROUP CREATED                                                    ║${NC}"
+        echo -e "${GREEN}╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  ${CYAN}Display Name:${NC}        ${WHITE}${display_name}${NC}"
+        echo -e "  ${CYAN}OCID:${NC}                ${YELLOW}${new_ocid}${NC}"
+        echo -e "  ${CYAN}Availability Domain:${NC} ${WHITE}${selected_ad}${NC}"
+        echo -e "  ${CYAN}State:${NC}               ${GREEN}${new_state}${NC}"
+        echo -e "  ${CYAN}Target:${NC}              ${WHITE}${target_shape}${NC}"
+        echo -e "  ${CYAN}Recycle Level:${NC}       ${WHITE}${recycle_level}${NC}"
+        echo ""
+        log_action_result "SUCCESS" "Created host group: $display_name ($new_ocid)"
+        echo -e "  ${GRAY}(Host group cache cleared — will refresh on next access)${NC}"
+    else
+        echo ""
+        echo -e "${RED}╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║                                      HOST GROUP CREATION FAILED                                              ║${NC}"
+        echo -e "${RED}╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  ${RED}Error:${NC}"
+        echo "$result"
+        echo ""
+        _ui_policy_hint "manage compute-host-groups in compartment" \
+            "manage compute-hosts in tenancy"
+        echo ""
+        echo -e "  ${YELLOW}Also verify:${NC}"
+        echo -e "    ${GRAY}- Capacity topology is available in ${WHITE}${region}${GRAY} / ${WHITE}${selected_ad}${NC}"
+        echo -e "    ${GRAY}- The target shape ${WHITE}${target_shape}${GRAY} has dedicated hosts in this AD${NC}"
+        echo -e "    ${GRAY}- Check capacity topology: ${WHITE}--manage c 5${NC}"
+        log_action_result "FAILED" "Create host group: $display_name"
+    fi
+    echo ""
+    _ui_pause
+}
+
+#--------------------------------------------------------------------------------
+# Delete Host Group(s)
+#--------------------------------------------------------------------------------
+_delete_compute_host_groups() {
+    local selection="$1"
+    local max_count="$2"
+    local region="$3"
+    local log_file="$4"
+
+    if ! _parse_targets "" "$selection" "$max_count"; then
+        echo -e "${RED}No valid host groups selected${NC}"
+        sleep 1
+        return
+    fi
+
+    echo ""
+    echo -e "  ${RED}Deleting ${#_SEL_INDICES[@]} host group(s):${NC}"
+    for _di in "${_SEL_INDICES[@]}"; do
+        local _de="${HG_LIST[$((_di-1))]}"
+        local _de_id _de_name _de_ad _de_state
+        IFS='|' read -r _de_id _de_name _de_ad _de_state <<< "$_de"
+        echo -e "    ${YELLOW}${_di}${NC}) ${WHITE}${_de_name}${NC}  [${_de_state}]"
+        echo -e "       ${YELLOW}${_de_id}${NC}"
+    done
+    echo ""
+
+    echo -e "  ${WHITE}Command(s) to Execute:${NC}"
+    for _di in "${_SEL_INDICES[@]}"; do
+        local _de="${HG_LIST[$((_di-1))]}"
+        local _de_id
+        IFS='|' read -r _de_id _ _ _ <<< "$_de"
+        echo -e "  ${GRAY}oci compute compute-host-group delete --compute-host-group-id \"${_de_id}\" --region \"${region}\" --force${NC}"
+    done
+    echo ""
+
+    if ! _ui_confirm "DELETE" "confirm, or anything else to cancel" "$RED"; then
+        echo -e "${YELLOW}Cancelled.${NC}"
+        return
+    fi
+
+    local _success=0 _failed=0
+    for _di in "${_SEL_INDICES[@]}"; do
+        local _de="${HG_LIST[$((_di-1))]}"
+        local _de_id _de_name
+        IFS='|' read -r _de_id _de_name _ _ <<< "$_de"
+
+        local _del_cmd="oci compute compute-host-group delete --compute-host-group-id \"${_de_id}\" --region \"${region}\" --force"
+        log_action "DELETE" "$_del_cmd"
+
+        local _del_result
+        _del_result=$(oci compute compute-host-group delete \
+            --compute-host-group-id "$_de_id" \
+            --region "$region" \
+            --force 2>&1)
+        local _del_rc=$?
+
+        if [[ $_del_rc -eq 0 ]]; then
+            echo -e "  ${GREEN}✓ Deleted: ${WHITE}${_de_name}${NC}"
+            log_action_result "SUCCESS" "Deleted host group: $_de_name"
+            ((_success++))
+        else
+            echo -e "  ${RED}✗ Failed: ${WHITE}${_de_name}${NC}"
+            echo -e "    ${RED}${_del_result}${NC}"
+            log_action_result "FAILED" "Delete host group: $_de_name"
+            ((_failed++))
+        fi
+    done
+
+    echo ""
+    echo -e "  ${GREEN}${_success} deleted${NC}"
+    [[ $_failed -gt 0 ]] && echo -e "  ${RED}${_failed} failed${NC}"
+    echo -e "  ${GRAY}(Host group cache cleared)${NC}"
+    echo ""
+    _ui_pause
+}
+
+#--------------------------------------------------------------------------------
+# Attach Bare Metal Host to Host Group
+#--------------------------------------------------------------------------------
+_attach_compute_host_to_group() {
+    local hg_id="$1"
+    local hg_name="$2"
+    local region="$3"
+    local log_file="$4"
+
+    echo ""
+    _ui_subheader "Attach Bare Metal Host" 0
+    echo ""
+
+    # Ensure compute host cache is fresh
+    if ! is_cache_fresh "$COMPUTE_HOST_CACHE"; then
+        echo -e "  ${GRAY}Fetching bare metal hosts...${NC}"
+        _step_init
+        _step_active "bare metal hosts"
+        fetch_compute_hosts
+        _step_complete "bare metal hosts"
+        _step_finish
+    fi
+
+    if [[ ! -f "$COMPUTE_HOST_CACHE" ]]; then
+        echo -e "  ${RED}No compute host data available.${NC}"
+        _ui_policy_hint "read compute-hosts in tenancy"
+        echo ""
+        _ui_pause
+        return
+    fi
+
+    # Filter to hosts without a group (field 13 == "N/A")
+    local _avail_hosts
+    _avail_hosts=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' '$13 == "N/A" || $13 == ""')
+    local _avail_count=0
+    [[ -n "$_avail_hosts" ]] && _avail_count=$(echo "$_avail_hosts" | grep -c .)
+
+    if [[ $_avail_count -eq 0 ]]; then
+        echo -e "  ${YELLOW}No unattached bare metal hosts available in this region.${NC}"
+        echo ""
+        _ui_pause
+        return
+    fi
+
+    echo -e "  ${WHITE}Bare metal hosts without a group assignment:${NC}"
+    echo ""
+    printf "  ${GRAY}%-4s %-40s %-15s %-12s %-10s %s${NC}\n" "#" "Display Name" "Shape" "State" "Health" "Bare Metal Host OCID"
+    echo -e "  ${GRAY}$(printf '─%.0s' {1..170})${NC}"
+
+    declare -A _ATT_MAP=()
+    local _ai=0
+    while IFS='|' read -r _an _as _ah _ashape _ap _aad _afd _ainst _aocid _rest; do
+        [[ -z "$_an" ]] && continue
+        ((_ai++))
+        _ATT_MAP[$_ai]="${_aocid}|${_an}|${_ashape}"
+
+        local _asc="$GREEN"
+        case "$_as" in AVAILABLE) _asc="$CYAN" ;; INACTIVE) _asc="$YELLOW" ;; esac
+        local _ahc="$GREEN"
+        case "$_ah" in DEGRADED|IMPAIRED) _ahc="$YELLOW" ;; UNHEALTHY|FAILED) _ahc="$RED" ;; esac
+
+        printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${_asc}%-12s${NC} ${_ahc}%-10s${NC} ${YELLOW}%s${NC}\n" \
+            "$_ai" "$_an" "$_ashape" "$_as" "$_ah" "$_aocid"
+    done <<< "$_avail_hosts"
+
+    echo ""
+    echo -n -e "  ${CYAN}Select host to attach: ${NC}"
+    local _att_choice
+    read -r _att_choice
+
+    if [[ ! "$_att_choice" =~ ^[0-9]+$ ]] || [[ -z "${_ATT_MAP[$_att_choice]:-}" ]]; then
+        echo -e "  ${RED}Invalid selection — cancelled${NC}"
+        return
+    fi
+
+    local _att_ocid _att_name _att_shape
+    IFS='|' read -r _att_ocid _att_name _att_shape <<< "${_ATT_MAP[$_att_choice]}"
+
+    echo ""
+    echo -e "  ${WHITE}Command to Execute:${NC}"
+    local _att_cmd="oci compute compute-host attach \\
+      --compute-host-id \"${_att_ocid}\" \\
+      --compute-host-group-id \"${hg_id}\" \\
+      --region \"${region}\""
+    echo -e "  ${GRAY}${_att_cmd}${NC}"
+    echo ""
+
+    if ! _ui_confirm "ATTACH" "confirm, or anything else to cancel" "$CYAN"; then
+        echo -e "  ${YELLOW}Cancelled.${NC}"
+        return
+    fi
+
+    log_action "ATTACH" "$_att_cmd"
+    local _att_result
+    _att_result=$(oci compute compute-host attach \
+        --compute-host-id "$_att_ocid" \
+        --compute-host-group-id "$hg_id" \
+        --region "$region" --output json 2>&1)
+    local _att_rc=$?
+
+    if [[ $_att_rc -eq 0 ]]; then
+        local _wr
+        _wr=$(jq -r '.["opc-work-request-id"] // empty' <<< "$_att_result" 2>/dev/null)
+        echo -e "  ${GREEN}✓ Attach initiated: ${WHITE}${_att_name}${NC} → ${WHITE}${hg_name}${NC}"
+        [[ -n "$_wr" ]] && echo -e "  ${GRAY}Work request: ${YELLOW}${_wr}${NC}"
+        log_action_result "SUCCESS" "Attached $_att_name to $hg_name"
+    else
+        echo -e "  ${RED}✗ Attach failed: ${WHITE}${_att_name}${NC}"
+        echo -e "    ${RED}${_att_result}${NC}"
+        echo ""
+        _ui_policy_hint "manage compute-hosts in tenancy" \
+            "manage compute-host-groups in compartment"
+        log_action_result "FAILED" "Attach $_att_name to $hg_name"
+    fi
+    echo ""
+    _ui_pause
+}
+
+#--------------------------------------------------------------------------------
+# Detach Bare Metal Host from Host Group
+#--------------------------------------------------------------------------------
+_detach_compute_host_from_group() {
+    local bm_ocid="$1"
+    local bm_name="$2"
+    local bm_shape="$3"
+    local bm_state="$4"
+    local hg_id="$5"
+    local hg_name="$6"
+    local region="$7"
+    local log_file="$8"
+
+    echo ""
+
+    # Guard: host must be in a stable state to detach
+    if [[ "$bm_state" != "AVAILABLE" && "$bm_state" != "OCCUPIED" ]]; then
+        echo -e "  ${RED}Cannot detach — host is in ${WHITE}${bm_state}${RED} state.${NC}"
+        echo -e "  ${GRAY}Host must be in AVAILABLE or OCCUPIED state to detach. Wait for the current operation to complete.${NC}"
+        echo ""
+        _ui_pause
+        return
+    fi
+
+    echo -e "  ${WHITE}Detaching:${NC} ${CYAN}${bm_name}${NC}  ${WHITE}${bm_shape}${NC}  [${bm_state}]  ${YELLOW}${bm_ocid}${NC}"
+    echo ""
+
+    echo -e "  ${WHITE}Command to Execute:${NC}"
+    local _dt_cmd="oci compute compute-host detach \\
+      --compute-host-id \"${bm_ocid}\" \\
+      --compute-host-group-id \"${hg_id}\" \\
+      --region \"${region}\""
+    echo -e "  ${GRAY}${_dt_cmd}${NC}"
+    echo ""
+
+    if ! _ui_confirm "DETACH" "confirm, or anything else to cancel" "$RED"; then
+        echo -e "  ${YELLOW}Cancelled.${NC}"
+        return
+    fi
+
+    log_action "DETACH" "$_dt_cmd"
+    local _dt_result
+    _dt_result=$(oci compute compute-host detach \
+        --compute-host-id "$bm_ocid" \
+        --compute-host-group-id "$hg_id" \
+        --region "$region" --output json 2>&1)
+    local _dt_rc=$?
+
+    if [[ $_dt_rc -eq 0 ]]; then
+        local _wr
+        _wr=$(jq -r '.["opc-work-request-id"] // empty' <<< "$_dt_result" 2>/dev/null)
+        echo -e "  ${GREEN}✓ Detach initiated: ${WHITE}${bm_name}${NC} from ${WHITE}${hg_name}${NC}"
+        [[ -n "$_wr" ]] && echo -e "  ${GRAY}Work request: ${YELLOW}${_wr}${NC}"
+        log_action_result "SUCCESS" "Detached $bm_name from $hg_name"
+    else
+        echo -e "  ${RED}✗ Detach failed: ${WHITE}${bm_name}${NC}"
+        echo -e "    ${RED}${_dt_result}${NC}"
+        echo ""
+        _ui_policy_hint "manage compute-hosts in tenancy" \
+            "manage compute-host-groups in compartment"
+        echo -e "  ${GRAY}Note: Host must be in AVAILABLE or OCCUPIED state to detach.${NC}"
+        log_action_result "FAILED" "Detach $bm_name from $hg_name"
+    fi
+    echo ""
+    _ui_pause
+}
+
+#--------------------------------------------------------------------------------
+# Compute Notifications (c12) — ONS Topics + Subscriptions
+#--------------------------------------------------------------------------------
+manage_compute_notifications() {
+    local compartment_id="${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}"
+    local region="${FOCUS_REGION:-$REGION}"
+
+    while true; do
+        compartment_id="${FOCUS_COMPARTMENT_ID:-${COMPARTMENT_ID:-$compartment_id}}"
+        region="${FOCUS_REGION:-${REGION:-$region}}"
+
+        echo ""
+        _ui_menu_header "COMPUTE NOTIFICATIONS" \
+            --color "$YELLOW" \
+            --breadcrumb "Compute" "Notifications" \
+            --cmd "oci ons topic list --compartment-id \$COMPARTMENT_ID --all | oci ons subscription list --compartment-id \$COMPARTMENT_ID --all" \
+            --env
+
+        # ── Discovery: topics + event rules ──
+        _step_init
+        _step_active "topics"
+        local _topics_json
+        _topics_json=$(oci ons topic list \
+            --compartment-id "$compartment_id" \
+            --region "$region" \
+            --all --output json 2>/dev/null)
+        local _tc=0
+        [[ -n "$_topics_json" ]] && _tc=$(jq '[.data[]? | select(.["lifecycle-state"] == "ACTIVE")] | length' <<< "$_topics_json" 2>/dev/null || echo "0")
+        _step_complete "topics(${_tc})"
+
+        _step_active "event rules"
+        local _rules_json
+        _rules_json=$(oci events rule list \
+            --compartment-id "$compartment_id" \
+            --region "$region" \
+            --all --output json 2>/dev/null)
+        local _erc=0
+        [[ -n "$_rules_json" ]] && _erc=$(jq '[.data[]? | select(.["lifecycle-state"] != "DELETED")] | length' <<< "$_rules_json" 2>/dev/null || echo "0")
+        _step_complete "event rules(${_erc})"
+        _step_finish
+
+        # ── ONS Topics ──
+        echo ""
+        _ui_subheader "ONS Topics (${_tc})" 0
+        echo ""
+
+        declare -A _NT_MAP=()
+        declare -a _NT_LIST=()
+        local _ni=0
+        if [[ -n "$_topics_json" && "$_tc" -gt 0 ]]; then
+            printf "  ${GRAY}%-4s %-40s %-12s %-50s${NC}\n" "#" "Name" "State" "Topic OCID"
+            echo -e "  ${GRAY}$(printf '─%.0s' {1..110})${NC}"
+
+            while IFS=$'\t' read -r _tid _tname _tstate; do
+                [[ -z "$_tid" ]] && continue
+                ((_ni++))
+                _NT_MAP[$_ni]="$_tid"
+                _NT_LIST+=("${_tid}|${_tname}")
+                local _tsc; _tsc=$(color_resource_state "$_tstate")
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${_tsc}%-12s${NC} ${YELLOW}%-50s${NC}\n" "${_ni})" "$_tname" "$_tstate" "$_tid"
+            done < <(jq -r '.data[]? | select(.["lifecycle-state"] == "ACTIVE") | [.["topic-id"], .name, .["lifecycle-state"]] | @tsv' <<< "$_topics_json" 2>/dev/null)
+        else
+            echo -e "  ${GRAY}(No active topics found)${NC}"
+        fi
+        echo ""
+
+        # ── Event Rules ──
+        _ui_subheader "Event Rules (${_erc})" 0
+        echo ""
+
+        declare -A _ER_MAP=()
+        local _eri=0
+        if [[ -n "$_rules_json" && "$_erc" -gt 0 ]]; then
+            printf "  ${GRAY}%-4s %-40s %-10s %-10s %-30s${NC}\n" "#" "Display Name" "State" "Enabled" "Event Types"
+            echo -e "  ${GRAY}$(printf '─%.0s' {1..100})${NC}"
+
+            while IFS=$'\t' read -r _rid _rname _rstate _renabled _revents; do
+                [[ -z "$_rid" || "$_rstate" == "DELETED" ]] && continue
+                ((_eri++))
+                _ER_MAP[$_eri]="$_rid|$_rname"
+                local _rsc; _rsc=$(color_resource_state "$_rstate")
+                local _ren_display="${GREEN}Yes${NC}"
+                [[ "$_renabled" != "true" ]] && _ren_display="${YELLOW}No${NC}"
+                # Shorten event types for display
+                local _revt_short
+                _revt_short=$(echo "$_revents" | sed 's/com\.oraclecloud\.//g' | cut -c1-30)
+                [[ ${#_revents} -gt 30 ]] && _revt_short+="..."
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${_rsc}%-10s${NC} ${_ren_display}%-1s  %-30s\n" \
+                    "e${_eri})" "$_rname" "$_rstate" "" "$_revt_short"
+            done < <(jq -r '.data[]? | select(.["lifecycle-state"] != "DELETED") | [
+                .id,
+                (.["display-name"] // "N/A"),
+                (.["lifecycle-state"] // "N/A"),
+                (.["is-enabled"] // false | tostring),
+                ((.condition.eventType // []) | join(","))
+            ] | @tsv' <<< "$_rules_json" 2>/dev/null)
+        else
+            echo -e "  ${GRAY}(No event rules found)${NC}"
+        fi
+        echo ""
+
+        # ── Actions ──
+        _ui_actions
+        echo ""
+        [[ $_ni -gt 0 ]] && echo -e "  ${CYAN}#${NC})     ${WHITE}View${NC}        - View topic subscriptions"
+        echo -e "  ${GREEN}c${NC})     ${WHITE}Create${NC}      - Create a new ONS topic"
+        echo -e "  ${GREEN}s${NC})     ${WHITE}Subscribe${NC}   - Add subscription to a topic"
+        [[ $_ni -gt 0 ]] && echo -e "  ${RED}d #${NC})   ${WHITE}Delete${NC}      - Delete topic"
+        [[ $_eri -gt 0 ]] && echo -e "  ${CYAN}e#${NC})    ${WHITE}View Rule${NC}   - View event rule details (e1, e2...)"
+        [[ $_eri -gt 0 ]] && echo -e "  ${RED}ed #${NC})  ${WHITE}Delete Rule${NC} - Delete event rule (ed 1, ed 2...)"
+        echo -e "  ${MAGENTA}r${NC})     ${WHITE}Refresh${NC}"
+        echo -e "  ${CYAN}b${NC})     ${WHITE}Back${NC}"
+        echo ""
+        _ui_prompt "Notifications" "#, c, s, d #, e#, ed #, r, b"
+
+        local choice
+        read -r choice
+        [[ "${choice:-}" == :* ]] && _nav_try_jump "$choice" && return
+
+        case "$choice" in
+            c|C)
+                # Create topic
+                echo ""
+                echo -n -e "  ${CYAN}Topic name: ${NC}"
+                local _new_tn
+                read -r _new_tn
+                [[ -z "$_new_tn" ]] && { echo -e "  ${YELLOW}Cancelled${NC}"; sleep 1; continue; }
+
+                echo -n -e "  ${CYAN}Description [Compute host event notifications]: ${NC}"
+                local _new_td
+                read -r _new_td
+                [[ -z "$_new_td" ]] && _new_td="Compute host event notifications"
+
+                local _tc_cmd="oci ons topic create --compartment-id \"${compartment_id}\" --name \"${_new_tn}\" --description \"${_new_td}\" --region \"${region}\""
+                echo ""
+                echo -e "  ${WHITE}Command:${NC} ${GRAY}${_tc_cmd}${NC}"
+                log_action "CREATE" "$_tc_cmd"
+
+                local _tc_result
+                _tc_result=$(oci ons topic create \
+                    --compartment-id "$compartment_id" \
+                    --name "$_new_tn" \
+                    --description "$_new_td" \
+                    --region "$region" --output json 2>&1)
+                if [[ $? -eq 0 ]]; then
+                    local _new_tid
+                    _new_tid=$(jq -r '.data["topic-id"] // empty' <<< "$_tc_result" 2>/dev/null)
+                    echo -e "  ${GREEN}✓ Topic created: ${WHITE}${_new_tn}${NC}"
+                    echo -e "    ${YELLOW}${_new_tid}${NC}"
+                    log_action_result "SUCCESS" "Created topic: $_new_tn"
+                else
+                    echo -e "  ${RED}✗ Failed to create topic${NC}"
+                    echo -e "    ${RED}${_tc_result}${NC}"
+                    _ui_policy_hint "manage ons-topics in compartment"
+                    log_action_result "FAILED" "Create topic: $_new_tn"
+                fi
+                _ui_pause
+                ;;
+            s|S)
+                # Subscribe to a topic
+                if [[ $_ni -eq 0 ]]; then
+                    echo -e "  ${YELLOW}No topics available — create one first${NC}"
+                    sleep 1
+                    continue
+                fi
+                echo ""
+                echo -n -e "  ${CYAN}Select topic number: ${NC}"
+                local _st_num
+                read -r _st_num
+                if [[ ! "$_st_num" =~ ^[0-9]+$ ]] || [[ -z "${_NT_MAP[$_st_num]:-}" ]]; then
+                    echo -e "  ${RED}Invalid selection${NC}"; sleep 1; continue
+                fi
+                local _st_tid="${_NT_MAP[$_st_num]}"
+                local _st_tname
+                IFS='|' read -r _ _st_tname <<< "${_NT_LIST[$((_st_num-1))]}"
+
+                echo ""
+                echo -e "  ${WHITE}Topic: ${CYAN}${_st_tname}${NC}"
+                echo ""
+                echo -e "  ${WHITE}Protocol:${NC}"
+                echo -e "    ${YELLOW}1${NC}) EMAIL        ${GRAY}- Email address${NC}"
+                echo -e "    ${YELLOW}2${NC}) CUSTOM_HTTPS ${GRAY}- Webhook URL (Slack, Teams, custom)${NC}"
+                echo -e "    ${YELLOW}3${NC}) PAGERDUTY    ${GRAY}- PagerDuty integration key${NC}"
+                echo ""
+                echo -n -e "  ${CYAN}Select protocol [1]: ${NC}"
+                local _sp
+                read -r _sp
+                [[ -z "$_sp" ]] && _sp=1
+
+                local _s_proto="" _s_ep=""
+                case "$_sp" in
+                    1) _s_proto="EMAIL"; echo -n -e "  ${CYAN}Email address: ${NC}"; read -r _s_ep ;;
+                    2) _s_proto="CUSTOM_HTTPS"; echo -n -e "  ${CYAN}Webhook URL: ${NC}"; read -r _s_ep ;;
+                    3) _s_proto="PAGERDUTY"; echo -n -e "  ${CYAN}PagerDuty key: ${NC}"; read -r _s_ep ;;
+                    *) echo -e "  ${RED}Invalid${NC}"; sleep 1; continue ;;
+                esac
+                [[ -z "$_s_ep" ]] && { echo -e "  ${YELLOW}Cancelled${NC}"; sleep 1; continue; }
+
+                local _sub_cmd="oci ons subscription create --topic-id \"${_st_tid}\" --protocol \"${_s_proto}\" --subscription-endpoint \"${_s_ep}\" --compartment-id \"${compartment_id}\" --region \"${region}\""
+                echo ""
+                echo -e "  ${WHITE}Command:${NC} ${GRAY}${_sub_cmd}${NC}"
+                log_action "CREATE" "$_sub_cmd"
+
+                local _sub_result
+                _sub_result=$(oci ons subscription create \
+                    --topic-id "$_st_tid" \
+                    --protocol "$_s_proto" \
+                    --subscription-endpoint "$_s_ep" \
+                    --compartment-id "$compartment_id" \
+                    --region "$region" --output json 2>&1)
+                if [[ $? -eq 0 ]]; then
+                    echo -e "  ${GREEN}✓ Subscription created: ${WHITE}${_s_proto}${NC} → ${WHITE}${_s_ep}${NC}"
+                    [[ "$_s_proto" == "EMAIL" ]] && echo -e "    ${YELLOW}⚠ Check your inbox — confirmation required${NC}"
+                    log_action_result "SUCCESS" "Created subscription: $_s_proto → $_s_ep"
+                else
+                    echo -e "  ${RED}✗ Failed to create subscription${NC}"
+                    echo -e "    ${RED}${_sub_result}${NC}"
+                    _ui_policy_hint "manage ons-subscriptions in compartment"
+                    log_action_result "FAILED" "Create subscription: $_s_proto → $_s_ep"
+                fi
+                _ui_pause
+                ;;
+            d\ *|D\ *)
+                # Delete topic
+                local _dt_num="${choice#* }"
+                if [[ ! "$_dt_num" =~ ^[0-9]+$ ]] || [[ -z "${_NT_MAP[$_dt_num]:-}" ]]; then
+                    echo -e "  ${RED}Invalid topic number${NC}"; sleep 1; continue
+                fi
+                local _dt_tid="${_NT_MAP[$_dt_num]}"
+                local _dt_tname
+                IFS='|' read -r _ _dt_tname <<< "${_NT_LIST[$((_dt_num-1))]}"
+
+                echo ""
+                echo -e "  ${RED}Deleting topic: ${WHITE}${_dt_tname}${NC}"
+                echo -e "    ${YELLOW}${_dt_tid}${NC}"
+                echo ""
+                echo -e "  ${WHITE}Command:${NC} ${GRAY}oci ons topic delete --topic-id \"${_dt_tid}\" --force${NC}"
+                echo ""
+
+                if ! _ui_confirm "DELETE" "confirm, or anything else to cancel" "$RED"; then
+                    echo -e "  ${YELLOW}Cancelled${NC}"; continue
+                fi
+
+                log_action "DELETE" "oci ons topic delete --topic-id \"${_dt_tid}\" --force"
+                local _dt_result
+                _dt_result=$(oci ons topic delete --topic-id "$_dt_tid" --force --region "$region" 2>&1)
+                if [[ $? -eq 0 ]]; then
+                    echo -e "  ${GREEN}✓ Deleted: ${WHITE}${_dt_tname}${NC}"
+                    log_action_result "SUCCESS" "Deleted topic: $_dt_tname"
+                else
+                    echo -e "  ${RED}✗ Failed${NC}"
+                    echo -e "    ${RED}${_dt_result}${NC}"
+                    log_action_result "FAILED" "Delete topic: $_dt_tname"
+                fi
+                _ui_pause
+                ;;
+            [0-9]*)
+                # View topic subscriptions
+                if [[ "$choice" =~ ^[0-9]+$ ]] && [[ -n "${_NT_MAP[$choice]:-}" ]]; then
+                    local _vt_tid="${_NT_MAP[$choice]}"
+                    local _vt_tname
+                    IFS='|' read -r _ _vt_tname <<< "${_NT_LIST[$((choice-1))]}"
+                    echo ""
+                    _ui_subheader "Subscriptions for: ${_vt_tname}" 0
+                    echo ""
+                    local _subs_json
+                    _subs_json=$(oci ons subscription list \
+                        --compartment-id "$compartment_id" \
+                        --topic-id "$_vt_tid" \
+                        --region "$region" \
+                        --all --output json 2>/dev/null)
+                    local _sub_ct=0
+                    [[ -n "$_subs_json" ]] && _sub_ct=$(jq '.data | length' <<< "$_subs_json" 2>/dev/null || echo "0")
+
+                    if [[ "$_sub_ct" -gt 0 ]]; then
+                        printf "  ${GRAY}%-4s %-15s %-50s %-12s${NC}\n" "#" "Protocol" "Endpoint" "State"
+                        echo -e "  ${GRAY}$(printf '─%.0s' {1..85})${NC}"
+                        local _si=0
+                        while IFS=$'\t' read -r _sproto _sep _sstate; do
+                            ((_si++))
+                            local _ssc; _ssc=$(color_resource_state "$_sstate")
+                            printf "  ${YELLOW}%-4s${NC} ${WHITE}%-15s${NC} %-50s ${_ssc}%-12s${NC}\n" "$_si" "$_sproto" "$_sep" "$_sstate"
+                        done < <(jq -r '.data[]? | [.protocol, .endpoint, .["lifecycle-state"]] | @tsv' <<< "$_subs_json" 2>/dev/null)
+                    else
+                        echo -e "  ${GRAY}(No subscriptions)${NC}"
+                    fi
+                    echo ""
+                    _ui_pause
+                else
+                    echo -e "  ${RED}Invalid selection${NC}"; sleep 1
+                fi
+                ;;
+            e[0-9]*)
+                # View event rule details
+                local _ev_num="${choice#e}"
+                if [[ "$_ev_num" =~ ^[0-9]+$ ]] && [[ -n "${_ER_MAP[$_ev_num]:-}" ]]; then
+                    local _ev_id _ev_name
+                    IFS='|' read -r _ev_id _ev_name <<< "${_ER_MAP[$_ev_num]}"
+                    echo ""
+                    _ui_subheader "Event Rule: ${_ev_name}" 0
+                    echo ""
+                    local _ev_detail
+                    _ev_detail=$(oci events rule get --rule-id "$_ev_id" --region "$region" --output json 2>/dev/null)
+                    if [[ -n "$_ev_detail" ]]; then
+                        local _ev_state _ev_enabled _ev_desc _ev_created
+                        _ev_state=$(jq -r '.data["lifecycle-state"] // "N/A"' <<< "$_ev_detail" 2>/dev/null)
+                        _ev_enabled=$(jq -r '.data["is-enabled"] // false' <<< "$_ev_detail" 2>/dev/null)
+                        _ev_desc=$(jq -r '.data.description // "-"' <<< "$_ev_detail" 2>/dev/null)
+                        _ev_created=$(jq -r '.data["time-created"] // "N/A"' <<< "$_ev_detail" 2>/dev/null)
+
+                        local _ev_sc; _ev_sc=$(color_resource_state "$_ev_state")
+                        local _ev_en="${GREEN}Yes${NC}"
+                        [[ "$_ev_enabled" != "true" ]] && _ev_en="${YELLOW}No${NC}"
+
+                        echo -e "  ${CYAN}Name:${NC}        ${WHITE}${_ev_name}${NC}"
+                        echo -e "  ${CYAN}OCID:${NC}        ${YELLOW}${_ev_id}${NC}"
+                        echo -e "  ${CYAN}State:${NC}       ${_ev_sc}${_ev_state}${NC}"
+                        echo -e "  ${CYAN}Enabled:${NC}     ${_ev_en}"
+                        echo -e "  ${CYAN}Description:${NC} ${WHITE}${_ev_desc}${NC}"
+                        echo -e "  ${CYAN}Created:${NC}     ${WHITE}${_ev_created}${NC}"
+                        echo ""
+
+                        echo -e "  ${CYAN}Event Types:${NC}"
+                        jq -r '.data.condition.eventType[]? // empty' <<< "$_ev_detail" 2>/dev/null | while read -r _et; do
+                            echo -e "    ${WHITE}•${NC} ${_et}"
+                        done
+                        echo ""
+
+                        echo -e "  ${CYAN}Actions:${NC}"
+                        jq -r '.data.actions.actions[]? | "    \(.actionType // "?") → \(.topicId // .functionId // .streamId // "?")"' <<< "$_ev_detail" 2>/dev/null
+                        echo ""
+
+                        echo -e "  ${CYAN}Full JSON:${NC}"
+                        echo "$_ev_detail" | jq '.data' 2>/dev/null
+                    else
+                        echo -e "  ${RED}Failed to fetch event rule details${NC}"
+                        _ui_policy_hint "read cloudevents-rules in compartment"
+                    fi
+                    echo ""
+                    _ui_pause
+                else
+                    echo -e "  ${RED}Invalid rule number${NC}"; sleep 1
+                fi
+                ;;
+            ed\ *|ED\ *)
+                # Delete event rule
+                local _ed_num="${choice#* }"
+                if [[ "$_ed_num" =~ ^[0-9]+$ ]] && [[ -n "${_ER_MAP[$_ed_num]:-}" ]]; then
+                    local _ed_id _ed_name
+                    IFS='|' read -r _ed_id _ed_name <<< "${_ER_MAP[$_ed_num]}"
+                    echo ""
+                    echo -e "  ${RED}Deleting event rule: ${WHITE}${_ed_name}${NC}"
+                    echo -e "    ${YELLOW}${_ed_id}${NC}"
+                    echo ""
+                    echo -e "  ${WHITE}Command:${NC} ${GRAY}oci events rule delete --rule-id \"${_ed_id}\" --region \"${region}\" --force${NC}"
+                    echo ""
+
+                    if ! _ui_confirm "DELETE" "confirm, or anything else to cancel" "$RED"; then
+                        echo -e "  ${YELLOW}Cancelled${NC}"; continue
+                    fi
+
+                    log_action "DELETE" "oci events rule delete --rule-id \"${_ed_id}\" --region \"${region}\" --force"
+                    local _ed_result
+                    _ed_result=$(oci events rule delete --rule-id "$_ed_id" --region "$region" --force 2>&1)
+                    if [[ $? -eq 0 ]]; then
+                        echo -e "  ${GREEN}✓ Deleted: ${WHITE}${_ed_name}${NC}"
+                        log_action_result "SUCCESS" "Deleted event rule: $_ed_name"
+                    else
+                        echo -e "  ${RED}✗ Failed${NC}"
+                        echo -e "    ${RED}${_ed_result}${NC}"
+                        _ui_policy_hint "manage cloudevents-rules in compartment"
+                        log_action_result "FAILED" "Delete event rule: $_ed_name"
+                    fi
+                    _ui_pause
+                else
+                    echo -e "  ${RED}Invalid rule number${NC}"; sleep 1
+                fi
+                ;;
+            r|R) continue ;;
+            b|B|"") return ;;
+            env*|ENV*) _env_dispatch "$choice" ;;
+            show|SHOW) continue ;;
+            :*) _nav_try_jump "$choice" && return ;;
+            *) echo -e "${RED}Invalid selection${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
+#--------------------------------------------------------------------------------
+# Create Event Rule for Compute Host Changes (shared by c10 and c11)
+# Args: $1=compartment_id, $2=region, $3=default_rule_name
+#--------------------------------------------------------------------------------
+_create_host_event_rule() {
+    local compartment_id="$1"
+    local region="$2"
+    local default_rule_name="$3"
+
+    echo ""
+    _ui_menu_header "CREATE HOST EVENT RULE"
+    echo ""
+
+    # ── Select topic ──
+    _ui_subheader "Select ONS Topic" 0
+    echo ""
+    echo -e "  ${GRAY}Fetching topics...${NC}"
+
+    local _topics_json
+    _topics_json=$(oci ons topic list \
+        --compartment-id "$compartment_id" \
+        --region "$region" \
+        --all --output json 2>/dev/null)
+
+    declare -A _ER_TOPIC_MAP=()
+    local _ti=0
+    if [[ -n "$_topics_json" ]]; then
+        while IFS=$'\t' read -r _tid _tname; do
+            [[ -z "$_tid" ]] && continue
+            ((_ti++))
+            _ER_TOPIC_MAP[$_ti]="$_tid|$_tname"
+            printf "    ${YELLOW}%2d${NC}) ${WHITE}%s${NC}\n" "$_ti" "$_tname"
+        done < <(jq -r '.data[]? | select(.["lifecycle-state"] == "ACTIVE") | [.["topic-id"], .name] | @tsv' <<< "$_topics_json" 2>/dev/null)
+    fi
+
+    if [[ $_ti -eq 0 ]]; then
+        echo -e "  ${RED}No active ONS topics found.${NC}"
+        echo -e "  ${GRAY}Create a topic first via: ${WHITE}--manage c 12${NC}"
+        echo ""
+        _ui_pause
+        return
+    fi
+
+    echo ""
+    echo -n -e "  ${CYAN}Select topic: ${NC}"
+    local _tc
+    read -r _tc
+    if [[ ! "$_tc" =~ ^[0-9]+$ ]] || [[ -z "${_ER_TOPIC_MAP[$_tc]:-}" ]]; then
+        echo -e "  ${RED}Invalid selection — cancelled${NC}"
+        return
+    fi
+
+    local topic_ocid topic_name
+    IFS='|' read -r topic_ocid topic_name <<< "${_ER_TOPIC_MAP[$_tc]}"
+    echo -e "  ${GREEN}✓ Topic: ${WHITE}${topic_name}${NC}"
+    echo ""
+
+    # ── Event types ──
+    _ui_subheader "Event Types" 0
+    echo ""
+    echo -e "  ${WHITE}Events that will trigger notifications:${NC}"
+    echo -e "    ${CYAN}•${NC} com.oraclecloud.compute.computehost.update        ${GRAY}— host state changes${NC}"
+    echo -e "    ${CYAN}•${NC} com.oraclecloud.compute.computehost.healthchange   ${GRAY}— host health changes${NC}"
+    echo -e "    ${CYAN}•${NC} com.oraclecloud.compute.computehostgroup.update    ${GRAY}— host group config changes${NC}"
+    echo -e "    ${CYAN}•${NC} com.oraclecloud.compute.computehost.attach         ${GRAY}— host attached to group${NC}"
+    echo -e "    ${CYAN}•${NC} com.oraclecloud.compute.computehost.detach         ${GRAY}— host detached from group${NC}"
+    echo ""
+
+    # ── Rule name ──
+    echo -n -e "  ${CYAN}Event rule name [${default_rule_name}]: ${NC}"
+    local _rn
+    read -r _rn
+    [[ -z "$_rn" ]] && _rn="$default_rule_name"
+    echo ""
+
+    # Build JSON
+    local _condition_json
+    _condition_json=$(jq -n '{
+        "eventType": [
+            "com.oraclecloud.compute.computehost.update",
+            "com.oraclecloud.compute.computehost.healthchange",
+            "com.oraclecloud.compute.computehostgroup.update",
+            "com.oraclecloud.compute.computehost.attach",
+            "com.oraclecloud.compute.computehost.detach"
+        ]
+    }')
+    local _actions_json
+    _actions_json=$(jq -n --arg tid "$topic_ocid" '{
+        "actions": [
+            {
+                "actionType": "ONS",
+                "topicId": $tid,
+                "isEnabled": true
+            }
+        ]
+    }')
+
+    # Compact JSON for inline passing (file:// not supported for events rule create)
+    local _condition_compact
+    _condition_compact=$(jq -c '.' <<< "$_condition_json")
+    local _actions_compact
+    _actions_compact=$(jq -c '.' <<< "$_actions_json")
+
+    echo ""
+    echo -e "  ${WHITE}Command:${NC}"
+    local _rule_display_cmd="oci events rule create --compartment-id \"${compartment_id}\" --display-name \"${_rn}\" --is-enabled true --region \"${region}\" --condition '${_condition_compact}' --actions '${_actions_compact}'"
+    echo "  ${_rule_display_cmd}"
+    echo ""
+
+    if ! _ui_confirm "CREATE" "confirm, or anything else to cancel" "$CYAN"; then
+        echo -e "  ${YELLOW}Cancelled.${NC}"
+        _ui_pause
+        return
+    fi
+
+    log_action "CREATE" "$_rule_display_cmd"
+
+    local _rule_result
+    _rule_result=$(oci events rule create \
+        --compartment-id "$compartment_id" \
+        --display-name "$_rn" \
+        --is-enabled true \
+        --condition "$_condition_compact" \
+        --actions "$_actions_compact" \
+        --region "$region" --output json 2>&1)
+    local _rule_rc=$?
+
+    if [[ $_rule_rc -eq 0 ]]; then
+        local _rule_id _rule_state
+        _rule_id=$(jq -r '.data.id // empty' <<< "$_rule_result" 2>/dev/null)
+        _rule_state=$(jq -r '.data["lifecycle-state"] // "UNKNOWN"' <<< "$_rule_result" 2>/dev/null)
+
+        echo ""
+        echo -e "  ${GREEN}╔════════════════════════════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "  ${GREEN}║                           EVENT RULE CREATED                                          ║${NC}"
+        echo -e "  ${GREEN}╚════════════════════════════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  ${CYAN}Rule:${NC}   ${WHITE}${_rn}${NC} [${_rule_state}]"
+        echo -e "  ${CYAN}Topic:${NC}  ${WHITE}${topic_name}${NC}"
+        echo -e "  ${CYAN}OCID:${NC}   ${YELLOW}${_rule_id}${NC}"
+        echo ""
+        echo -e "  ${GRAY}Notifications will fire when bare metal hosts change state or health.${NC}"
+        log_action_result "SUCCESS" "Created event rule: $_rn → $topic_name"
+    else
+        echo ""
+        echo -e "  ${RED}✗ Failed to create event rule${NC}"
+        echo -e "    ${RED}${_rule_result}${NC}"
+        echo ""
+        _ui_policy_hint "manage cloudevents-rules in compartment"
+        echo -e "  ${GRAY}Also ensure: ${WHITE}allow service cloudevents to use ons-topics in compartment${NC}"
+        log_action_result "FAILED" "Create event rule: $_rn"
+    fi
+    echo ""
+    _ui_pause
 }
 
 #--------------------------------------------------------------------------------
@@ -72719,12 +74146,14 @@ show_help() {
 # IMDS v2 endpoint
 readonly IMDS_BASE="http://169.254.169.254/opc/v2"
 readonly IMDS_HEADER="Authorization: Bearer Oracle"
+readonly IMDS_CURL_OPTS=(--noproxy "*" --max-redirs 0 --connect-timeout 1 -m 2)
 
 #--------------------------------------------------------------------------------
 # Check if running on OCI instance with IMDS available
 #--------------------------------------------------------------------------------
 is_oci_instance() {
-    curl -sS --connect-timeout 3 --max-time 5 -H "$IMDS_HEADER" "${IMDS_BASE}/instance/" -o /dev/null 2>/dev/null
+    curl -sS -f "${IMDS_CURL_OPTS[@]}" \
+        -H "$IMDS_HEADER" "${IMDS_BASE}/instance/" -o /dev/null 2>/dev/null
 }
 
 #--------------------------------------------------------------------------------
@@ -72735,7 +74164,8 @@ wait_for_imds() {
     local elapsed=0
     
     while true; do
-        if curl -sS -H "$IMDS_HEADER" "${IMDS_BASE}/instance/" -o /dev/null 2>/dev/null; then
+        if curl -sS -f "${IMDS_CURL_OPTS[@]}" \
+            -H "$IMDS_HEADER" "${IMDS_BASE}/instance/" -o /dev/null 2>/dev/null; then
             return 0
         fi
         sleep 2
@@ -72751,7 +74181,8 @@ wait_for_imds() {
 #--------------------------------------------------------------------------------
 fetch_imds_metadata() {
     local instance_json
-    instance_json=$(curl -sH "$IMDS_HEADER" --max-redirs 0 "${IMDS_BASE}/instance/" 2>/dev/null)
+    instance_json=$(curl -sS -f "${IMDS_CURL_OPTS[@]}" \
+        -H "$IMDS_HEADER" "${IMDS_BASE}/instance/" 2>/dev/null)
     
     if [[ -z "$instance_json" ]]; then
         return 1
@@ -72782,6 +74213,44 @@ check_oci_instance_principal() {
         return 1
     fi
     
+    return 0
+}
+
+#--------------------------------------------------------------------------------
+# Fetch setup context from local OCI CLI config (API key/security token)
+#--------------------------------------------------------------------------------
+fetch_local_oci_config_context() {
+    if ! command -v oci &>/dev/null; then
+        return 1
+    fi
+
+    local _oci_profile="${OCI_CLI_PROFILE:-DEFAULT}"
+    local _oci_config="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
+    [[ -f "$_oci_config" ]] || return 1
+
+    local _tenancy_id _region
+    _tenancy_id=$(awk -v prof="[$_oci_profile]" '
+        $0 == prof { found=1; next }
+        found && /^\[/ { exit }
+        found && /^tenancy\s*=/ { sub(/^tenancy\s*=\s*/, ""); print; exit }
+    ' "$_oci_config" 2>/dev/null)
+    _region=$(awk -v prof="[$_oci_profile]" '
+        $0 == prof { found=1; next }
+        found && /^\[/ { exit }
+        found && /^region\s*=/ { sub(/^region\s*=\s*/, ""); print; exit }
+    ' "$_oci_config" 2>/dev/null)
+
+    [[ -z "$_tenancy_id" || -z "$_region" ]] && return 1
+
+    # Validate auth works with default profile auth mode
+    if ! oci iam region-subscription list --tenancy-id "$_tenancy_id" --all --output json &>/dev/null; then
+        return 1
+    fi
+
+    SETUP_TENANCY_ID="$_tenancy_id"
+    SETUP_COMPARTMENT_ID="$_tenancy_id"   # Default to root; user can override later
+    SETUP_REGION="$_region"
+    SETUP_AD=""
     return 0
 }
 
@@ -72889,90 +74358,74 @@ run_initial_setup() {
         # ── Try IMDS first (OCI compute instance), then fall back to API key auth ──
         local _setup_source=""   # tracks which auth path succeeded: "imds" or "api_key"
 
-        # Skip IMDS entirely on macOS — it will never be available
-        if [[ "$(uname)" != "Darwin" ]]; then
+        local _setup_use_instance_principal="false"
+        local _setup_mode=""
+
         _step_active "IMDS"
-        if is_oci_instance && wait_for_imds; then
+        if ! is_oci_instance; then
+            _step_complete "IMDS(unavailable)"
+        elif ! wait_for_imds; then
+            _step_complete "IMDS(timeout)"
+        else
             _step_complete "IMDS"
 
             _step_active "metadata"
-            if fetch_imds_metadata; then
+            if ! fetch_imds_metadata; then
+                _step_complete "metadata(failed)"
+            else
                 _step_complete "metadata"
 
                 _step_active "OCI CLI"
-                if check_oci_instance_principal; then
-                    _step_complete "OCI CLI"
-                    _setup_source="imds"
-
-                    _step_active "names"
-                    setup_tenancy_name=$(oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
-                        --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
-                    [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
-                    setup_compartment_name=$(oci iam compartment get --compartment-id "$SETUP_COMPARTMENT_ID" \
-                        --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
-                    [[ "$setup_compartment_name" == "null" ]] && setup_compartment_name=""
-                    _step_complete "names"
-                else
+                if ! check_oci_instance_principal; then
                     _step_complete "OCI CLI(failed)"
+                else
+                    _step_complete "OCI CLI"
+                    _setup_use_instance_principal=true
+                    _setup_mode="imds_instance_principal"
                 fi
-            else
-                _step_complete "metadata(failed)"
             fi
-        else
-            _step_complete "IMDS(unavailable)"
         fi
-        fi  # end Darwin skip
 
-        # ── Fallback: API key auth (~/.oci/config) ──
-        if [[ -z "$_setup_source" ]]; then
-            local _oci_config="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
-            _step_active "API key"
-
-            if [[ ! -f "$_oci_config" ]]; then
-                _step_complete "API key(no config)"
+        # Fallback to local OCI CLI config when IMDS + instance principal path is unavailable
+        if [[ "$_setup_use_instance_principal" != "true" ]]; then
+            _step_active "OCI config"
+            if ! fetch_local_oci_config_context; then
+                _step_complete "OCI config(failed)"
                 _step_finish
-                echo -e "${RED}ERROR: Not on an OCI instance and no OCI CLI config found at ${_oci_config}${NC}"
-                echo -e "${YELLOW}Run 'oci setup config' first, or create variables.sh manually with:${NC}"
+                echo -e "${RED}ERROR: Could not auto-detect via IMDS or local OCI config${NC}"
+                echo -e "${YELLOW}Please create variables.sh manually with:${NC}"
                 echo -e "  REGION=\"your-region\""
                 echo -e "  TENANCY_ID=\"ocid1.tenancy...\""
                 echo -e "  COMPARTMENT_ID=\"ocid1.compartment...\""
                 return 1
             fi
+            _step_complete "OCI config"
+            _setup_mode="local_oci_config"
+        fi
 
-            # Extract tenancy and region from OCI config (DEFAULT profile)
-            SETUP_TENANCY_ID=$(awk -F'=' '/^\[DEFAULT\]/,/^\[/ { if ($1 ~ /^\s*tenancy\s*/) { gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit } }' "$_oci_config")
-            SETUP_REGION=$(awk -F'=' '/^\[DEFAULT\]/,/^\[/ { if ($1 ~ /^\s*region\s*/) { gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit } }' "$_oci_config")
-            SETUP_COMPARTMENT_ID="$SETUP_TENANCY_ID"   # default to root compartment
-            SETUP_AD=""
-
-            if [[ -z "$SETUP_TENANCY_ID" || -z "$SETUP_REGION" ]]; then
-                _step_complete "API key(missing values)"
-                _step_finish
-                echo -e "${RED}ERROR: Could not read tenancy/region from ${_oci_config} [DEFAULT] profile${NC}"
-                return 1
-            fi
-
-            # Validate connectivity
-            if ! oci iam region-subscription list --tenancy-id "$SETUP_TENANCY_ID" --output json &>/dev/null; then
-                _step_complete "API key(auth failed)"
-                _step_finish
-                echo -e "${RED}ERROR: OCI CLI API key auth failed. Check your config and key files.${NC}"
-                return 1
-            fi
-            _step_complete "API key"
-            _setup_source="api_key"
-
-            _step_active "names"
+        _step_active "names"
+        if [[ "$_setup_use_instance_principal" == "true" ]]; then
+            setup_tenancy_name=$(oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
+                --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
+            [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
+            setup_compartment_name=$(oci iam compartment get --compartment-id "$SETUP_COMPARTMENT_ID" \
+                --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
+            [[ "$setup_compartment_name" == "null" ]] && setup_compartment_name=""
+        else
             setup_tenancy_name=$(oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
                 --query 'data.name' --raw-output 2>/dev/null)
             [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
-            _step_complete "names"
+            setup_compartment_name="$setup_tenancy_name"
         fi
-
+        _step_complete "names"
         _step_finish
 
         echo ""
-        echo -e "${WHITE}Base environment detected${NC} ${GRAY}(${_setup_source//_/ })${NC}${WHITE}:${NC}"
+        if [[ "$_setup_mode" == "local_oci_config" ]]; then
+            echo -e "${WHITE}Base environment detected (local OCI config):${NC}"
+        else
+            echo -e "${WHITE}Base environment detected:${NC}"
+        fi
         if [[ -n "$setup_tenancy_name" ]]; then
             echo -e "  Tenancy:     ${CYAN}${setup_tenancy_name}${NC} ${GRAY}[${SETUP_TENANCY_ID}]${NC}"
         else
@@ -72981,15 +74434,15 @@ run_initial_setup() {
         if [[ -n "$setup_compartment_name" ]]; then
             echo -e "  Compartment: ${CYAN}${setup_compartment_name}${NC} ${GRAY}[${SETUP_COMPARTMENT_ID}]${NC}"
         else
-            echo -e "  Compartment: ${CYAN}${SETUP_COMPARTMENT_ID}${NC} ${GRAY}(root)${NC}"
+            echo -e "  Compartment: ${CYAN}${SETUP_COMPARTMENT_ID}${NC}"
         fi
-        echo -e "  Region:      ${CYAN}$SETUP_REGION${NC}"
-        [[ -n "${SETUP_AD:-}" ]] && echo -e "  AD:          ${CYAN}${SETUP_AD##*:}${NC}"
+        echo -e "  Region: ${CYAN}$SETUP_REGION${NC}"
+        [[ -n "$SETUP_AD" ]] && echo -e "  AD:     ${CYAN}${SETUP_AD##*:}${NC}"
     fi
 
-    # Auth flag: instance_principal for IMDS, empty for Cloud Shell and API key
+    # Auth flag: instance_principal for IMDS, empty for Cloud Shell (uses default delegation token)
     local _setup_auth=""
-    [[ "${_setup_source:-}" == "imds" ]] && _setup_auth="--auth instance_principal"
+    [[ "$_setup_use_instance_principal" == "true" ]] && _setup_auth="--auth instance_principal"
 
     # ── Select Region ──
     echo ""
