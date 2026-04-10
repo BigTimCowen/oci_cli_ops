@@ -1412,11 +1412,21 @@ _step_active() {
         _STEP_ANIM_PID=""
     fi
     local completed="$_STEP_COMPLETED_TEXT"
+    local _sa_cols
+    _sa_cols=$(tput cols 2>/dev/null) || _sa_cols=180
     (
         local i=0
         trap 'return 0' TERM INT
         while true; do
-            printf "${CLEAR_LINE}  %b${CYAN}%s${NC} %s... " "$completed" "${_SPINNER_CHARS:$((i % ${#_SPINNER_CHARS})):1}" "$label"
+            # Clear wrapped lines before redrawing
+            local _sa_vis _sa_vl _sa_lines _sa_j
+            _sa_vis=$(echo -e "  ${completed}" | sed 's/\x1b\[[0-9;]*m//g' 2>/dev/null)
+            _sa_vl=$(( ${#_sa_vis} + ${#label} + 10 ))
+            _sa_lines=$(( _sa_vl / _sa_cols ))
+            for (( _sa_j=0; _sa_j<_sa_lines; _sa_j++ )); do
+                printf '\033[A\033[2K'
+            done
+            printf '\033[2K\r  %b%s %s... ' "$completed" "${_SPINNER_CHARS:$((i % ${#_SPINNER_CHARS})):1}" "$label"
             ((i++))
             sleep 0.15
         done
@@ -1446,7 +1456,27 @@ _step_complete() {
         fi
     fi
     _STEP_COMPLETED_TEXT+="${GREEN}✓${NC} ${label}  "
-    printf "${CLEAR_LINE}  %b" "$_STEP_COMPLETED_TEXT"
+    _step_clear_wrapped_lines
+    printf "\r  %b" "$_STEP_COMPLETED_TEXT"
+}
+
+# Clear wrapped lines — moves cursor up for each wrapped line before clearing
+_step_clear_wrapped_lines() {
+    local _cols
+    _cols=$(tput cols 2>/dev/null) || _cols=180
+    # Strip ANSI escape codes to get visible character count
+    local _vis_text
+    _vis_text=$(echo -e "  $_STEP_COMPLETED_TEXT" | sed 's/\x1b\[[0-9;]*m//g' 2>/dev/null)
+    local _vis_len=${#_vis_text}
+    # Add ~30 chars for the active spinner suffix
+    (( _vis_len += 30 ))
+    local _lines=$(( _vis_len / _cols ))
+    # Move cursor up for each extra wrapped line, clearing each
+    local _i
+    for (( _i=0; _i<_lines; _i++ )); do
+        printf '\033[A\033[2K'
+    done
+    printf '\033[2K'
 }
 
 _step_finish() {
@@ -1457,7 +1487,8 @@ _step_finish() {
         wait "$_STEP_ANIM_PID" 2>/dev/null
         _STEP_ANIM_PID=""
     fi
-    printf "${CLEAR_LINE}  %b\n" "$_STEP_COMPLETED_TEXT"
+    _step_clear_wrapped_lines
+    printf "\r  %b\n" "$_STEP_COMPLETED_TEXT"
     _STEP_COMPLETED_TEXT=""
     _LOG_QUIET=0
     _QUIET_SPINNERS=0
