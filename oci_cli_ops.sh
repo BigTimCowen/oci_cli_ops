@@ -68043,36 +68043,55 @@ create_instance_configuration_interactive() {
     local cloud_init_file="cloud-init.yml"
     local cwd
     cwd=$(pwd)
-    
-    # Check for cloud-init files in current directory (using associative array to avoid duplicates)
+
+    # Check for cloud-init files in current directory and script directory
     declare -A found_files_map
     local found_files=()
-    
-    # First pass: collect all matching files, using basename as key to prevent duplicates
-    for f in "$cwd"/*.yml "$cwd"/*.yaml "$cwd"/cloud-init*; do
-        [[ -f "$f" ]] || continue
-        local bname
-        bname=$(basename "$f")
-        # Only add if not already in map
-        if [[ -z "${found_files_map[$bname]:-}" ]]; then
-            found_files_map[$bname]="$f"
-            found_files+=("$f")
-        fi
+
+    # Collect from current directory and script directory (deduplicate)
+    local _search_dirs=("$cwd")
+    [[ "$SCRIPT_DIR" != "$cwd" && -d "$SCRIPT_DIR" ]] && _search_dirs+=("$SCRIPT_DIR")
+
+    for _sdir in "${_search_dirs[@]}"; do
+        for f in "$_sdir"/*.yml "$_sdir"/*.yaml "$_sdir"/cloud-init* "$_sdir"/*.sh.x-]* ; do
+            [[ -f "$f" ]] || continue
+            local bname
+            bname=$(basename "$f")
+            # Skip variables.sh and the script itself
+            [[ "$bname" == "variables.sh" || "$bname" == "oci_cli_ops.sh" ]] && continue
+            if [[ -z "${found_files_map[$bname]:-}" ]]; then
+                found_files_map[$bname]="$f"
+                found_files+=("$f")
+            fi
+        done
     done
-    
+
+    echo -e "  ${CYAN}Current directory:${NC} ${WHITE}${cwd}${NC}"
+    [[ "$SCRIPT_DIR" != "$cwd" ]] && echo -e "  ${CYAN}Script directory:${NC}  ${WHITE}${SCRIPT_DIR}${NC}"
+    echo ""
+
     if [[ ${#found_files[@]} -gt 0 ]]; then
-        echo -e "${WHITE}Found cloud-init files in current directory ($cwd):${NC}"
+        echo -e "  ${WHITE}Available cloud-init / YAML files:${NC}"
+        echo ""
+        printf "  ${GRAY}%-4s %-50s %-10s %s${NC}\n" "#" "Filename" "Size" "Path"
+        echo -e "  ${GRAY}$(printf '─%.0s' {1..100})${NC}"
         local idx=0
         for f in "${found_files[@]}"; do
             ((idx++))
-            local fname
+            local fname fsize fdir
             fname=$(basename "$f")
-            echo -e "  ${YELLOW}${idx}${NC}) $fname"
+            fsize=$(du -h "$f" 2>/dev/null | cut -f1)
+            fdir=$(dirname "$f")
+            printf "  ${YELLOW}%-4s${NC} ${WHITE}%-50s${NC} ${CYAN}%-10s${NC} ${GRAY}%s${NC}\n" "${idx})" "$fname" "$fsize" "$fdir"
         done
         echo ""
+    else
+        echo -e "  ${GRAY}No .yml/.yaml/cloud-init files found in current directory${NC}"
+        echo ""
     fi
-    
-    echo -n -e "${CYAN}Enter cloud-init file path [${cloud_init_file}]: ${NC}"
+
+    echo -e "  ${GRAY}Select a number from the list above, or type a full file path${NC}"
+    echo -n -e "  ${CYAN}Cloud-init file [${cloud_init_file}]: ${NC}"
     local input_file
     read -r input_file
     
