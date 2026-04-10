@@ -38427,9 +38427,9 @@ display_instance_details() {
                     echo ""
                     
                     # Table header
-                    printf "  ${BOLD}%-30s %-14s %-10s %-8s %-12s %-8s %s${NC}\n" \
+                    printf "  ${BOLD}%-32s %-22s %-12s %-8s %-10s %-8s %s${NC}\n" \
                         "Pod Name" "Namespace" "Owner" "Status" "Restarts" "Age" "IP"
-                    print_separator 120
+                    print_separator 130
                     
                     # Sort: workloads first, then daemonsets; alphabetical within each group
                     jq -r '
@@ -38450,9 +38450,11 @@ display_instance_details() {
                     ' <<< "$pods_json" 2>/dev/null | while IFS='|' read -r is_ds pname pns powner pstatus prestarts pcreated pip; do
                         [[ -z "$pname" ]] && continue
                         
-                        # Truncate long pod names
+                        # Truncate long pod names and namespaces
                         local pname_t="$pname"
-                        [[ ${#pname_t} -gt 29 ]] && pname_t="${pname_t:0:27}.."
+                        [[ ${#pname_t} -gt 31 ]] && pname_t="${pname_t:0:29}.."
+                        local pns_t="$pns"
+                        [[ ${#pns_t} -gt 21 ]] && pns_t="${pns_t:0:19}.."
                         
                         # Calculate age
                         local age_str="-"
@@ -38486,8 +38488,8 @@ display_instance_details() {
                         [[ "$prestarts" -gt 0 ]] && restart_color="$YELLOW"
                         [[ "$prestarts" -gt 5 ]] && restart_color="$RED"
                         
-                        printf "  ${owner_color}%-30s${NC} %-14s ${owner_color}%-10s${NC} %-8s ${restart_color}%-12s${NC} %-8s %s\n" \
-                            "$pname_t" "$pns" "$powner" "$pstatus" "$prestarts" "$age_str" "$pip"
+                        printf "  ${owner_color}%-32s${NC} %-22s ${owner_color}%-12s${NC} %-8s ${restart_color}%-10s${NC} %-8s %s\n" \
+                            "$pname_t" "$pns_t" "$powner" "$pstatus" "$prestarts" "$age_str" "$pip"
                     done
                 fi
                 echo ""
