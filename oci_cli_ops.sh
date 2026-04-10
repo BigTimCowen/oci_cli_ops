@@ -1414,19 +1414,21 @@ _step_active() {
     local completed="$_STEP_COMPLETED_TEXT"
     local _sa_cols
     _sa_cols=$(tput cols 2>/dev/null) || _sa_cols=180
-    # Pre-calculate wrapped line count (once, not per-frame)
-    local _sa_vis_len _sa_wrap_lines=0
-    _sa_vis_len=$(echo -e "  ${completed}X ${label}... " | sed 's/\x1b\[[0-9;]*m//g' 2>/dev/null | tr -d '\n' | wc -c)
-    (( _sa_wrap_lines = _sa_vis_len / _sa_cols ))
     (
         local i=0
         trap 'return 0' TERM INT
         while true; do
-            local _sa_j
-            for (( _sa_j=0; _sa_j<_sa_wrap_lines; _sa_j++ )); do
-                printf '\033[A\033[2K'
-            done
-            printf '\033[2K\r  %b%s %s... ' "$completed" "${_SPINNER_CHARS:$((i % ${#_SPINNER_CHARS})):1}" "$label"
+            local _frame
+            _frame=$(printf '  %b%s %s... ' "$completed" "${_SPINNER_CHARS:$((i % ${#_SPINNER_CHARS})):1}" "$label")
+            # Strip ANSI to measure visible length, truncate if exceeds terminal width
+            local _vis_frame
+            _vis_frame=$(echo -ne "$_frame" | sed 's/\x1b\[[0-9;]*m//g')
+            if [[ ${#_vis_frame} -ge $_sa_cols ]]; then
+                # Truncate: print only what fits, hide cursor overflow
+                printf '\033[2K\r%b\033[%dG' "$_frame" "$_sa_cols"
+            else
+                printf '\033[2K\r%b' "$_frame"
+            fi
             ((i++))
             sleep 0.15
         done
@@ -1456,27 +1458,15 @@ _step_complete() {
         fi
     fi
     _STEP_COMPLETED_TEXT+="${GREEN}✓${NC} ${label}  "
-    _step_clear_wrapped_lines
-    printf "\r  %b" "$_STEP_COMPLETED_TEXT"
-}
-
-# Clear wrapped lines — moves cursor up for each wrapped line before clearing
-_step_clear_wrapped_lines() {
-    local _cols
-    _cols=$(tput cols 2>/dev/null) || _cols=180
-    # Strip ANSI escape codes to get visible character count
-    local _vis_text
-    _vis_text=$(echo -e "  $_STEP_COMPLETED_TEXT" | sed 's/\x1b\[[0-9;]*m//g' 2>/dev/null)
-    local _vis_len=${#_vis_text}
-    # Add ~30 chars for the active spinner suffix
-    (( _vis_len += 30 ))
-    local _lines=$(( _vis_len / _cols ))
-    # Move cursor up for each extra wrapped line, clearing each
-    local _i
-    for (( _i=0; _i<_lines; _i++ )); do
-        printf '\033[A\033[2K'
-    done
-    printf '\033[2K'
+    local _sc_cols
+    _sc_cols=$(tput cols 2>/dev/null) || _sc_cols=180
+    printf '\033[2K\r  %b' "$_STEP_COMPLETED_TEXT"
+    # If output exceeds terminal width, move cursor to end of line to prevent wrap
+    local _sc_vis
+    _sc_vis=$(printf '  %b' "$_STEP_COMPLETED_TEXT" | sed 's/\x1b\[[0-9;]*m//g')
+    if [[ ${#_sc_vis} -ge $_sc_cols ]]; then
+        printf '\033[%dG' "$_sc_cols"
+    fi
 }
 
 _step_finish() {
