@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # oci_cli_ops.sh - OCI CLI Operations Management Tool
 #
@@ -26,7 +26,7 @@
 #   Optional: OKE_CLUSTER_ID to specify which OKE cluster to manage
 #
 # Author: Tim Cowen
-# Version: 3.32.1 (2026-04-07)
+# Version: 3.32.3 (2026-04-09)
 # Please use at your own risk.
 #
 #===============================================================================
@@ -381,6 +381,22 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     return $__src_guard_rc 2>/dev/null || exit $__src_guard_rc
 fi
 
+# Bash 4+ required for associative arrays (declare -A) and global scope (declare -g)
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "ERROR: This script requires Bash 4.0 or later (found ${BASH_VERSION})." >&2
+    echo "" >&2
+    if [[ "$(uname)" == "Darwin" ]]; then
+        echo "macOS ships with Bash 3.2. Install a modern version:" >&2
+        echo "  brew install bash" >&2
+        echo "" >&2
+        echo "Then run with:  /opt/homebrew/bin/bash ${0} $*" >&2
+        echo "  — or —  /usr/local/bin/bash ${0} $*" >&2
+        echo "" >&2
+        echo "To make it permanent, add Homebrew bash to /etc/shells and chsh." >&2
+    fi
+    exit 1
+fi
+
 set -o pipefail
 
 #===============================================================================
@@ -432,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.32.2"
-readonly SCRIPT_VERSION_DATE="2026-04-08"
+readonly SCRIPT_VERSION="3.32.4"
+readonly SCRIPT_VERSION_DATE="2026-04-10"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -7735,8 +7751,12 @@ _menu_operations() {
     local direct_choice="${1:-}"
     local compartment_id="${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}"
     local region="${FOCUS_REGION:-$REGION}"
-    
+
     while true; do
+        # Re-read from globals in case env was switched
+        compartment_id="${FOCUS_COMPARTMENT_ID:-${COMPARTMENT_ID:-$compartment_id}}"
+        region="${FOCUS_REGION:-${REGION:-$region}}"
+
         local choice
         if [[ -n "$direct_choice" ]]; then
             choice="$direct_choice"
@@ -33752,6 +33772,10 @@ manage_compute_instances() {
     fi
 
     while true; do
+        # Re-read from globals in case env was switched
+        compartment_id="${FOCUS_COMPARTMENT_ID:-${COMPARTMENT_ID:-$compartment_id}}"
+        region="${FOCUS_REGION:-${REGION:-$region}}"
+
         echo ""
         # Check if fabric column is enabled (for cache header + discovery)
         local _inst_fabric_enabled=false
@@ -45304,6 +45328,10 @@ manage_instance_pools() {
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
 
     while true; do
+        # Re-read from globals in case env was switched
+        compartment_id="${FOCUS_COMPARTMENT_ID:-${COMPARTMENT_ID:-$compartment_id}}"
+        region="${FOCUS_REGION:-${REGION:-$region}}"
+
         echo ""
         _ui_menu_header "INSTANCE POOL MANAGEMENT" \
             --color "$YELLOW" \
@@ -46437,6 +46465,10 @@ manage_cluster_networks() {
     local region="${FOCUS_REGION:-$REGION}"
 
     while true; do
+        # Re-read from globals in case env was switched
+        compartment_id="${FOCUS_COMPARTMENT_ID:-${COMPARTMENT_ID:-$compartment_id}}"
+        region="${FOCUS_REGION:-${REGION:-$region}}"
+
         echo ""
         _ui_menu_header "CLUSTER NETWORK MANAGEMENT" \
             --color "$YELLOW" \
@@ -72692,7 +72724,7 @@ readonly IMDS_HEADER="Authorization: Bearer Oracle"
 # Check if running on OCI instance with IMDS available
 #--------------------------------------------------------------------------------
 is_oci_instance() {
-    curl -sS -H "$IMDS_HEADER" "${IMDS_BASE}/instance/" -o /dev/null 2>/dev/null
+    curl -sS --connect-timeout 3 --max-time 5 -H "$IMDS_HEADER" "${IMDS_BASE}/instance/" -o /dev/null 2>/dev/null
 }
 
 #--------------------------------------------------------------------------------
@@ -72854,62 +72886,93 @@ run_initial_setup() {
         echo -e "  Compartment: ${CYAN}${SETUP_COMPARTMENT_ID}${NC} ${GRAY}(root)${NC}"
         echo -e "  Region:      ${CYAN}$SETUP_REGION${NC}"
     else
-        # ── IMDS-based discovery (OCI compute instance) ──
-        # Check if on OCI instance
+        # ── Try IMDS first (OCI compute instance), then fall back to API key auth ──
+        local _setup_source=""   # tracks which auth path succeeded: "imds" or "api_key"
+
+        # Skip IMDS entirely on macOS — it will never be available
+        if [[ "$(uname)" != "Darwin" ]]; then
         _step_active "IMDS"
-        if ! is_oci_instance; then
+        if is_oci_instance && wait_for_imds; then
+            _step_complete "IMDS"
+
+            _step_active "metadata"
+            if fetch_imds_metadata; then
+                _step_complete "metadata"
+
+                _step_active "OCI CLI"
+                if check_oci_instance_principal; then
+                    _step_complete "OCI CLI"
+                    _setup_source="imds"
+
+                    _step_active "names"
+                    setup_tenancy_name=$(oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
+                        --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
+                    [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
+                    setup_compartment_name=$(oci iam compartment get --compartment-id "$SETUP_COMPARTMENT_ID" \
+                        --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
+                    [[ "$setup_compartment_name" == "null" ]] && setup_compartment_name=""
+                    _step_complete "names"
+                else
+                    _step_complete "OCI CLI(failed)"
+                fi
+            else
+                _step_complete "metadata(failed)"
+            fi
+        else
             _step_complete "IMDS(unavailable)"
-            _step_finish
-            echo -e "${RED}ERROR: Not running on an OCI instance or IMDS not available${NC}"
-            echo -e "${YELLOW}Please create variables.sh manually with:${NC}"
-            echo -e "  REGION=\"your-region\""
-            echo -e "  TENANCY_ID=\"ocid1.tenancy...\""
-            echo -e "  COMPARTMENT_ID=\"ocid1.compartment...\""
-            return 1
+        fi
+        fi  # end Darwin skip
+
+        # ── Fallback: API key auth (~/.oci/config) ──
+        if [[ -z "$_setup_source" ]]; then
+            local _oci_config="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
+            _step_active "API key"
+
+            if [[ ! -f "$_oci_config" ]]; then
+                _step_complete "API key(no config)"
+                _step_finish
+                echo -e "${RED}ERROR: Not on an OCI instance and no OCI CLI config found at ${_oci_config}${NC}"
+                echo -e "${YELLOW}Run 'oci setup config' first, or create variables.sh manually with:${NC}"
+                echo -e "  REGION=\"your-region\""
+                echo -e "  TENANCY_ID=\"ocid1.tenancy...\""
+                echo -e "  COMPARTMENT_ID=\"ocid1.compartment...\""
+                return 1
+            fi
+
+            # Extract tenancy and region from OCI config (DEFAULT profile)
+            SETUP_TENANCY_ID=$(awk -F'=' '/^\[DEFAULT\]/,/^\[/ { if ($1 ~ /^\s*tenancy\s*/) { gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit } }' "$_oci_config")
+            SETUP_REGION=$(awk -F'=' '/^\[DEFAULT\]/,/^\[/ { if ($1 ~ /^\s*region\s*/) { gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit } }' "$_oci_config")
+            SETUP_COMPARTMENT_ID="$SETUP_TENANCY_ID"   # default to root compartment
+            SETUP_AD=""
+
+            if [[ -z "$SETUP_TENANCY_ID" || -z "$SETUP_REGION" ]]; then
+                _step_complete "API key(missing values)"
+                _step_finish
+                echo -e "${RED}ERROR: Could not read tenancy/region from ${_oci_config} [DEFAULT] profile${NC}"
+                return 1
+            fi
+
+            # Validate connectivity
+            if ! oci iam region-subscription list --tenancy-id "$SETUP_TENANCY_ID" --output json &>/dev/null; then
+                _step_complete "API key(auth failed)"
+                _step_finish
+                echo -e "${RED}ERROR: OCI CLI API key auth failed. Check your config and key files.${NC}"
+                return 1
+            fi
+            _step_complete "API key"
+            _setup_source="api_key"
+
+            _step_active "names"
+            setup_tenancy_name=$(oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
+                --query 'data.name' --raw-output 2>/dev/null)
+            [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
+            _step_complete "names"
         fi
 
-        if ! wait_for_imds; then
-            _step_complete "IMDS(timeout)"
-            _step_finish
-            echo -e "${RED}ERROR: Timeout waiting for IMDS${NC}"
-            return 1
-        fi
-        _step_complete "IMDS"
-
-        _step_active "metadata"
-        if ! fetch_imds_metadata; then
-            _step_complete "metadata(failed)"
-            _step_finish
-            echo -e "${RED}ERROR: Failed to fetch instance metadata${NC}"
-            return 1
-        fi
-        _step_complete "metadata"
-
-        _step_active "OCI CLI"
-        if ! check_oci_instance_principal; then
-            _step_complete "OCI CLI(failed)"
-            _step_finish
-            echo -e "${RED}ERROR: OCI CLI or instance principal auth not available${NC}"
-            return 1
-        fi
-        _step_complete "OCI CLI"
-
-        _step_active "names"
-
-        # Resolve tenancy name
-        setup_tenancy_name=$(oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
-            --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
-        [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
-
-        # Resolve compartment name
-        setup_compartment_name=$(oci iam compartment get --compartment-id "$SETUP_COMPARTMENT_ID" \
-            --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
-        [[ "$setup_compartment_name" == "null" ]] && setup_compartment_name=""
-        _step_complete "names"
         _step_finish
 
         echo ""
-        echo -e "${WHITE}Base environment detected:${NC}"
+        echo -e "${WHITE}Base environment detected${NC} ${GRAY}(${_setup_source//_/ })${NC}${WHITE}:${NC}"
         if [[ -n "$setup_tenancy_name" ]]; then
             echo -e "  Tenancy:     ${CYAN}${setup_tenancy_name}${NC} ${GRAY}[${SETUP_TENANCY_ID}]${NC}"
         else
@@ -72918,15 +72981,15 @@ run_initial_setup() {
         if [[ -n "$setup_compartment_name" ]]; then
             echo -e "  Compartment: ${CYAN}${setup_compartment_name}${NC} ${GRAY}[${SETUP_COMPARTMENT_ID}]${NC}"
         else
-            echo -e "  Compartment: ${CYAN}${SETUP_COMPARTMENT_ID}${NC}"
+            echo -e "  Compartment: ${CYAN}${SETUP_COMPARTMENT_ID}${NC} ${GRAY}(root)${NC}"
         fi
-        echo -e "  Region: ${CYAN}$SETUP_REGION${NC}"
-        echo -e "  AD:     ${CYAN}${SETUP_AD##*:}${NC}"
+        echo -e "  Region:      ${CYAN}$SETUP_REGION${NC}"
+        [[ -n "${SETUP_AD:-}" ]] && echo -e "  AD:          ${CYAN}${SETUP_AD##*:}${NC}"
     fi
-    
-    # Auth flag: instance_principal for IMDS, empty for Cloud Shell (uses default delegation token)
+
+    # Auth flag: instance_principal for IMDS, empty for Cloud Shell and API key
     local _setup_auth=""
-    [[ -z "${OCI_CS_TERMINAL_OCID:-}" ]] && _setup_auth="--auth instance_principal"
+    [[ "${_setup_source:-}" == "imds" ]] && _setup_auth="--auth instance_principal"
 
     # ── Select Region ──
     echo ""
@@ -73051,9 +73114,54 @@ run_initial_setup() {
         fi
     fi
     
+    # ── Select Compartment (when defaulting to root/tenancy) ──
+    if [[ "$SETUP_COMPARTMENT_ID" == "$SETUP_TENANCY_ID" ]]; then
+        echo ""
+        _ui_subheader "Compartment Selection" 0
+        echo -e "  ${GRAY}Currently set to root (tenancy). Select a sub-compartment or keep root.${NC}"
+        _step_init
+        _step_active "compartments"
+        local comps_json
+        comps_json=$(oci iam compartment list \
+            --compartment-id "$SETUP_TENANCY_ID" \
+            ${_setup_auth} \
+            --lifecycle-state ACTIVE \
+            --compartment-id-in-subtree false \
+            --all --output json 2>/dev/null)
+        local _compc
+        _compc=$(jq '.data | length' <<< "$comps_json" 2>/dev/null || echo "0")
+        _step_complete "compartments(${_compc})"
+        _step_finish
+
+        if [[ -n "$comps_json" ]] && jq -e '.data[0]' <<< "$comps_json" >/dev/null 2>&1; then
+            local cidx=0
+            declare -A _SETUP_COMP_MAP=()
+            declare -A _SETUP_COMP_NAMES=()
+            while IFS='|' read -r cname cid; do
+                ((cidx++))
+                _SETUP_COMP_MAP[$cidx]="$cid"
+                _SETUP_COMP_NAMES[$cidx]="$cname"
+                printf "  ${YELLOW}%2d${NC}) ${WHITE}%-40s${NC}\n" "$cidx" "$cname"
+            done < <(jq -r '.data[] | "\(.name)|\(.id)"' <<< "$comps_json" 2>/dev/null | sort)
+
+            echo -e "  ${GRAY} 0) Keep root compartment (tenancy)${NC}"
+            echo ""
+            echo -n -e "${CYAN}Select compartment [Enter to keep root]: ${NC}"
+            local c_choice
+            read -r c_choice
+            if [[ -n "$c_choice" && "$c_choice" != "0" && -n "${_SETUP_COMP_MAP[$c_choice]:-}" ]]; then
+                SETUP_COMPARTMENT_ID="${_SETUP_COMP_MAP[$c_choice]}"
+                setup_compartment_name="${_SETUP_COMP_NAMES[$c_choice]}"
+                echo -e "${GREEN}✓ Compartment: ${setup_compartment_name}${NC}"
+            else
+                echo -e "${GREEN}✓ Compartment: root (kept)${NC}"
+            fi
+        fi
+    fi
+
     # Initialize variables
     local oke_cluster_id="" oke_cluster_name=""
-    
+
     # ── Select OKE Cluster ──
     echo ""
     _ui_subheader "OKE Clusters" 0
