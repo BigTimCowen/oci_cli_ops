@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.32.4"
+readonly SCRIPT_VERSION="3.32.5"
 readonly SCRIPT_VERSION_DATE="2026-04-10"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -2879,9 +2879,9 @@ fetch_oke_environment() {
     local compartment_id="$1"
     local region="$2"
     
-    # Check if OKE_CLUSTER_ID from variables.sh differs from cached value
-    # If so, we need to refresh the cache
-    local configured_cluster_id="${OKE_CLUSTER_ID:-}"
+    # Check if focused/configured cluster differs from cached value
+    # FOCUS_OKE_CLUSTER_ID (runtime selection) takes priority over OKE_CLUSTER_ID (variables.sh)
+    local configured_cluster_id="${FOCUS_OKE_CLUSTER_ID:-${OKE_CLUSTER_ID:-}}"
     local cached_cluster_id=""
     
     if [[ -f "$OKE_ENV_CACHE" ]]; then
