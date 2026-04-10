@@ -55941,7 +55941,7 @@ display_compute_host_details() {
         .health // "N/A",
         .shape // "N/A",
         (.platform // .["platform-type"] // "N/A"),
-        (if .["impacted-component-details"] != null then "true" elif .["has-impacted-components"] == true then "true" else "false" end),
+        (if .["has-impacted-components"] == true then "true" elif (.["impacted-component-details"]["impactedComponents"]["v1"]["state"] // "NONE") != "NONE" then "true" elif ((.["impacted-component-details"]["impactedComponents"]["v1"]["components"] // []) | length) > 0 then "true" else "false" end),
         .["availability-domain"] // "N/A",
         .["fault-domain"] // "N/A",
         .["compartment-id"] // "N/A",
