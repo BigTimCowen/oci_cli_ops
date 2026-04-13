@@ -7300,6 +7300,118 @@ _env_select_oke() {
 }
 
 # Select/change VCN — lists VCNs in current compartment
+#--------------------------------------------------------------------------------
+# Select OCI CLI Profile — reads profiles from ~/.oci/config
+#--------------------------------------------------------------------------------
+_env_select_oci_profile() {
+    local _oci_config="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
+    local _current="${OCI_CLI_PROFILE:-DEFAULT}"
+
+    if [[ ! -f "$_oci_config" ]]; then
+        echo -e "  ${RED}No OCI CLI config found at ${_oci_config}${NC}"
+        echo -e "  ${GRAY}Profile switching is only available for API key / security token auth.${NC}"
+        return
+    fi
+
+    echo ""
+    _ui_subheader "OCI CLI Profiles" 0
+    echo -e "  ${GRAY}Config: ${WHITE}${_oci_config}${NC}"
+    echo -e "  ${GRAY}Current profile: ${WHITE}${_current}${NC}"
+    echo ""
+
+    # Extract profile names from config
+    declare -A _PROF_MAP=()
+    local _pi=0
+    while IFS= read -r _pname; do
+        [[ -z "$_pname" ]] && continue
+        ((_pi++))
+        _PROF_MAP[$_pi]="$_pname"
+        local _marker=""
+        [[ "$_pname" == "$_current" ]] && _marker=" ${YELLOW}← current${NC}"
+
+        # Extract region and tenancy from this profile for context
+        local _p_region _p_tenancy
+        _p_region=$(awk -v prof="[$_pname]" '
+            $0 == prof { found=1; next }
+            found && /^\[/ { exit }
+            found && /^region[[:space:]]*=/ { sub(/^region[[:space:]]*=[[:space:]]*/, ""); print; exit }
+        ' "$_oci_config" 2>/dev/null)
+        _p_tenancy=$(awk -v prof="[$_pname]" '
+            $0 == prof { found=1; next }
+            found && /^\[/ { exit }
+            found && /^tenancy[[:space:]]*=/ { sub(/^tenancy[[:space:]]*=[[:space:]]*/, ""); print; exit }
+        ' "$_oci_config" 2>/dev/null)
+
+        printf "  ${YELLOW}%2d${NC}) ${WHITE}%-20s${NC} ${GRAY}region=%-20s tenancy=...%s${NC}%b\n" \
+            "$_pi" "$_pname" "${_p_region:-N/A}" "${_p_tenancy: -6}" "$_marker"
+    done < <(grep '^\[' "$_oci_config" 2>/dev/null | sed 's/\[//;s/\]//' | sort)
+
+    if [[ $_pi -eq 0 ]]; then
+        echo -e "  ${GRAY}No profiles found in ${_oci_config}${NC}"
+        return
+    fi
+
+    echo ""
+    echo -n -e "  ${CYAN}Select profile [Enter to keep ${_current}]: ${NC}"
+    local _prof_choice
+    read -r _prof_choice
+
+    if [[ -z "$_prof_choice" ]]; then
+        echo -e "  ${GREEN}✓ Profile: ${_current} (kept)${NC}"
+        return
+    fi
+
+    local _new_profile=""
+    if [[ "$_prof_choice" =~ ^[0-9]+$ ]] && [[ -n "${_PROF_MAP[$_prof_choice]:-}" ]]; then
+        _new_profile="${_PROF_MAP[$_prof_choice]}"
+    else
+        echo -e "  ${RED}Invalid selection${NC}"
+        return
+    fi
+
+    if [[ "$_new_profile" == "$_current" ]]; then
+        echo -e "  ${GREEN}✓ Profile: ${_new_profile} (no change)${NC}"
+        return
+    fi
+
+    # Apply profile change
+    export OCI_CLI_PROFILE="$_new_profile"
+    echo -e "  ${GREEN}✓ Profile switched to: ${WHITE}${_new_profile}${NC}"
+
+    # Re-read tenancy/region from new profile
+    local _new_tenancy _new_region
+    _new_tenancy=$(awk -v prof="[$_new_profile]" '
+        $0 == prof { found=1; next }
+        found && /^\[/ { exit }
+        found && /^tenancy[[:space:]]*=/ { sub(/^tenancy[[:space:]]*=[[:space:]]*/, ""); print; exit }
+    ' "$_oci_config" 2>/dev/null)
+    _new_region=$(awk -v prof="[$_new_profile]" '
+        $0 == prof { found=1; next }
+        found && /^\[/ { exit }
+        found && /^region[[:space:]]*=/ { sub(/^region[[:space:]]*=[[:space:]]*/, ""); print; exit }
+    ' "$_oci_config" 2>/dev/null)
+
+    if [[ -n "$_new_tenancy" ]]; then
+        TENANCY_ID="$_new_tenancy"
+        echo -e "  ${CYAN}Tenancy:${NC} ${WHITE}${_new_tenancy}${NC}"
+    fi
+    if [[ -n "$_new_region" && "$_new_region" != "${FOCUS_REGION:-$REGION}" ]]; then
+        echo -e "  ${CYAN}Region:${NC}  ${WHITE}${_new_region}${NC} ${GRAY}(profile default — use 'env r' to switch)${NC}"
+    fi
+
+    # Invalidate all caches — different profile = different tenancy/user
+    echo -e "  ${YELLOW}Invalidating caches...${NC}"
+    refresh_all_caches
+
+    # Re-detect auth info
+    _TOOL_OCI_AUTH="api_key"
+    _TOOL_OCI_USER=""
+    _TOOL_TENANCY_NAME=""
+    rm -f "${CACHE_DIR}/auth_detection.cache" 2>/dev/null
+
+    echo -e "  ${GREEN}✓ Ready — all caches cleared for new profile${NC}"
+}
+
 _env_select_vcn() {
     echo ""
     _step_init
@@ -7385,9 +7497,12 @@ _env_dispatch() {
         s|save)
             _focus_save_to_variables
             ;;
+        p|profile|6)
+            _env_select_oci_profile
+            ;;
         *)
             echo -e "${YELLOW}Unknown env shortcut: ${WHITE}env ${sub}${NC}"
-            echo -e "${GRAY}Available: env c (compartment), env r (region), env ad, env oke, env vcn, env s (save)${NC}"
+            echo -e "${GRAY}Available: env c (compartment), env r (region), env ad, env oke, env vcn, env profile, env s (save)${NC}"
             ;;
     esac
 }
@@ -7417,13 +7532,17 @@ manage_environment_focus() {
         else
             echo -e "  ${YELLOW}5${NC}|${YELLOW}vcn${NC}) Select VCN"
         fi
+        # Only show profile option for API key auth
+        if [[ "${_TOOL_OCI_AUTH:-}" == "api_key" || "${_TOOL_OCI_AUTH:-}" == "security_token" ]]; then
+            echo -e "  ${YELLOW}6${NC}|${YELLOW}profile${NC}) Switch OCI CLI Profile ${GRAY}(current: ${WHITE}${OCI_CLI_PROFILE:-DEFAULT}${GRAY})${NC}"
+        fi
         echo ""
         echo -e "  ${GREEN}s${NC}) Save focus to variables.sh"
         echo -e "  ${CYAN}b${NC}) Back"
         echo ""
-        echo -e "  ${GRAY}Tip: Use ${WHITE}env c${GRAY}, ${WHITE}env r${GRAY}, ${WHITE}env oke${GRAY}, ${WHITE}env vcn${GRAY} from any menu to quick-switch${NC}"
+        echo -e "  ${GRAY}Tip: Use ${WHITE}env c${GRAY}, ${WHITE}env r${GRAY}, ${WHITE}env oke${GRAY}, ${WHITE}env vcn${GRAY}, ${WHITE}env profile${GRAY} from any menu${NC}"
         echo ""
-        _ui_prompt "Focus" "1-5, r, c, ad, oke, vcn, s, b"
+        _ui_prompt "Focus" "1-6, r, c, ad, oke, vcn, profile, s, b"
         local input
         read -r input
         [[ "${input:-}" == :* ]] && _nav_try_jump "$input" && return
@@ -7455,6 +7574,9 @@ manage_environment_focus() {
                     _focus_clear_vcn
                     echo -e "${GREEN}✓ VCN focus cleared${NC}"
                 fi
+                ;;
+            6|profile)
+                _env_select_oci_profile
                 ;;
             s|S)
                 _focus_save_to_variables
