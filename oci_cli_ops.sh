@@ -57411,6 +57411,7 @@ manage_compute_hosts() {
         echo -e "  ${YELLOW}4${NC}) View by shape"
         if [[ "$impacted_count" -gt 0 ]]; then
             echo -e "  ${RED}5${NC}) ${WHITE}View impacted hosts${NC}        - ${RED}${impacted_count} host(s) with impacted components${NC}"
+            echo -e "  ${RED}f${NC}) ${WHITE}Filter by fault code${NC}       - ${GRAY}View impacted hosts matching a specific fault code${NC}"
         fi
         echo -e "  ${CYAN}/${NC}${YELLOW}term${NC}) Search hosts"
         echo -e "  ${YELLOW}i${NC}) Instance details (paste OCID)"
@@ -57421,7 +57422,7 @@ manage_compute_hosts() {
         echo -e "  ${MAGENTA}r${NC}) Refresh data"
         echo -e "  ${CYAN}Enter${NC}) Return to menu"
         echo ""
-        _ui_prompt "Compute Hosts" "1-5, /term, i, h, j, col, notify, r, Enter, show"
+        _ui_prompt "Compute Hosts" "1-5, f, /term, i, h, j, col, notify, r, Enter, show"
 
         local choice
         read -r choice
@@ -57433,6 +57434,47 @@ manage_compute_hosts() {
             3) compute_host_view_all ;;
             4) compute_host_view_by_shape ;;
             5) compute_host_view_impacted ;;
+            f|F)
+                if [[ -s "${_CH_IMPACT_LOOKUP:-}" ]]; then
+                    echo ""
+                    echo -e "  ${WHITE}Fault codes found:${NC}"
+                    local _fm_i=0
+                    declare -A _FM_MAP=()
+                    while IFS= read -r _fcode; do
+                        [[ -z "$_fcode" ]] && continue
+                        ((_fm_i++))
+                        _FM_MAP[$_fm_i]="$_fcode"
+                        local _fm_ct
+                        _fm_ct=$(grep -c "$_fcode" "$_CH_IMPACT_LOOKUP" 2>/dev/null || echo "0")
+                        echo -e "    ${YELLOW}${_fm_i}${NC}) ${CYAN}${_fcode}${NC}  ${GRAY}(${_fm_ct} host(s))${NC}"
+                    done < <(awk -F'|' '{
+                        n = split($4, arr, ";")
+                        for (i = 1; i <= n; i++) {
+                            split(arr[i], c, ":")
+                            fid = c[3]
+                            if (fid != "" && fid != "?") print fid
+                        }
+                    }' "$_CH_IMPACT_LOOKUP" 2>/dev/null | sort -u)
+
+                    if [[ $_fm_i -gt 0 ]]; then
+                        echo ""
+                        echo -n -e "  ${CYAN}Select fault code [Enter to cancel]: ${NC}"
+                        local _fm_sel
+                        read -r _fm_sel
+                        if [[ "$_fm_sel" =~ ^[0-9]+$ ]] && [[ -n "${_FM_MAP[$_fm_sel]:-}" ]]; then
+                            compute_host_view_impacted "${_FM_MAP[$_fm_sel]}"
+                        elif [[ -n "$_fm_sel" ]]; then
+                            # Allow typing the fault code directly
+                            compute_host_view_impacted "$_fm_sel"
+                        fi
+                    else
+                        echo -e "  ${GRAY}No fault codes found${NC}"
+                    fi
+                else
+                    echo -e "  ${YELLOW}No impacted host data available${NC}"
+                    sleep 1
+                fi
+                ;;
             col|COL|columns|COLUMNS) _col_picker "CHOST" "Compute Hosts" ;;
             notify|NOTIFY) _create_host_event_rule "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" "${FOCUS_REGION:-$REGION}" "compute-host-events" ;;
             /*) _ch_search_hosts "all" "${choice#/}" ;;
