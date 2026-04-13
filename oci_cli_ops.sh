@@ -75287,18 +75287,26 @@ fetch_local_oci_config_context() {
     _tenancy_id=$(awk -v prof="[$_oci_profile]" '
         $0 == prof { found=1; next }
         found && /^\[/ { exit }
-        found && /^tenancy\s*=/ { sub(/^tenancy\s*=\s*/, ""); print; exit }
+        found && /^tenancy[[:space:]]*=/ { sub(/^tenancy[[:space:]]*=[[:space:]]*/, ""); print; exit }
     ' "$_oci_config" 2>/dev/null)
     _region=$(awk -v prof="[$_oci_profile]" '
         $0 == prof { found=1; next }
         found && /^\[/ { exit }
-        found && /^region\s*=/ { sub(/^region\s*=\s*/, ""); print; exit }
+        found && /^region[[:space:]]*=/ { sub(/^region[[:space:]]*=[[:space:]]*/, ""); print; exit }
     ' "$_oci_config" 2>/dev/null)
 
-    [[ -z "$_tenancy_id" || -z "$_region" ]] && return 1
+    if [[ -z "$_tenancy_id" || -z "$_region" ]]; then
+        echo -e "  ${RED}Profile [${_oci_profile}] missing tenancy or region in ${_oci_config}${NC}" >&2
+        return 1
+    fi
 
-    # Validate auth works with default profile auth mode
-    if ! oci iam region-subscription list --tenancy-id "$_tenancy_id" --all --output json &>/dev/null; then
+    # Validate auth works with the selected profile
+    local _auth_err
+    _auth_err=$(oci iam region-subscription list --tenancy-id "$_tenancy_id" --all --output json 2>&1)
+    if [[ $? -ne 0 ]]; then
+        echo -e "  ${RED}Auth failed for profile [${_oci_profile}]:${NC}" >&2
+        echo "$_auth_err" | head -5 | sed 's/^/    /' >&2
+        echo -e "  ${GRAY}Try: oci session authenticate --profile-name ${_oci_profile}${NC}" >&2
         return 1
     fi
 
