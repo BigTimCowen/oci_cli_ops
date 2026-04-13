@@ -75563,6 +75563,7 @@ run_initial_setup() {
     local ads_json
     ads_json=$(oci iam availability-domain list \
         --compartment-id "$SETUP_COMPARTMENT_ID" \
+        --region "$SETUP_REGION" \
         ${_setup_auth} \
         --all --output json 2>/dev/null)
     local _adc
@@ -75695,6 +75696,7 @@ run_initial_setup() {
     local clusters_json
     clusters_json=$(oci ce cluster list \
         --compartment-id "$SETUP_COMPARTMENT_ID" \
+        --region "$SETUP_REGION" \
         ${_setup_auth} \
         --lifecycle-state ACTIVE \
         --all \
