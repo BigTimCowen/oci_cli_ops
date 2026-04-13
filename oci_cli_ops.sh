@@ -9535,6 +9535,11 @@ list_maintenance_events() {
             [[ "$_filt_cap_topo" == "HEALTHY" || "$_filt_cap_topo" == "N/A" ]] && continue
         elif [[ "$filter_type" == "PROCESSING" || "$filter_type" == "SUCCEEDED" || "$filter_type" == "CANCELED" || "$filter_type" == "SCHEDULED" ]]; then
             [[ "${_filt_lifecycle^^}" != "${filter_type}" ]] && continue
+        elif [[ "$filter_type" == reason:* ]]; then
+            local _filt_reason_target="${filter_type#reason:}"
+            local _filt_evt_reason
+            _filt_evt_reason=$(jq -r --arg eid "$_filt_id" '.data[] | select(.id == $eid) | .["maintenance-reason"] // "N/A"' "$cache_file" 2>/dev/null)
+            [[ "${_filt_evt_reason}" != "${_filt_reason_target}" ]] && continue
         fi
 
         echo "$_filt_id" >> "$filtered_evt_ids_file"
@@ -10524,7 +10529,7 @@ list_maintenance_events() {
         else
             echo -e "    ${CYAN}view${NC}                   - Switch to compact view (single-line)"
         fi
-        echo -e "    ${CYAN}filter${NC}                 - Filter events (${GREEN}a${NC}=active ${GREEN}n${NC}=named ${GREEN}p${NC}=processing ${GREEN}su${NC}=succeeded ${GREEN}c${NC}=canceled ${GREEN}sc${NC}=scheduled ${GREEN}all${NC}=clear)"
+        echo -e "    ${CYAN}filter${NC}                 - Filter events (${GREEN}a${NC}=active ${GREEN}n${NC}=named ${GREEN}p${NC}=processing ${GREEN}su${NC}=succeeded ${GREEN}c${NC}=canceled ${GREEN}sc${NC}=scheduled ${GREEN}re${NC}=reason ${GREEN}all${NC}=clear)"
         if [[ "$me_link_announcements" == "true" ]]; then
             echo -e "    ${CYAN}list${NC}                   - Show announcement details again"
         fi
@@ -10597,6 +10602,7 @@ list_maintenance_events() {
                 echo -e "  ${GREEN}su${NC}  - SUCCEEDED events"
                 echo -e "  ${GREEN}c${NC}   - CANCELED events"
                 echo -e "  ${GREEN}sc${NC}  - SCHEDULED events"
+                echo -e "  ${GREEN}re${NC}  - Filter by maintenance reason"
                 echo -e "  ${GREEN}all${NC} - Clear filter (show all)"
                 echo ""
                 _ui_prompt "Filter" "1-5, b, show"
@@ -10612,6 +10618,38 @@ list_maintenance_events() {
                 su)  new_filter="SUCCEEDED" ;;
                 c)   new_filter="CANCELED" ;;
                 sc)  new_filter="SCHEDULED" ;;
+                re)
+                    # List unique maintenance reasons from cache
+                    echo ""
+                    echo -e "  ${WHITE}Maintenance reasons found:${NC}"
+                    local _mr_i=0
+                    declare -A _MR_MAP=()
+                    while IFS= read -r _mr; do
+                        [[ -z "$_mr" || "$_mr" == "N/A" ]] && continue
+                        ((_mr_i++))
+                        _MR_MAP[$_mr_i]="$_mr"
+                        local _mr_ct
+                        _mr_ct=$(jq -r --arg r "$_mr" '[.data[] | select(.["maintenance-reason"] == $r)] | length' "$cache_file" 2>/dev/null || echo "0")
+                        echo -e "    ${YELLOW}${_mr_i}${NC}) ${CYAN}${_mr}${NC}  ${GRAY}(${_mr_ct} event(s))${NC}"
+                    done < <(jq -r '[.data[]."maintenance-reason" // "N/A"] | unique | .[]' "$cache_file" 2>/dev/null)
+
+                    if [[ $_mr_i -eq 0 ]]; then
+                        echo -e "  ${GRAY}No maintenance reasons found${NC}"
+                        continue
+                    fi
+                    echo ""
+                    echo -n -e "  ${CYAN}Select reason [Enter to cancel]: ${NC}"
+                    local _mr_sel
+                    read -r _mr_sel
+                    if [[ "$_mr_sel" =~ ^[0-9]+$ ]] && [[ -n "${_MR_MAP[$_mr_sel]:-}" ]]; then
+                        new_filter="reason:${_MR_MAP[$_mr_sel]}"
+                    elif [[ -n "$_mr_sel" ]]; then
+                        echo -e "  ${RED}Invalid selection${NC}"
+                        continue
+                    else
+                        continue
+                    fi
+                    ;;
                 all) new_filter="none" ;;
                 *)   echo -e "${RED}Invalid filter: ${filter_arg}${NC}"; continue ;;
             esac
