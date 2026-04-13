@@ -1713,7 +1713,7 @@ check_dependencies() {
 #--------------------------------------------------------------------------------
 _detect_tool_versions() {
     # ── OCI CLI version (always live — package can be upgraded) ──
-    _TOOL_OCI_VER=$(oci --version 2>/dev/null | grep -oP '[\d.]+' | head -1)
+    _TOOL_OCI_VER=$(oci --version 2>/dev/null | grep -oE '[0-9.]+' | head -1)
     [[ -z "$_TOOL_OCI_VER" ]] && _TOOL_OCI_VER="n/a"
 
     # ── OCI auth + tenancy name (cached — stable on a given host) ──
@@ -1812,14 +1812,14 @@ _detect_tool_versions() {
     _TOOL_KUBECTL_VER=""
     if command -v kubectl &>/dev/null; then
         _TOOL_KUBECTL_VER=$(kubectl version --client -o json 2>/dev/null | jq -r '.clientVersion.gitVersion // empty' 2>/dev/null)
-        [[ -z "$_TOOL_KUBECTL_VER" ]] && _TOOL_KUBECTL_VER=$(kubectl version --client --short 2>/dev/null | grep -oP 'v[\d.]+' | head -1)
+        [[ -z "$_TOOL_KUBECTL_VER" ]] && _TOOL_KUBECTL_VER=$(kubectl version --client --short 2>/dev/null | grep -oE 'v[0-9.]+' | head -1)
         [[ -z "$_TOOL_KUBECTL_VER" ]] && _TOOL_KUBECTL_VER="installed"
     fi
 
     # ── helm version (always live — package can be upgraded) ──
     _TOOL_HELM_VER=""
     if command -v helm &>/dev/null; then
-        _TOOL_HELM_VER=$(helm version --short 2>/dev/null | grep -oP 'v[\d.]+' | head -1)
+        _TOOL_HELM_VER=$(helm version --short 2>/dev/null | grep -oE 'v[0-9.]+' | head -1)
         [[ -z "$_TOOL_HELM_VER" ]] && _TOOL_HELM_VER="installed"
     fi
 }
@@ -2875,9 +2875,9 @@ fetch_firmware_bundles() {
         local _cached_header=""
         _cached_header=$(head -1 "$FW_BUNDLE_CACHE" 2>/dev/null || true)
         local _cached_platform=""
-        _cached_platform=$(echo "$_cached_header" | grep -oP '(?<=platform=)[^ ]+' || true)
+        _cached_platform=$(echo "$_cached_header" | sed -n 's/.*platform=\([^ ]*\).*/\1/p' || true)
         local _cached_region=""
-        _cached_region=$(echo "$_cached_header" | grep -oP '(?<=region=).+' || true)
+        _cached_region=$(echo "$_cached_header" | sed -n 's/.*region=\(.*\)/\1/p' || true)
         if [[ "$_cached_platform" == "$platform" && "$_cached_region" == "$region" ]]; then
             return 0
         fi
@@ -21737,7 +21737,7 @@ manage_oke_cluster() {
                 _seen_inst["$_iid"]=1
                 _rel_inst_ids+=("$_iid")
             }
-        done < <(grep -oP 'ocid1\.instance\.[a-z0-9.]+' <<< "$_all_text" 2>/dev/null | sort -u)
+        done < <(grep -oE 'ocid1\.instance\.[a-z0-9.]+' <<< "$_all_text" 2>/dev/null | sort -u)
         
         declare -A _SUB_WR_MAP=()
         local _SUB_WR_IDX=0
@@ -22800,7 +22800,7 @@ manage_oke_cluster() {
                             _seen_inst["$_iid"]=1
                             _rel_inst_ids+=("$_iid")
                         }
-                    done < <(grep -oP 'ocid1\.instance\.[a-z0-9.]+' <<< "$_all_text" 2>/dev/null | sort -u)
+                    done < <(grep -oE 'ocid1\.instance\.[a-z0-9.]+' <<< "$_all_text" 2>/dev/null | sort -u)
                     
                     declare -A _SUB_WR_MAP=()
                     local _SUB_WR_IDX=0
@@ -31954,8 +31954,8 @@ _oci_parse_error() {
     
     # Fallback: grep for fields if jq failed
     if [[ -z "$_OCI_ERR_CODE" ]]; then
-        _OCI_ERR_CODE=$(grep -oP '"code"\s*:\s*"\K[^"]+' "$_errfile" 2>/dev/null | head -1)
-        _OCI_ERR_MSG=$(grep -oP '"message"\s*:\s*"\K[^"]+' "$_errfile" 2>/dev/null | head -1)
+        _OCI_ERR_CODE=$(sed -n 's/.*"code"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_errfile" 2>/dev/null | head -1)
+        _OCI_ERR_MSG=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_errfile" 2>/dev/null | head -1)
     fi
     
     # Classify
@@ -33938,7 +33938,7 @@ manage_compute_instances() {
             # Try to extract error from: 1) stderr capture, 2) stdout JSON error, 3) stdout raw text
             local _err_msg=""
             if [[ -f "${_inst_err_file:-}" && -s "$_inst_err_file" ]]; then
-                _err_msg=$(grep -oP '(?<=message: ).*' "$_inst_err_file" | head -1)
+                _err_msg=$(sed -n 's/.*message: \(.*\)/\1/p' "$_inst_err_file" | head -1)
                 [[ -z "$_err_msg" ]] && _err_msg=$(tail -3 "$_inst_err_file")
             fi
             if [[ -z "$_err_msg" && -n "$instances_json" ]]; then
@@ -35429,7 +35429,7 @@ compute_boot_volume_replacement() {
             echo -e "  ${WHITE}Command:${NC} ${GRAY}oci compute instance list --compartment-id \"${compartment_id}\" --region \"${region}\" --all --output json${NC}"
             local _err_msg=""
             if [[ -s "$_bvr_err_file" ]]; then
-                _err_msg=$(grep -oP '(?<=message: ).*' "$_bvr_err_file" | head -1)
+                _err_msg=$(sed -n 's/.*message: \(.*\)/\1/p' "$_bvr_err_file" | head -1)
                 [[ -z "$_err_msg" ]] && _err_msg=$(tail -3 "$_bvr_err_file")
             fi
             if [[ -z "$_err_msg" && -n "$bvr_instances_json" ]]; then
@@ -41901,9 +41901,9 @@ rename_instance_configuration_interactive() {
         # Look for kubernetes version in the apt source or package name
         # e.g., kubernetes-1.33 or oci-oke-node-all-1.33.1
         local extracted_version
-        extracted_version=$(echo "$decoded_ud" | grep -oP 'kubernetes-\K[0-9]+\.[0-9]+' | head -1)
+        extracted_version=$(echo "$decoded_ud" | sed -n 's/.*kubernetes-\([0-9]\+\.[0-9]\+\).*/\1/p' | head -1)
         if [[ -z "$extracted_version" ]]; then
-            extracted_version=$(echo "$decoded_ud" | grep -oP 'oci-oke-node-all-\K[0-9]+\.[0-9]+' | head -1)
+            extracted_version=$(echo "$decoded_ud" | sed -n 's/.*oci-oke-node-all-\([0-9]\+\.[0-9]\+\).*/\1/p' | head -1)
         fi
         if [[ -n "$extracted_version" ]]; then
             oke_version="$extracted_version"
@@ -42103,9 +42103,9 @@ rename_single_instance_configuration() {
         local decoded_ud
         decoded_ud=$(echo "$user_data_b64" | base64 -d 2>/dev/null)
         local extracted_version
-        extracted_version=$(echo "$decoded_ud" | grep -oP 'kubernetes-\K[0-9]+\.[0-9]+' | head -1)
+        extracted_version=$(echo "$decoded_ud" | sed -n 's/.*kubernetes-\([0-9]\+\.[0-9]\+\).*/\1/p' | head -1)
         if [[ -z "$extracted_version" ]]; then
-            extracted_version=$(echo "$decoded_ud" | grep -oP 'oci-oke-node-all-\K[0-9]+\.[0-9]+' | head -1)
+            extracted_version=$(echo "$decoded_ud" | sed -n 's/.*oci-oke-node-all-\([0-9]\+\.[0-9]\+\).*/\1/p' | head -1)
         fi
         if [[ -n "$extracted_version" ]]; then
             oke_version="$extracted_version"
@@ -45827,7 +45827,7 @@ view_instance_pool_details() {
                 _seen_inst["$_iid"]=1
                 _rel_inst_ids+=("$_iid")
             }
-        done < <(grep -oP 'ocid1\.instance\.[a-z0-9.]+' <<< "$_all_text" 2>/dev/null | sort -u)
+        done < <(grep -oE 'ocid1\.instance\.[a-z0-9.]+' <<< "$_all_text" 2>/dev/null | sort -u)
 
         declare -A _SUB_WR_MAP=()
         local _SUB_WR_IDX=0
@@ -59794,7 +59794,7 @@ _storage_display_node() {
                 _color="$RED"
             elif [[ "$_line" == *"percentage_used"* ]]; then
                 local _pct
-                _pct=$(echo "$_line" | grep -oP '\d+' | tail -1)
+                _pct=$(echo "$_line" | grep -oE '[0-9]+' | tail -1)
                 [[ -n "$_pct" && "$_pct" -ge 80 ]] && _color="$YELLOW"
             fi
             printf "      ${CYAN}%-18s${NC} ${_color}%s${NC}\n" "NVMe SMART:" "$_line"
@@ -60819,7 +60819,7 @@ _gpuhealth_display_node() {
         local _replay_total=0
         while read -r _line; do
             local _val
-            _val=$(echo "$_line" | grep -oP 'Replay Errors\s*:\s*\K[0-9]+' 2>/dev/null)
+            _val=$(echo "$_line" | sed -n 's/.*Replay Errors[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' 2>/dev/null)
             [[ "$_val" =~ ^[0-9]+$ ]] && (( _replay_total += _val ))
         done <<< "$_nvle_section"
         if [[ "$_replay_total" -gt "$GPU_NVLINK_ERROR_WARN" ]]; then
@@ -61236,7 +61236,7 @@ _xid_display_node() {
     while IFS= read -r _line; do
         [[ -z "$_line" ]] && continue
         local _xid_code
-        _xid_code=$(echo "$_line" | grep -oP 'Xid[^:]*:\s*\K[0-9]+' 2>/dev/null || echo "")
+        _xid_code=$(echo "$_line" | sed -n 's/.*Xid[^:]*:[[:space:]]*\([0-9]\+\).*/\1/p' 2>/dev/null || echo "")
         [[ -z "$_xid_code" ]] && continue
         ((_total_xid++))
         _xid_counts[$_xid_code]=$(( ${_xid_counts[$_xid_code]:-0} + 1 ))
@@ -61328,7 +61328,7 @@ _xid_compare() {
         while IFS= read -r _line; do
             [[ -z "$_line" ]] && continue
             local _xcode
-            _xcode=$(echo "$_line" | grep -oP 'Xid[^:]*:\s*\K[0-9]+' | head -1)
+            _xcode=$(echo "$_line" | sed -n 's/.*Xid[^:]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -1)
             [[ -z "$_xcode" ]] && continue
             ((_tot++))
             _seen_xids[$_xcode]=1
@@ -61337,7 +61337,7 @@ _xid_compare() {
             [[ "$_desc" == *"|CRIT|"* ]] && ((_crit_ct++))
             # Last timestamp
             local _ts
-            _ts=$(echo "$_line" | grep -oP '^\[?\s*\K[A-Z][a-z]{2}\s+\d+\s+\d+:\d+:\d+' | head -1)
+            _ts=$(echo "$_line" | sed -n 's/^\[*[[:space:]]*\([A-Z][a-z]\{2\}[[:space:]]\+[0-9]\+[[:space:]]\+[0-9]\+:[0-9]\+:[0-9]\+\).*/\1/p' | head -1)
             [[ -n "$_ts" ]] && _last_ts="$_ts"
         done <<< "$_xid_section"
 
@@ -66292,7 +66292,7 @@ k8s_kubelet_deregister() {
         echo -e "  ${WHITE}Command:${NC} ${GRAY}oci compute instance list --compartment-id \"${compartment_id}\" --region \"${region}\" --all --output json${NC}"
         local _err_msg=""
         if [[ -f "${_kd_err_file:-}" && -s "$_kd_err_file" ]]; then
-            _err_msg=$(grep -oP '(?<=message: ).*' "$_kd_err_file" | head -1)
+            _err_msg=$(sed -n 's/.*message: \(.*\)/\1/p' "$_kd_err_file" | head -1)
             [[ -z "$_err_msg" ]] && _err_msg=$(tail -3 "$_kd_err_file")
         fi
         if [[ -z "$_err_msg" && -n "$instances_json" ]]; then
@@ -67655,8 +67655,8 @@ _create_cloud_init_yaml() {
     echo ""
 
     local _cluster_ver=""
-    _cluster_ver=$(kubectl version --short 2>/dev/null | grep "Server" | grep -oP 'v\K[0-9]+\.[0-9]+\.[0-9]+' || true)
-    [[ -z "$_cluster_ver" ]] && _cluster_ver=$(kubectl version 2>/dev/null | grep "Server" | grep -oP 'v\K[0-9]+\.[0-9]+\.[0-9]+' || true)
+    _cluster_ver=$(kubectl version --short 2>/dev/null | grep "Server" | sed -n 's/.*v\([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' || true)
+    [[ -z "$_cluster_ver" ]] && _cluster_ver=$(kubectl version 2>/dev/null | grep "Server" | sed -n 's/.*v\([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' || true)
 
     local _default_ver="${_cluster_ver:-1.34.2}"
     [[ -n "$_cluster_ver" ]] && echo -e "  ${GRAY}Current cluster version: ${WHITE}v${_cluster_ver}${NC}"
