@@ -75227,15 +75227,13 @@ check_oci_instance_principal() {
 #--------------------------------------------------------------------------------
 # Fetch setup context from local OCI CLI config (API key/security token)
 #--------------------------------------------------------------------------------
-fetch_local_oci_config_context() {
-    if ! command -v oci &>/dev/null; then
-        return 1
-    fi
-
+#--------------------------------------------------------------------------------
+# Setup: interactive OCI CLI profile picker (called before spinner)
+#--------------------------------------------------------------------------------
+_setup_select_oci_profile() {
     local _oci_config="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
-    [[ -f "$_oci_config" ]] || return 1
+    [[ -f "$_oci_config" ]] || return 0
 
-    # List available profiles and prompt for selection
     local -a _setup_profiles=()
     while IFS= read -r _pn; do
         [[ -n "$_pn" ]] && _setup_profiles+=("$_pn")
@@ -75272,7 +75270,18 @@ fetch_local_oci_config_context() {
     elif [[ ${#_setup_profiles[@]} -eq 1 ]]; then
         _oci_profile="${_setup_profiles[0]}"
         export OCI_CLI_PROFILE="$_oci_profile"
+        echo -e "  ${GREEN}✓ Profile: ${WHITE}${_oci_profile}${NC} ${GRAY}(only profile)${NC}"
     fi
+}
+
+fetch_local_oci_config_context() {
+    if ! command -v oci &>/dev/null; then
+        return 1
+    fi
+
+    local _oci_profile="${OCI_CLI_PROFILE:-DEFAULT}"
+    local _oci_config="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
+    [[ -f "$_oci_config" ]] || return 1
 
     local _tenancy_id _region
     _tenancy_id=$(awk -v prof="[$_oci_profile]" '
@@ -75434,6 +75443,14 @@ run_initial_setup() {
 
         # Fallback to local OCI CLI config when IMDS + instance principal path is unavailable
         if [[ "$_setup_use_instance_principal" != "true" ]]; then
+            # Finish current spinner bar before interactive profile prompt
+            _step_finish
+
+            # Profile picker runs outside the spinner (interactive prompt)
+            _setup_select_oci_profile
+
+            # Restart spinner bar for the validation step
+            _step_init
             _step_active "OCI config"
             if ! fetch_local_oci_config_context; then
                 _step_complete "OCI config(failed)"
