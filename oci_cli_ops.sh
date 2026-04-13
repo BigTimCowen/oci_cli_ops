@@ -75232,9 +75232,47 @@ fetch_local_oci_config_context() {
         return 1
     fi
 
-    local _oci_profile="${OCI_CLI_PROFILE:-DEFAULT}"
     local _oci_config="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
     [[ -f "$_oci_config" ]] || return 1
+
+    # List available profiles and prompt for selection
+    local -a _setup_profiles=()
+    while IFS= read -r _pn; do
+        [[ -n "$_pn" ]] && _setup_profiles+=("$_pn")
+    done < <(grep '^\[' "$_oci_config" 2>/dev/null | sed 's/\[//;s/\]//' | sort)
+
+    local _oci_profile="${OCI_CLI_PROFILE:-DEFAULT}"
+
+    if [[ ${#_setup_profiles[@]} -gt 1 ]]; then
+        echo ""
+        echo -e "  ${WHITE}OCI CLI profiles found in ${CYAN}${_oci_config}${NC}${WHITE}:${NC}"
+        local _sp_i=0
+        for _sp in "${_setup_profiles[@]}"; do
+            ((_sp_i++))
+            local _sp_marker=""
+            [[ "$_sp" == "$_oci_profile" ]] && _sp_marker=" ${YELLOW}← default${NC}"
+            local _sp_region
+            _sp_region=$(awk -v prof="[$_sp]" '
+                $0 == prof { found=1; next }
+                found && /^\[/ { exit }
+                found && /^region[[:space:]]*=/ { sub(/^region[[:space:]]*=[[:space:]]*/, ""); print; exit }
+            ' "$_oci_config" 2>/dev/null)
+            printf "    ${YELLOW}%2d${NC}) ${WHITE}%-20s${NC} ${GRAY}region=%-20s${NC}%b\n" \
+                "$_sp_i" "$_sp" "${_sp_region:-N/A}" "$_sp_marker"
+        done
+        echo ""
+        echo -n -e "  ${CYAN}Select profile [${_oci_profile}]: ${NC}"
+        local _sp_choice
+        read -r _sp_choice
+        if [[ "$_sp_choice" =~ ^[0-9]+$ ]] && [[ $_sp_choice -ge 1 ]] && [[ $_sp_choice -le ${#_setup_profiles[@]} ]]; then
+            _oci_profile="${_setup_profiles[$((_sp_choice-1))]}"
+        fi
+        export OCI_CLI_PROFILE="$_oci_profile"
+        echo -e "  ${GREEN}✓ Profile: ${WHITE}${_oci_profile}${NC}"
+    elif [[ ${#_setup_profiles[@]} -eq 1 ]]; then
+        _oci_profile="${_setup_profiles[0]}"
+        export OCI_CLI_PROFILE="$_oci_profile"
+    fi
 
     local _tenancy_id _region
     _tenancy_id=$(awk -v prof="[$_oci_profile]" '
