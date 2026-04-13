@@ -56479,13 +56479,14 @@ _ch_fetch_k8s_data() {
     fi
 
     # Build K8s lookup: providerID|nodeName|readyStatus|newNodeTaint|unschedulable|maintenanceTaint|serialNumber
+    # Serial number from node label oci.oraclecloud.com/host.serial_number (same source as c1)
     local _k8s_lookup
     _k8s_lookup=$(jq -r '
         .items[] |
         (.spec.taints // [] | map(select(.key == "newNode")) | if length > 0 then .[0].effect else "N/A" end) as $newNodeTaint |
         (.spec.taints // [] | map(select(.key == "Maintenance")) | if length > 0 then .[0].effect else "N/A" end) as $maintenanceTaint |
         (.spec.unschedulable // false) as $unschedulable |
-        (.status.nodeInfo.systemUUID // "N/A") as $serial |
+        (.metadata.labels["oci.oraclecloud.com/host.serial_number"] // "N/A") as $serial |
         "\(.spec.providerID)|\(.metadata.name)|\(.status.conditions[] | select(.type=="Ready") | .status)|\($newNodeTaint)|\($unschedulable)|\($maintenanceTaint)|\($serial)"
     ' <<< "$_k8s_json" 2>/dev/null)
 
