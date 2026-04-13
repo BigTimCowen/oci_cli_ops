@@ -57699,11 +57699,32 @@ compute_host_view_by_shape() {
 # Compute Hosts — View hosts with impacted components
 #--------------------------------------------------------------------------------
 compute_host_view_impacted() {
+    local fault_filter="${1:-}"
+
     echo ""
-    _ui_subheader "Hosts with Impacted Components" 0
+    if [[ -n "$fault_filter" ]]; then
+        _ui_subheader "Hosts with Impacted Components — Filter: ${fault_filter}" 0
+    else
+        _ui_subheader "Hosts with Impacted Components" 0
+    fi
 
     local _filtered_file="${TEMP_DIR}/ch_impacted_filtered_$$.txt"
     grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' '$16 == "true"' > "$_filtered_file"
+
+    # If fault code filter is set, narrow to hosts matching that fault code
+    if [[ -n "$fault_filter" && -s "${_CH_IMPACT_LOOKUP:-}" ]]; then
+        local _fault_hosts_file="${TEMP_DIR}/ch_fault_hosts_$$.txt"
+        # Get host OCIDs that have this fault code
+        grep -i "$fault_filter" "$_CH_IMPACT_LOOKUP" 2>/dev/null | cut -d'|' -f1 > "$_fault_hosts_file"
+        if [[ -s "$_fault_hosts_file" ]]; then
+            local _orig="$_filtered_file"
+            _filtered_file="${TEMP_DIR}/ch_impacted_fault_$$.txt"
+            grep -F -f "$_fault_hosts_file" "$_orig" > "$_filtered_file" 2>/dev/null || true
+            rm -f "$_orig" "$_fault_hosts_file"
+        else
+            rm -f "$_fault_hosts_file"
+        fi
+    fi
 
     local _host_ct
     _host_ct=$(wc -l < "$_filtered_file")
@@ -57808,7 +57829,91 @@ compute_host_view_impacted() {
         }' "$_CH_IMPACT_LOOKUP" | sort -t'|' -k1,1 -k2,2)
     fi
 
-    _ch_post_table_actions "Impacted View" "impacted"
+    # Fault code filter actions (specific to impacted view)
+    echo ""
+    if [[ -s "${_CH_IMPACT_LOOKUP:-}" ]]; then
+        # List unique fault codes for quick reference
+        local _unique_faults
+        _unique_faults=$(awk -F'|' '{
+            n = split($4, arr, ";")
+            for (i = 1; i <= n; i++) {
+                split(arr[i], c, ":")
+                fid = c[3]
+                if (fid != "" && fid != "?") print fid
+            }
+        }' "$_CH_IMPACT_LOOKUP" 2>/dev/null | sort -u)
+
+        if [[ -n "$_unique_faults" ]]; then
+            echo -e "  ${WHITE}Fault codes found:${NC}"
+            local _fi=0
+            declare -A _FAULT_MAP=()
+            while IFS= read -r _fc; do
+                [[ -z "$_fc" ]] && continue
+                ((_fi++))
+                _FAULT_MAP[$_fi]="$_fc"
+                local _fc_host_ct
+                _fc_host_ct=$(grep -c "$_fc" "$_CH_IMPACT_LOOKUP" 2>/dev/null || echo "0")
+                echo -e "    ${YELLOW}f${_fi}${NC}) ${CYAN}${_fc}${NC}  ${GRAY}(${_fc_host_ct} host(s))${NC}"
+            done <<< "$_unique_faults"
+            echo ""
+        fi
+    fi
+
+    while true; do
+        local _fv_label="Impacted View"
+        [[ -n "$fault_filter" ]] && _fv_label="Impacted View [${fault_filter}]"
+        echo -e "  ${YELLOW}f#${NC}) Filter by fault code    ${YELLOW}fa${NC}) Show all (clear filter)    ${YELLOW}i#${NC}) Instance    ${YELLOW}h#${NC}) Host    ${CYAN}/${NC}${YELLOW}term${NC}) Search    ${YELLOW}j${NC}) JSON    ${GREEN}col${NC}) Columns    ${CYAN}Enter${NC}) Return"
+        _ui_prompt "$_fv_label" "f#, fa, i#, h#, /term, j, col, Enter"
+        local view_choice
+        read -r view_choice
+
+        [[ -z "$view_choice" ]] && return
+        [[ "${view_choice:-}" == :* ]] && _nav_try_jump "$view_choice" && return
+
+        case "$view_choice" in
+            f[0-9]*)
+                local _fn="${view_choice#f}"
+                if [[ -n "${_FAULT_MAP[$_fn]:-}" ]]; then
+                    compute_host_view_impacted "${_FAULT_MAP[$_fn]}"
+                    return
+                else
+                    echo -e "  ${RED}Invalid fault code number${NC}"
+                fi
+                ;;
+            fa|FA)
+                compute_host_view_impacted ""
+                return
+                ;;
+            col|COL|columns|COLUMNS) _col_picker "CHOST" "Compute Hosts"; return ;;
+            /*) _ch_search_hosts "impacted" "${view_choice#/}"; [[ -n "${_NAV_JUMP:-}" ]] && return; return ;;
+            show|SHOW) continue ;;
+            j|J|json|JSON)
+                _ui_json_viewer "Impacted View JSON" "-f" "$COMPUTE_HOST_JSON_CACHE" "[.data.items[] | select(.\"has-impacted-components\" == true)]"
+                continue
+                ;;
+            j\ *|J\ *|json\ *|JSON\ *)
+                _ui_json_viewer "Impacted View JSON" "-f" "$COMPUTE_HOST_JSON_CACHE" "[.data.items[] | select(.\"has-impacted-components\" == true)]" "${view_choice#* }"
+                continue
+                ;;
+            h[0-9]*)
+                local _hsel="${view_choice#h}"
+                if [[ -n "${CH_OCID_MAP[$_hsel]:-}" ]]; then
+                    _ch_view_host "${CH_OCID_MAP[$_hsel]}"
+                    [[ -n "${_NAV_JUMP:-}" ]] && return
+                fi
+                ;;
+            i[0-9]*)
+                local _isel="${view_choice#i}"
+                if [[ -n "${CH_HOST_MAP[$_isel]:-}" ]]; then
+                    _ch_view_instance "${CH_HOST_MAP[$_isel]}"
+                    [[ -n "${_NAV_JUMP:-}" ]] && return
+                fi
+                ;;
+            ocid1.instance.*) _ch_view_instance "$view_choice"; [[ -n "${_NAV_JUMP:-}" ]] && return ;;
+            ocid1.computebaremetalhost.*|ocid1.computehost.*) _ch_view_host "$view_choice"; [[ -n "${_NAV_JUMP:-}" ]] && return ;;
+            *) echo -e "  ${RED}Invalid selection${NC}" ;;
+        esac
+    done
 }
 
 #--------------------------------------------------------------------------------
