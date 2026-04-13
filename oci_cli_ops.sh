@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.0"
-readonly SCRIPT_VERSION_DATE="2026-04-10"
+readonly SCRIPT_VERSION="3.34.1"
+readonly SCRIPT_VERSION_DATE="2026-04-13"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -32614,13 +32614,13 @@ _CTOP_SEARCH_INDICES=()
 #   @4 = per-row k8s_color, @5 = per-row cordon_color, @6 = per-row taint_color, @7 = per-row pod_color
 #--------------------------------------------------------------------------------
 _CHOST_COL_CONF="$CHOST_COLUMNS_CONF"
-_CHOST_COL_KEYS=(           "id"     "name"            "state"    "health"   "impacted"  "shape"    "platform"  "k8s"      "cordon"   "taint"     "pods"   "ad"     "fd"     "hostocid"      "instance"     )
-_CHOST_COL_LABELS=(         "#"      "Display Name"    "State"    "Health"   "Impacted"  "Shape"    "Platform"  "K8s"      "Cordon"   "Taint"     "Pods"   "AD"     "FD"     "Host OCID"     "Instance OCID")
-_CHOST_COL_DEFAULT_WIDTHS=( 4        28                10         10         4           18         20          8          8          10          5        4        4        98              98             )
-_CHOST_COL_WIDTHS=(         4        28                10         10         4           18         20          8          8          10          5        4        4        98              98             )
-_CHOST_COL_ALIGN=(          "-"      "-"               "-"        "-"        "-"         "-"        "-"         "-"        "-"        "-"         "-"      "-"      "-"      "-"             "-"            )
-_CHOST_COL_FMTS=(           "%-4.4s" "%-28.28s"        "%-10.10s" "%-10.10s" "%-4.4s"    "%-18.18s" "%-20.20s"  "%-8.8s"   "%-8.8s"   "%-10.10s"  "%-5.5s" "%-4.4s" "%-4.4s" "%-98.98s"      "%-98.98s"     )
-_CHOST_COL_COLORS=(         "YELLOW" "WHITE"           "@1"       "@2"       "@3"        ""         "GRAY"      "@4"       "@5"       "@6"        "@7"     "GRAY"   "GRAY"   "YELLOW"        "GRAY"         )
+_CHOST_COL_KEYS=(           "id"     "name"            "state"    "health"   "impacted"  "shape"    "platform"  "k8s"      "cordon"   "taint"     "pods"   "sn"           "ad"     "fd"     "hostocid"      "instance"     )
+_CHOST_COL_LABELS=(         "#"      "Display Name"    "State"    "Health"   "Impacted"  "Shape"    "Platform"  "K8s"      "Cordon"   "Taint"     "Pods"   "SN"           "AD"     "FD"     "Host OCID"     "Instance OCID")
+_CHOST_COL_DEFAULT_WIDTHS=( 4        28                10         10         4           18         20          8          8          10          5        14             4        4        98              98             )
+_CHOST_COL_WIDTHS=(         4        28                10         10         4           18         20          8          8          10          5        14             4        4        98              98             )
+_CHOST_COL_ALIGN=(          "-"      "-"               "-"        "-"        "-"         "-"        "-"         "-"        "-"        "-"         "-"      "-"            "-"      "-"      "-"             "-"            )
+_CHOST_COL_FMTS=(           "%-4.4s" "%-28.28s"        "%-10.10s" "%-10.10s" "%-4.4s"    "%-18.18s" "%-20.20s"  "%-8.8s"   "%-8.8s"   "%-10.10s"  "%-5.5s" "%-14.14s"     "%-4.4s" "%-4.4s" "%-98.98s"      "%-98.98s"     )
+_CHOST_COL_COLORS=(         "YELLOW" "WHITE"           "@1"       "@2"       "@3"        ""         "GRAY"      "@4"       "@5"       "@6"        "@7"     "CYAN"         "GRAY"   "GRAY"   "YELLOW"        "GRAY"         )
 _CHOST_COL_LOCKED=( "id" )
 # Columns enabled by default (name, platform, instance disabled; user can toggle via col)
 _CHOST_COL_DEFAULT_ENABLED=( "id" "state" "health" "shape" "k8s" "cordon" "taint" "pods" "ad" "fd" "hostocid" )
@@ -56440,14 +56440,15 @@ _ch_fetch_k8s_data() {
         return 0
     fi
 
-    # Build K8s lookup: providerID|nodeName|readyStatus|newNodeTaint|unschedulable|maintenanceTaint
+    # Build K8s lookup: providerID|nodeName|readyStatus|newNodeTaint|unschedulable|maintenanceTaint|serialNumber
     local _k8s_lookup
     _k8s_lookup=$(jq -r '
         .items[] |
         (.spec.taints // [] | map(select(.key == "newNode")) | if length > 0 then .[0].effect else "N/A" end) as $newNodeTaint |
         (.spec.taints // [] | map(select(.key == "Maintenance")) | if length > 0 then .[0].effect else "N/A" end) as $maintenanceTaint |
         (.spec.unschedulable // false) as $unschedulable |
-        "\(.spec.providerID)|\(.metadata.name)|\(.status.conditions[] | select(.type=="Ready") | .status)|\($newNodeTaint)|\($unschedulable)|\($maintenanceTaint)"
+        (.status.nodeInfo.systemUUID // "N/A") as $serial |
+        "\(.spec.providerID)|\(.metadata.name)|\(.status.conditions[] | select(.type=="Ready") | .status)|\($newNodeTaint)|\($unschedulable)|\($maintenanceTaint)|\($serial)"
     ' <<< "$_k8s_json" 2>/dev/null)
 
     # Map by instance OCID (strip oci:// prefix from providerID)
@@ -56538,10 +56539,13 @@ _ch_print_host_row() {
     local taint_status="-" taint_color="$GRAY"
     local pod_count="-" pod_color="$GRAY"
 
+    local serial_num="-"
+
     if [[ "$inst_id" == ocid1.instance.* && -n "${_CH_K8S_MAP[$inst_id]+x}" ]]; then
         local _k8s_match="${_CH_K8S_MAP[$inst_id]}"
-        local _k8s_node _k8s_ready _k8s_nn_taint _k8s_unsched _k8s_maint_taint
-        IFS='|' read -r _k8s_node _k8s_ready _k8s_nn_taint _k8s_unsched _k8s_maint_taint <<< "$_k8s_match"
+        local _k8s_node _k8s_ready _k8s_nn_taint _k8s_unsched _k8s_maint_taint _k8s_serial
+        IFS='|' read -r _k8s_node _k8s_ready _k8s_nn_taint _k8s_unsched _k8s_maint_taint _k8s_serial <<< "$_k8s_match"
+        [[ -n "$_k8s_serial" && "$_k8s_serial" != "N/A" ]] && serial_num="$_k8s_serial"
 
         if [[ "$_k8s_ready" == "True" ]]; then
             k8s_status="Ready"; k8s_color="$GREEN"
@@ -56628,7 +56632,7 @@ _ch_print_host_row() {
     fi
 
     _col_print_row "CHOST" "i${_idx}" "$display_name" "$state" "$health" "$impacted_display" "$shape" \
-        "$platform" "$k8s_status" "$cordon_status" "$taint_status" "$pod_count" "$ad_short" "$fd_short" "$host_display" "$inst_display" \
+        "$platform" "$k8s_status" "$cordon_status" "$taint_status" "$pod_count" "$serial_num" "$ad_short" "$fd_short" "$host_display" "$inst_display" \
         "$state_color" "$health_color" "$impacted_color" "$k8s_color" "$cordon_color" "$taint_color" "$pod_color"
 }
 
@@ -56903,6 +56907,10 @@ manage_compute_hosts() {
         sed -i '/^instance$/d' "$CHOST_COLUMNS_CONF" 2>/dev/null
         sed -i '/^impacted$/d' "$CHOST_COLUMNS_CONF" 2>/dev/null
         sed -i '/^platform$/d' "$CHOST_COLUMNS_CONF" 2>/dev/null
+        # v3.34.1: add serial number column
+        if ! grep -q "^sn" "$CHOST_COLUMNS_CONF" 2>/dev/null; then
+            sed -i '/^pods$/a sn' "$CHOST_COLUMNS_CONF" 2>/dev/null
+        fi
     fi
 
     while true; do
