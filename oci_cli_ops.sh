@@ -58283,7 +58283,9 @@ manage_compute_host_groups() {
                 # Count attached BM hosts from compute host cache
                 local _hg_host_ct="-"
                 if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
-                    _hg_host_ct=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v gid="$_hg_id" '$13 == gid' | grep -c . 2>/dev/null || echo "0")
+                    _hg_host_ct=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v gid="$_hg_id" '$13 == gid' | wc -l 2>/dev/null)
+                    _hg_host_ct="${_hg_host_ct//[^0-9]/}"
+                    [[ -z "$_hg_host_ct" ]] && _hg_host_ct=0
                 fi
 
                 printf "  ${YELLOW}%-4s${NC} ${WHITE}%-50s${NC} ${CYAN}%-25s${NC} ${_hg_sc}%-12s${NC} %-10s ${GREEN}%-7s${NC} %-12s\n" \
