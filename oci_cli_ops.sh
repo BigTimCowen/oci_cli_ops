@@ -801,11 +801,13 @@ _wait_with_timeout() {
         done
         [[ $_still_running -eq 0 ]] && return 0
         if [[ $(date +%s) -ge $_deadline ]]; then
-            # Timeout — kill remaining
+            # Timeout — kill remaining and wait for them to exit
             for _p in "${_pids[@]}"; do
                 kill "$_p" 2>/dev/null
             done
-            _wait_with_timeout 120 "${_pids[@]}"
+            for _p in "${_pids[@]}"; do
+                wait "$_p" 2>/dev/null
+            done
             return 1
         fi
         sleep 0.2
@@ -9501,26 +9503,24 @@ list_maintenance_events() {
 
     # Compute hosts (use cache if fresh)
     if ! is_cache_fresh "$COMPUTE_HOST_CACHE"; then
-        _QUIET_SPINNERS=1
-        (fetch_compute_hosts 2>/dev/null && touch "$_me_ptmp/hosts_done") &
+        (_QUIET_SPINNERS=1; fetch_compute_hosts 2>/dev/null && touch "$_me_ptmp/hosts_done") &
         _me_pids+=($!)
     fi
 
     # GPU clusters (use cache if fresh)
     if ! is_cache_fresh "$CLUSTER_CACHE" || ! is_cache_fresh "$INSTANCE_CLUSTER_MAP_CACHE"; then
-        (fetch_gpu_clusters 2>/dev/null && touch "$_me_ptmp/clusters_done") &
+        (_QUIET_SPINNERS=1; fetch_gpu_clusters 2>/dev/null && touch "$_me_ptmp/clusters_done") &
         _me_pids+=($!)
     fi
 
     # GPU fabrics (use cache if fresh)
     if ! is_cache_fresh "$FABRIC_CACHE"; then
-        (fetch_gpu_fabrics 2>/dev/null && touch "$_me_ptmp/fabrics_done") &
+        (_QUIET_SPINNERS=1; fetch_gpu_fabrics 2>/dev/null && touch "$_me_ptmp/fabrics_done") &
         _me_pids+=($!)
     fi
 
     # Wait for all parallel fetches
     for _pid in "${_me_pids[@]}"; do wait "$_pid" 2>/dev/null; done
-    _QUIET_SPINNERS=0
     _step_complete "parallel fetches(${#_me_pids[@]})"
 
     # Announcements run in parent shell (populates global arrays, not subshell-safe)
@@ -9530,12 +9530,19 @@ list_maintenance_events() {
         _step_complete "Announcements(${#INSTANCE_ANNOUNCEMENTS[@]})"
     fi
 
-    # Read parallel results
+    # Read parallel results — warn on failures
+    local _me_warn=""
     local me_k8s_lookup=""
-    [[ -s "$_me_ptmp/k8s_nodes" ]] && me_k8s_lookup=$(cat "$_me_ptmp/k8s_nodes")
+    if [[ -s "$_me_ptmp/k8s_nodes" ]]; then
+        me_k8s_lookup=$(cat "$_me_ptmp/k8s_nodes")
+    else
+        _me_warn+="K8s "
+    fi
 
     local me_pods_per_node=""
-    [[ -s "$_me_ptmp/pods" ]] && me_pods_per_node=$(cat "$_me_ptmp/pods")
+    if [[ -s "$_me_ptmp/pods" ]]; then
+        me_pods_per_node=$(cat "$_me_ptmp/pods")
+    fi
 
     # Merge instance data into cache if freshly fetched
     local me_inst_temp _me_inst_ct
@@ -9554,11 +9561,22 @@ list_maintenance_events() {
 
     rm -rf "$_me_ptmp" 2>/dev/null
 
+    # Check for fetch failures
+    [[ ! -f "$INSTANCE_LIST_CACHE" || ! -s "$INSTANCE_LIST_CACHE" ]] && _me_warn+="Instances "
+    [[ ! -f "$COMPUTE_HOST_CACHE" ]] && _me_warn+="Hosts "
+    [[ ! -f "$CLUSTER_CACHE" ]] && _me_warn+="GPU-clusters "
+
     # Show individual cache status
     _step_complete "K8s($(echo "$me_k8s_lookup" | grep -c . 2>/dev/null || echo 0))"
     _step_complete "Instances(${_me_inst_ct})"
     _step_complete "Hosts($(_clc "$COMPUTE_HOST_CACHE"))"
     _step_complete "GPU($(_clc "$CLUSTER_CACHE")/$(_clc "$FABRIC_CACHE"))"
+
+    if [[ -n "$_me_warn" ]]; then
+        echo ""
+        echo -e "  ${YELLOW}⚠ Some data sources failed to fetch: ${WHITE}${_me_warn}${NC}"
+        echo -e "  ${GRAY}Results may be incomplete. Use 'r' to retry.${NC}"
+    fi
 
     #==========================================================================
     # Pre-build associative arrays for O(1) lookups (replaces per-row grep|cut)
