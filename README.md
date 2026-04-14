@@ -1,6 +1,6 @@
 **OCI CLI Operations** — Interactive management tool for Oracle Cloud Infrastructure, Kubernetes, and GPU infrastructure.
 
-**Version:** 3.33.1 | **Date:** 2026-04-10
+**Version:** 3.34.1 | **Date:** 2026-04-14
 
 ## Overview
 
@@ -133,20 +133,20 @@ Global nav: type `:c`, `:k1`, `:n2`, etc. from any prompt to jump.
 
 | Option | Function | Description |
 |--------|----------|-------------|
-| `c1` | Compute Instances | Instance list with K8s status, cordon/drain/taint, BVR, bulk run-command |
-| `c2` | Instance Configurations | Create, view, compare, and delete instance configs |
+| `c1` | Compute Instances | Instance list with K8s status, cordon/drain/taint, BVR, bulk run-command. Node Pool/OKE Cluster columns (`col` to enable). BVR blocked for nodepool-managed instances. OKE Node Pool detail in `i#` view |
+| `c2` | Instance Configurations | Create, view, compare, delete. `cci` creates cloud-init YAML (auto-detects API server + CA from kubeconfig) |
 | `c3` | Compute Clusters | Create, view, and delete compute clusters |
-| `c4` | GPU Memory Fabrics & Clusters | Manage GPU fabrics, clusters, firmware bundles |
-| `c5` | Capacity Topology | Host lifecycle states, RDMA topology tree |
+| `c4` | GPU Memory Fabrics & Clusters | Manage GPU fabrics, clusters, firmware bundles (region-aware cache) |
+| `c5` | Capacity Topology | Host lifecycle states, RDMA topology tree (AD-aware filtering) |
 | `c6` | Custom Images | Import, create from instance, export, shape compatibility |
 | `c7` | GPU Instance Tagging | ComputeInstanceHostActions namespace and tags |
 | `c8` | Instance Pools | Create, view, and manage instance pools |
 | `c9` | Cluster Networks | View cluster networks and instance details |
-| `c10` | Compute Hosts | Bare-metal host health, state, topology, impacted component details (`h#` drill-down), recycle status, `notify` for event rules |
-| `c11` | Host Groups | Create, view, delete host groups; attach/detach BM hosts; capacity topology pre-flight |
-| `c12` | Notifications | ONS topics, subscriptions (email/Slack/PagerDuty/webhook), event rules for host monitoring |
+| `c10` | Compute Hosts | Bare-metal host health, state, topology, SN column, impacted component details (`h#` drill-down), recycle status, `f` fault code filter, `notify` for event rules |
+| `c11` | Host Groups | Create, view, delete host groups; attach/detach BM hosts; capacity topology pre-flight; host count per group |
+| `c12` | Notifications | ONS topics, subscriptions (email/Slack/PagerDuty/webhook), event rules list/detail/delete |
 
-**Instance Actions** (`c1` prompt): `i#` (detail), `/` (search), `taint`, `untaint`, `cordon`, `uncordon`, `drain`, `reboot`, `cdt` (Cordon-Drain-Tag-Terminate), `terminate`, `bvr` (Boot Volume Replacement), `brc` (Bulk Run-Command), `p` (properties view), `col` (column picker)
+**Instance Actions** (`c1` prompt): `i#` (detail), `/` (search), `taint`, `untaint`, `cordon`, `uncordon`, `drain`, `reboot`, `cdt` (Cordon-Drain-Tag-Terminate), `terminate`, `bvr` (Boot Volume Replacement), `brc` (Bulk Run-Command), `p` (properties view), `col` (column picker, includes `np` and `oke_cluster`)
 
 **Host Group Actions** (`c11` detail): `a` (attach BM host), `dt #` (detach), `notify` (create event rule), `j` (JSON)
 
@@ -160,7 +160,7 @@ Global nav: type `:c`, `:k1`, `:n2`, etc. from any prompt to jump.
 |--------|----------|-------------|
 | `k1` | OKE Cluster Environment | Cluster details, VCN, node pools, add-ons |
 | `k2` | NVIDIA GPU Stack Health | GPU Operator and DRA component status per node |
-| `k3` | Kubernetes Management | Node diagnostics, RDMA, SSH keys (11 sub-options) |
+| `k3` | Kubernetes Management | Node diagnostics, RDMA, SSH keys, debug DaemonSet (12 sub-options) |
 
 **K8s Management** (`k3`) sub-options:
 
@@ -177,6 +177,7 @@ Global nav: type `:c`, `:k1`, `:n2`, etc. from any prompt to jump.
 | 9 | GPU Tolerations | View/add/remove tolerations on GPU operator daemonsets |
 | 10 | Storage Provisioning | Validate BV, FSS, Lustre prerequisites for K8s |
 | 11 | Authorized SSH Keys | Distribute SSH public keys via DaemonSet |
+| 12 | Debug DaemonSet | Deploy privileged busybox pod to selected nodes for troubleshooting |
 
 Additional shortcuts: `oke` (select cluster), `cc` (compare clusters), `cn` (compare node pools)
 
@@ -225,7 +226,7 @@ Actions: `#` (resource detail), `/` (search port in NSG/SL rules), `drg` (DRG co
 |--------|----------|-------------|
 | `o1` | Resource Manager Stacks | Stacks, jobs, logs, outputs, state files |
 | `o2` | Work Requests | Status, errors, and logs for async operations |
-| `o3` | Maintenance | Instance maintenance events, reschedule windows |
+| `o3` | Maintenance | Instance maintenance events, reschedule windows, filter by reason/lifecycle, parallel data fetch |
 | `o4` | Announcements | Announcements with affected resource details |
 | `o5` | Service Limits & Quotas | Limits, usage, availability, GPU capacity reports |
 | `o6` | Audit Logs | OCI audit events (API calls, changes, access) |
@@ -267,6 +268,14 @@ Actions: `#` (resource detail), `/` (search port in NSG/SL rules), `drg` (DRG co
 ./oci_cli_ops.sh --search <text>        # Search resources by OCID/name
 ./oci_cli_ops.sh --refresh              # Clear all caches
 ```
+
+---
+
+## Standalone Scripts
+
+| Script | Description |
+|--------|-------------|
+| `k8s_run_command.sh` | Run GPU diagnostics (nvidia-smi, serial number, NVLink) across all debug DaemonSet pods in parallel. Requires debug DaemonSet from `--manage k 3 → 12`. Supports `-n namespace`, `-P parallelism`, `--debug` |
 
 ---
 
@@ -385,10 +394,11 @@ Auto-detected at startup:
 The script maintains a runtime "focus" that scopes all queries:
 
 ```
-env c   — Change compartment (hierarchical tree selector with root tenancy)
-env r   — Change region (all subscribed regions listed)
-env oke — Change OKE cluster
-env vcn — Change VCN
+env c       — Change compartment (hierarchical tree selector with root tenancy)
+env r       — Change region (all subscribed regions listed)
+env oke     — Change OKE cluster
+env vcn     — Change VCN
+env profile — Switch OCI CLI profile (for multi-profile ~/.oci/config)
 ```
 
 Focus can be saved to `variables.sh` via `env` → `s` (save). The current focus is shown in the header of every menu.
@@ -399,6 +409,7 @@ Focus can be saved to `variables.sh` via `env` → `s` (save). The current focus
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 3.34.1 | 2026-04-14 | c1: Node Pool/OKE Cluster columns, BVR guard for nodepool instances, OKE Node Pool section in instance detail. c2: `cci` cloud-init YAML creator. c10: SN column, fault code filter (`f`), optimized impacted detail fetch. c11: host count per group. c12: event rule list/detail/delete. o3: parallel data fetch, filter by maintenance reason (`re`), wider instance name column. k3: option 12 debug DaemonSet. `env profile` for multi-profile OCI configs. macOS `grep -oP` → portable `grep -oE`/`sed`. Spinner wrap fix. Dynamic group matching rule fix. Policy hints for firmware bundles, compute clusters, GPU clusters. `k8s_run_command.sh` standalone script |
 | 3.33.1 | 2026-04-10 | c11 Host Groups (CRUD, attach/detach BM hosts, capacity pre-flight, BM.GPU shape picker). c12 Notifications (ONS topics, subscriptions, event rule list/detail/delete). c10 `notify` for event rules. macOS support (Bash 4 guard, `~/.oci/config` setup, IMDS skip on Darwin). OKE focus fix, BVR `--region`, env r persistence in menus, capacity topology AD filtering |
 | 3.27.2 | 2026-03-11 | o3 summary: monthly fault code/fabric tables with lifecycle columns, fault code reference with component/description/impact. c10 summary: per-fabric GPU memory table, per-row impacted inline, skip k8s without context |
 | 3.26.0 | 2026-03-10 | Dedicated pool GB200 fix, capacity report error diagnostics, `h#` compute host navigation from o3, RDMA alignment, c10 impacted component aggregation |
