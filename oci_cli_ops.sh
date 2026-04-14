@@ -37300,13 +37300,13 @@ display_instance_details() {
         fi
 
         local _np_sc; _np_sc=$(color_resource_state "${_np_state_d}")
-        [[ -n "$oke_node_type" ]] && echo -e "  ${CYAN}Node Type:${NC}           ${WHITE}${oke_node_type}${NC}"
-        echo -e "  ${CYAN}Node Pool:${NC}           ${WHITE}${_np_name_d}${NC}   [${_np_sc}${_np_state_d}${NC}]"
-        echo -e "  ${CYAN}Node Pool OCID:${NC}      ${YELLOW}${oke_nodepool_id}${NC}"
-        echo -e "  ${CYAN}K8s Version:${NC}         ${WHITE}${_np_k8s_d}${NC}"
-        echo -e "  ${CYAN}Shape:${NC}               ${WHITE}${_np_shape_d}${NC}"
-        echo -e "  ${CYAN}Cluster:${NC}             ${WHITE}${_cl_name_d}${NC}"
-        echo -e "  ${CYAN}Cluster OCID:${NC}        ${YELLOW}${oke_cluster_id}${NC}"
+        [[ -n "$oke_node_type" ]] && echo -e "  ${WHITE}Node Type:${NC}           ${CYAN}${oke_node_type}${NC}"
+        echo -e "  ${WHITE}Node Pool:${NC}           ${CYAN}${_np_name_d}${NC}   [${_np_sc}${_np_state_d}${NC}]"
+        echo -e "  ${WHITE}Node Pool OCID:${NC}      ${YELLOW}${oke_nodepool_id}${NC}"
+        echo -e "  ${WHITE}K8s Version:${NC}         ${CYAN}${_np_k8s_d}${NC}"
+        echo -e "  ${WHITE}Shape:${NC}               ${CYAN}${_np_shape_d}${NC}"
+        echo -e "  ${WHITE}Cluster:${NC}             ${CYAN}${_cl_name_d}${NC}"
+        echo -e "  ${WHITE}Cluster OCID:${NC}        ${YELLOW}${oke_cluster_id}${NC}"
         echo -e "  ${YELLOW}⚠ BVR blocked — use node pool-level BVR: --manage k 1 → np# → bvr${NC}"
     fi
 
@@ -37360,7 +37360,7 @@ display_instance_details() {
             taint_color="$YELLOW"
         fi
         
-        printf "${WHITE}%-10s${NC}${GREEN}%-14s${NC}  ${WHITE}%-8s${NC}${GREEN}%-22s${NC}  ${WHITE}%-8s${NC}${ready_color}%-8s${NC}  ${WHITE}%-10s${NC}${sched_color}%-12s${NC}  ${WHITE}%-6s${NC}${CYAN}%-5s${NC}\n" \
+        printf "${WHITE}%-10s${NC}${CYAN}%-14s${NC}  ${WHITE}%-8s${NC}${CYAN}%-22s${NC}  ${WHITE}%-8s${NC}${ready_color}%-8s${NC}  ${WHITE}%-10s${NC}${sched_color}%-12s${NC}  ${WHITE}%-6s${NC}${CYAN}%-5s${NC}\n" \
             "Status:" "In Cluster" "Node:" "$k8s_node_name" "Ready:" "$k8s_ready" "Schedule:" "$sched_status" "Pods:" "$k8s_pod_count"
         
         # Second line with GPU and taint info
@@ -37368,9 +37368,9 @@ display_instance_details() {
             local clique_info="N/A"
             [[ "$k8s_clique" != "N/A" ]] && clique_info="$k8s_clique"
             if [[ -n "$taint_info" ]]; then
-                printf "${WHITE}%-10s${NC}${GREEN}%-14s${NC}  ${WHITE}%-8s${NC}${CYAN}%-22s${NC}  ${WHITE}%-8s${NC}${taint_color}%-20s${NC}\n" "GPU:" "Present" "Clique:" "$clique_info" "Taint:" "$taint_info"
+                printf "${WHITE}%-10s${NC}${CYAN}%-14s${NC}  ${WHITE}%-8s${NC}${CYAN}%-22s${NC}  ${WHITE}%-8s${NC}${taint_color}%-20s${NC}\n" "GPU:" "Present" "Clique:" "$clique_info" "Taint:" "$taint_info"
             else
-                printf "${WHITE}%-10s${NC}${GREEN}%-14s${NC}  ${WHITE}%-8s${NC}${CYAN}%-22s${NC}\n" "GPU:" "Present" "Clique:" "$clique_info"
+                printf "${WHITE}%-10s${NC}${CYAN}%-14s${NC}  ${WHITE}%-8s${NC}${CYAN}%-22s${NC}\n" "GPU:" "Present" "Clique:" "$clique_info"
             fi
         elif [[ -n "$taint_info" ]]; then
             printf "${WHITE}%-10s${NC}${taint_color}%-30s${NC}\n" "Taint:" "$taint_info"
