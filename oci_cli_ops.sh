@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.1"
-readonly SCRIPT_VERSION_DATE="2026-04-13"
+readonly SCRIPT_VERSION="3.34.2"
+readonly SCRIPT_VERSION_DATE="2026-04-14"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -38291,19 +38291,29 @@ display_instance_details() {
             echo ""
             echo -e "${YELLOW}Rebooting instance ${GREEN}$display_name${NC}${YELLOW}...${NC}"
             echo ""
-            echo -e "  ${GRAY}\$ oci compute instance action --instance-id ${instance_ocid} --region ${region} --action SOFTRESET${NC}"
+            echo -e "  ${CYAN}Reboot Type:${NC}"
+            echo -e "    ${YELLOW}1${NC}) ${WHITE}RESET${NC}      - Hard reboot (immediate power cycle, like pressing the reset button)"
+            echo -e "    ${YELLOW}2${NC}) ${WHITE}SOFTRESET${NC}  - Graceful reboot (ACPI shutdown → power on, gives OS time to clean up)"
             echo ""
-            echo -n -e "${CYAN}Confirm reboot? (yes/no): ${NC}"
+            echo -n -e "  ${WHITE}Select reboot type [1=RESET, 2=SOFTRESET] (default: 2): ${NC}"
+            local reboot_type_choice
+            read -r reboot_type_choice
+            local reboot_action="SOFTRESET"
+            [[ "$reboot_type_choice" == "1" ]] && reboot_action="RESET"
+            echo ""
+            echo -e "  ${GRAY}\$ oci compute instance action --instance-id ${instance_ocid} --region ${region} --action ${reboot_action}${NC}"
+            echo ""
+            echo -n -e "${CYAN}Confirm ${reboot_action}? (yes/no): ${NC}"
             local confirm
             read -r confirm
             if [[ "$confirm" == "yes" ]]; then
-                log_action "REBOOT" "oci compute instance action --instance-id $instance_ocid --region $region --action SOFTRESET"
-                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action SOFTRESET 2>/dev/null; then
-                    echo -e "${GREEN}✓ Reboot initiated successfully${NC}"
-                    log_action_result "SUCCESS" "Instance $display_name reboot initiated"
+                log_action "REBOOT" "oci compute instance action --instance-id $instance_ocid --region $region --action $reboot_action"
+                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action "$reboot_action" 2>/dev/null; then
+                    echo -e "${GREEN}✓ Reboot (${reboot_action}) initiated successfully${NC}"
+                    log_action_result "SUCCESS" "Instance $display_name reboot ($reboot_action) initiated"
                 else
                     echo -e "${RED}✗ Failed to reboot instance${NC}"
-                    log_action_result "FAILED" "Instance $display_name reboot failed"
+                    log_action_result "FAILED" "Instance $display_name reboot ($reboot_action) failed"
                 fi
             else
                 echo -e "${YELLOW}Reboot cancelled${NC}"
