@@ -58257,8 +58257,8 @@ manage_compute_host_groups() {
         ' <<< "$hg_json" 2>/dev/null)
 
         if [[ -n "$_hg_items" ]]; then
-            printf "  ${GRAY}%-4s %-50s %-25s %-12s %-10s %-12s${NC}\n" "#" "Display Name" "Availability Domain" "State" "Targeted" "Created"
-            echo -e "  ${GRAY}$(printf '─%.0s' {1..120})${NC}"
+            printf "  ${GRAY}%-4s %-50s %-25s %-12s %-10s %-7s %-12s${NC}\n" "#" "Display Name" "Availability Domain" "State" "Targeted" "Hosts" "Created"
+            echo -e "  ${GRAY}$(printf '─%.0s' {1..125})${NC}"
 
             while IFS='|' read -r _hg_id _hg_name _hg_ad _hg_state _hg_targeted _hg_created; do
                 [[ -z "$_hg_id" ]] && continue
@@ -58272,8 +58272,14 @@ manage_compute_host_groups() {
                 [[ "$_hg_targeted" == "true" ]] && _hg_tgt="Yes"
                 local _hg_date="${_hg_created:0:10}"
 
-                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-50s${NC} ${CYAN}%-25s${NC} ${_hg_sc}%-12s${NC} %-10s %-12s\n" \
-                    "${hg_count})" "$_hg_name" "$_hg_ad_short" "$_hg_state" "$_hg_tgt" "$_hg_date"
+                # Count attached BM hosts from compute host cache
+                local _hg_host_ct="-"
+                if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+                    _hg_host_ct=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v gid="$_hg_id" '$13 == gid' | grep -c . 2>/dev/null || echo "0")
+                fi
+
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-50s${NC} ${CYAN}%-25s${NC} ${_hg_sc}%-12s${NC} %-10s ${GREEN}%-7s${NC} %-12s\n" \
+                    "${hg_count})" "$_hg_name" "$_hg_ad_short" "$_hg_state" "$_hg_tgt" "$_hg_host_ct" "$_hg_date"
             done <<< "$_hg_items"
 
             if [[ $hg_count -gt 0 ]]; then
