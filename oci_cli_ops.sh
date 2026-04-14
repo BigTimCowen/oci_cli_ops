@@ -37234,9 +37234,9 @@ display_instance_details() {
                 _oke_c_endpoint=$(jq -r '.data.endpoints["public-endpoint"] // .data.endpoints["private-endpoint"] // "N/A"' "$_inst_oke_dir/oke_cluster.json")
                 _oke_c_type=$(jq -r '.data.type // "N/A"' "$_inst_oke_dir/oke_cluster.json")
                 local _oke_sc; _oke_sc=$(color_resource_state "$_oke_c_state")
-                printf "${WHITE}%-18s${NC}${GREEN}%-40s${NC} ${_oke_sc}%-12s${NC} ${WHITE}K8s:${NC} %-12s ${WHITE}Type:${NC} %-12s\n" \
+                printf "${WHITE}%-18s${NC}${GREEN}%-40s${NC} ${_oke_sc}%-12s${NC} ${WHITE}K8s:${NC} ${CYAN}%-12s${NC} ${WHITE}Type:${NC} ${CYAN}%-12s${NC}\n" \
                     "OKE Cluster:" "$_oke_c_name" "$_oke_c_state" "$_oke_c_k8s" "$_oke_c_type"
-                printf "${WHITE}%-18s${NC}${GRAY}%s${NC}\n" "" "$oke_cluster_id"
+                printf "${WHITE}%-18s${NC}${YELLOW}%s${NC}\n" "" "$oke_cluster_id"
                 [[ "$_oke_c_endpoint" != "N/A" ]] && printf "${WHITE}%-18s${NC}${CYAN}%s${NC}\n" "  Endpoint:" "$_oke_c_endpoint"
             else
                 printf "${WHITE}%-18s${NC}${YELLOW}%s${NC}\n" "OKE Cluster:" "$oke_cluster_id"
@@ -37263,11 +37263,11 @@ display_instance_details() {
                 else
                     _node_ct_display="${_oke_np_size} target"
                 fi
-                printf "${WHITE}%-18s${NC}${GREEN}%-40s${NC} ${_oke_nsc}%-12s${NC} ${WHITE}Nodes:${NC} %-12s ${WHITE}Shape:${NC} %-20s\n" \
+                printf "${WHITE}%-18s${NC}${GREEN}%-40s${NC} ${_oke_nsc}%-12s${NC} ${WHITE}Nodes:${NC} ${CYAN}%-12s${NC} ${WHITE}Shape:${NC} ${CYAN}%-20s${NC}\n" \
                     "OKE Node Pool:" "$_oke_np_name" "$_oke_np_state" "$_node_ct_display" "$_oke_np_shape"
-                printf "${WHITE}%-18s${NC}${GRAY}%s${NC}\n" "" "$oke_nodepool_id"
-                printf "${WHITE}%-18s${NC}${WHITE}%s${NC}  ${GRAY}[%s]${NC}\n" "  NP Image:" "$_oke_np_img_name" "$_oke_np_img"
-                printf "${WHITE}%-18s${NC}${WHITE}%s${NC}\n" "  NP K8s:" "$_oke_np_k8s"
+                printf "${WHITE}%-18s${NC}${YELLOW}%s${NC}\n" "" "$oke_nodepool_id"
+                printf "${WHITE}%-18s${NC}${CYAN}%s${NC}  ${GRAY}[${YELLOW}%s${GRAY}]${NC}\n" "  NP Image:" "$_oke_np_img_name" "$_oke_np_img"
+                printf "${WHITE}%-18s${NC}${CYAN}%s${NC}\n" "  NP K8s:" "$_oke_np_k8s"
                 echo -e "${GRAY}  ⚠ BVR/cycling for OKE nodes should be done via node pool (--manage, k, 1, np#)${NC}"
             else
                 printf "${WHITE}%-18s${NC}${YELLOW}%s${NC}\n" "OKE Node Pool:" "$oke_nodepool_id"
@@ -37281,34 +37281,9 @@ display_instance_details() {
         fi
     fi
     
-    # ========== OKE NODE POOL (if instance is nodepool-managed) ==========
+    # Track nodepool-managed status for BVR guard (display handled in Associations above)
     local _is_nodepool_managed="false"
-    if [[ -n "$oke_nodepool_id" ]]; then
-        _is_nodepool_managed="true"
-        echo ""
-        _ui_subheader "OKE Node Pool" 0
-
-        local _np_name_d="N/A" _np_state_d="" _np_k8s_d="" _np_shape_d="" _cl_name_d="N/A"
-        if [[ -s "$_inst_oke_dir/oke_nodepool.json" ]]; then
-            _np_name_d=$(jq -r '.data.name // "N/A"' "$_inst_oke_dir/oke_nodepool.json" 2>/dev/null)
-            _np_state_d=$(jq -r '.data["lifecycle-state"] // "N/A"' "$_inst_oke_dir/oke_nodepool.json" 2>/dev/null)
-            _np_k8s_d=$(jq -r '.data["kubernetes-version"] // "N/A"' "$_inst_oke_dir/oke_nodepool.json" 2>/dev/null)
-            _np_shape_d=$(jq -r '.data["node-shape"] // "N/A"' "$_inst_oke_dir/oke_nodepool.json" 2>/dev/null)
-        fi
-        if [[ -s "$_inst_oke_dir/oke_cluster.json" ]]; then
-            _cl_name_d=$(jq -r '.data.name // "N/A"' "$_inst_oke_dir/oke_cluster.json" 2>/dev/null)
-        fi
-
-        local _np_sc; _np_sc=$(color_resource_state "${_np_state_d}")
-        [[ -n "$oke_node_type" ]] && echo -e "  ${WHITE}Node Type:${NC}           ${CYAN}${oke_node_type}${NC}"
-        echo -e "  ${WHITE}Node Pool:${NC}           ${CYAN}${_np_name_d}${NC}   [${_np_sc}${_np_state_d}${NC}]"
-        echo -e "  ${WHITE}Node Pool OCID:${NC}      ${YELLOW}${oke_nodepool_id}${NC}"
-        echo -e "  ${WHITE}K8s Version:${NC}         ${CYAN}${_np_k8s_d}${NC}"
-        echo -e "  ${WHITE}Shape:${NC}               ${CYAN}${_np_shape_d}${NC}"
-        echo -e "  ${WHITE}Cluster:${NC}             ${CYAN}${_cl_name_d}${NC}"
-        echo -e "  ${WHITE}Cluster OCID:${NC}        ${YELLOW}${oke_cluster_id}${NC}"
-        echo -e "  ${YELLOW}⚠ BVR blocked — use node pool-level BVR: --manage k 1 → np# → bvr${NC}"
-    fi
+    [[ -n "$oke_nodepool_id" ]] && _is_nodepool_managed="true"
 
     # ========== KUBERNETES STATUS (Compact - from prefetch cache) ==========
     echo ""
