@@ -36670,10 +36670,22 @@ display_instance_details() {
     # ========== DISCOVERY ==========
     _step_init
     _step_active "instance"
-    
-    # Fetch instance details
-    local instance_json
-    instance_json=$(oci compute instance get --instance-id "$instance_ocid" --region "$region" --output json 2>/dev/null)
+
+    local _dtmp="${TEMP_DIR}/detail_$$"
+    mkdir -p "$_dtmp"
+
+    # Launch instance get + kubectl get nodes in parallel (kubectl doesn't need instance data)
+    (oci compute instance get --instance-id "$instance_ocid" --region "$region" --output json > "$_dtmp/instance.json" 2>/dev/null) &
+    local _inst_pid=$!
+    if command -v kubectl &>/dev/null; then
+        (kubectl get nodes -o json > "$_dtmp/k8s_nodes.json" 2>/dev/null) &
+    fi
+
+    # Wait for instance (kubectl continues in background)
+    wait "$_inst_pid" 2>/dev/null
+
+    local instance_json=""
+    [[ -s "$_dtmp/instance.json" ]] && instance_json=$(cat "$_dtmp/instance.json")
 
     if [[ -z "$instance_json" ]] || ! jq -e '.data' <<< "$instance_json" > /dev/null 2>&1; then
         _step_complete "instance(failed)"
@@ -36682,20 +36694,18 @@ display_instance_details() {
         return 1
     fi
     _step_complete "instance"
-    
+
     # ========== PARALLEL WAVE PREFETCH (all instance data) ==========
     _step_active "attachments"
-    
-    local _dtmp="${TEMP_DIR}/detail_$$"
-    mkdir -p "$_dtmp"
+
     local _pids=()
-    
+
     # Get availability domain and image-id from instance JSON (local jq, instant)
     local ad_for_query
     ad_for_query=$(jq -r '.data["availability-domain"] // "N/A"' <<< "$instance_json")
     local image_id
     image_id=$(jq -r '.data["image-id"] // empty' <<< "$instance_json")
-    
+
     # Early-parse OKE tags (needed to add OKE fetches to wave 1)
     # Check system-tags first (orcl-containerengine), then defined-tags, then freeform-tags
     local oke_cluster_id oke_nodepool_id oke_node_type
@@ -36706,8 +36716,9 @@ display_instance_details() {
     [[ -z "$oke_nodepool_id" ]] && oke_nodepool_id=$(jq -r '.data["defined-tags"]["oke-apisystem"]["NodePoolId"] // empty' <<< "$instance_json")
     [[ -z "$oke_cluster_id" ]] && oke_cluster_id=$(jq -r '.data["freeform-tags"]["oke-clusterId"] // empty' <<< "$instance_json")
     [[ -z "$oke_nodepool_id" ]] && oke_nodepool_id=$(jq -r '.data["freeform-tags"]["oke-nodePoolId"] // empty' <<< "$instance_json")
-    
+
     #--- WAVE 1: All independent fetches (only need instance_ocid/compartment_id) ---
+    # K8s nodes already running in background from above — don't launch again
     _pids=()
     (oci compute vnic-attachment list --compartment-id "$compartment_id" --instance-id "$instance_ocid" --region "$region" --output json > "$_dtmp/vnic_attach.json" 2>/dev/null) &
     _pids+=($!)
@@ -36717,10 +36728,6 @@ display_instance_details() {
     _pids+=($!)
     if [[ -n "$image_id" ]]; then
         (oci compute image get --image-id "$image_id" --region "$region" --output json > "$_dtmp/image.json" 2>/dev/null) &
-        _pids+=($!)
-    fi
-    if command -v kubectl &>/dev/null; then
-        (kubectl get nodes -o json > "$_dtmp/k8s_nodes.json" 2>/dev/null) &
         _pids+=($!)
     fi
     # OKE cluster + node pool detail (if this instance is an OKE node)
@@ -37107,8 +37114,7 @@ display_instance_details() {
     # ========== BASIC INFO (Compact) ==========
     echo ""
     _ui_subheader "Basic Info" 0
-    printf "${WHITE}%-10s${NC}${GREEN}%s${NC}\n" "Name:" "$display_name"
-    printf "${WHITE}%-10s${NC}${YELLOW}%s${NC}\n" "OCID:" "$instance_ocid"
+    printf "${WHITE}%-10s${NC}${GREEN}%s${NC}  ${GRAY}[${YELLOW}%s${GRAY}]${NC}\n" "Name:" "$display_name" "$instance_ocid"
     printf "${WHITE}%-10s${NC}${state_color}%-12s${NC}  ${WHITE}%-10s${NC}${CYAN}%-22s${NC}  ${WHITE}%-8s${NC}${CYAN}%s${NC}\n" "State:" "$state" "Created:" "${time_created:0:19}" "Launch:" "$launch_mode"
     printf "${WHITE}%-10s${NC}${CYAN}%-12s${NC}  ${WHITE}%-10s${NC}${CYAN}%s${NC}\n" "AD:" "${ad##*:}" "FD:" "${fd##*-}"
     
