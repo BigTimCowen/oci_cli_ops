@@ -1442,6 +1442,8 @@ _step_complete() {
         kill "$_STEP_ANIM_PID" 2>/dev/null
         wait "$_STEP_ANIM_PID" 2>/dev/null
         _STEP_ANIM_PID=""
+        # Clear any residual output from the killed animation subshell
+        printf '\033[2K\r'
     fi
     # Append elapsed time since _step_active
     if [[ -n "${_STEP_ACTIVE_T0:-}" ]]; then
