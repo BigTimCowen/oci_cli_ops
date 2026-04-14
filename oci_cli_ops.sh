@@ -58233,6 +58233,16 @@ manage_compute_host_groups() {
             _hgc=$(jq '.data.items | length' <<< "$hg_json" 2>/dev/null || echo "0")
             _step_complete "host groups(${_hgc})"
         fi
+
+        # Fetch compute host cache in same discovery bar for host count column
+        if [[ ! -f "$COMPUTE_HOST_CACHE" ]] && [[ -n "${TENANCY_ID:-}" ]]; then
+            _step_active "compute hosts"
+            _QUIET_SPINNERS=1
+            fetch_compute_hosts 2>/dev/null
+            _QUIET_SPINNERS=0
+            _step_complete "compute hosts($(_clc "$COMPUTE_HOST_CACHE"))"
+        fi
+
         _step_finish
 
         if [[ -z "$hg_json" ]] || ! jq -e '.data' <<< "$hg_json" >/dev/null 2>&1; then
@@ -58242,14 +58252,6 @@ manage_compute_host_groups() {
             echo ""
             _ui_pause "return"
             return
-        fi
-
-        # Ensure compute host cache is available for host count column
-        if [[ ! -f "$COMPUTE_HOST_CACHE" ]] && [[ -n "${TENANCY_ID:-}" ]]; then
-            _step_active "compute hosts"
-            fetch_compute_hosts 2>/dev/null
-            _step_complete "compute hosts($(_clc "$COMPUTE_HOST_CACHE"))"
-            _step_finish
         fi
 
         # ── Display list ──
