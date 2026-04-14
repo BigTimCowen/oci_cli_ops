@@ -36674,20 +36674,34 @@ display_instance_details() {
     local _dtmp="${TEMP_DIR}/detail_$$"
     mkdir -p "$_dtmp"
 
-    # Launch instance get + kubectl get nodes in parallel (kubectl doesn't need instance data)
+    # Wave 0: Launch everything that only needs instance_ocid (not instance JSON)
+    # These run in parallel with instance get — saves ~2s
+    local _w0_pids=()
     (oci compute instance get --instance-id "$instance_ocid" --region "$region" --output json > "$_dtmp/instance.json" 2>/dev/null) &
     local _inst_pid=$!
     if command -v kubectl &>/dev/null; then
         (kubectl get nodes -o json > "$_dtmp/k8s_nodes.json" 2>/dev/null) &
+        _w0_pids+=($!)
     fi
+    # These don't need AD or image-id — only instance_ocid + compartment_id
+    (oci compute vnic-attachment list --compartment-id "$compartment_id" --instance-id "$instance_ocid" --region "$region" --output json > "$_dtmp/vnic_attach.json" 2>/dev/null) &
+    _w0_pids+=($!)
+    (oci compute volume-attachment list --compartment-id "$compartment_id" --instance-id "$instance_ocid" --region "$region" --output json > "$_dtmp/vol_attach.json" 2>/dev/null) &
+    _w0_pids+=($!)
+    (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$instance_ocid" --region "$region" --all --output json > "$_dtmp/inst_wr.json" 2>/dev/null) &
+    _w0_pids+=($!)
+    (oci instance-agent command-execution list --compartment-id "$compartment_id" --instance-id "$instance_ocid" --region "$region" --sort-by TIMECREATED --sort-order DESC --limit 20 --output json > "$_dtmp/inst_rc.json" 2>/dev/null) &
+    _w0_pids+=($!)
 
-    # Wait for instance (kubectl continues in background)
+    # Wait for instance get (others continue in background)
     wait "$_inst_pid" 2>/dev/null
 
     local instance_json=""
     [[ -s "$_dtmp/instance.json" ]] && instance_json=$(cat "$_dtmp/instance.json")
 
     if [[ -z "$instance_json" ]] || ! jq -e '.data' <<< "$instance_json" > /dev/null 2>&1; then
+        # Wait for background jobs before returning
+        for _pid in "${_w0_pids[@]}"; do wait "$_pid" 2>/dev/null; done
         _step_complete "instance(failed)"
         _step_finish
         echo -e "${RED}Failed to fetch instance details${NC}"
@@ -36695,7 +36709,7 @@ display_instance_details() {
     fi
     _step_complete "instance"
 
-    # ========== PARALLEL WAVE PREFETCH (all instance data) ==========
+    # ========== PARALLEL WAVE 1: Needs instance JSON (AD, image-id, OKE tags) ==========
     _step_active "attachments"
 
     local _pids=()
@@ -36706,8 +36720,7 @@ display_instance_details() {
     local image_id
     image_id=$(jq -r '.data["image-id"] // empty' <<< "$instance_json")
 
-    # Early-parse OKE tags (needed to add OKE fetches to wave 1)
-    # Check system-tags first (orcl-containerengine), then defined-tags, then freeform-tags
+    # Early-parse OKE tags
     local oke_cluster_id oke_nodepool_id oke_node_type
     oke_cluster_id=$(jq -r '.data["system-tags"]["orcl-containerengine"]["Cluster"] // empty' <<< "$instance_json")
     oke_nodepool_id=$(jq -r '.data["system-tags"]["orcl-containerengine"]["NodePool"] // empty' <<< "$instance_json")
@@ -36717,14 +36730,8 @@ display_instance_details() {
     [[ -z "$oke_cluster_id" ]] && oke_cluster_id=$(jq -r '.data["freeform-tags"]["oke-clusterId"] // empty' <<< "$instance_json")
     [[ -z "$oke_nodepool_id" ]] && oke_nodepool_id=$(jq -r '.data["freeform-tags"]["oke-nodePoolId"] // empty' <<< "$instance_json")
 
-    #--- WAVE 1: All independent fetches (only need instance_ocid/compartment_id) ---
-    # K8s nodes already running in background from above — don't launch again
-    _pids=()
-    (oci compute vnic-attachment list --compartment-id "$compartment_id" --instance-id "$instance_ocid" --region "$region" --output json > "$_dtmp/vnic_attach.json" 2>/dev/null) &
-    _pids+=($!)
+    # Boot volume needs AD (from instance JSON)
     (oci compute boot-volume-attachment list --compartment-id "$compartment_id" --availability-domain "$ad_for_query" --instance-id "$instance_ocid" --region "$region" --output json > "$_dtmp/bv_attach.json" 2>/dev/null) &
-    _pids+=($!)
-    (oci compute volume-attachment list --compartment-id "$compartment_id" --instance-id "$instance_ocid" --region "$region" --output json > "$_dtmp/vol_attach.json" 2>/dev/null) &
     _pids+=($!)
     if [[ -n "$image_id" ]]; then
         (oci compute image get --image-id "$image_id" --region "$region" --output json > "$_dtmp/image.json" 2>/dev/null) &
@@ -36751,13 +36758,10 @@ display_instance_details() {
             _pids+=($!)
         fi
     fi
-    # Instance work requests (generic work-requests API)
-    (oci work-requests work-request list --compartment-id "$compartment_id" --resource-id "$instance_ocid" --region "$region" --all --output json > "$_dtmp/inst_wr.json" 2>/dev/null) &
-    _pids+=($!)
-    # Run commands (instance agent command executions)
-    (oci instance-agent command-execution list --compartment-id "$compartment_id" --instance-id "$instance_ocid" --region "$region" --sort-by TIMECREATED --sort-order DESC --limit 20 --output json > "$_dtmp/inst_rc.json" 2>/dev/null) &
-    _pids+=($!)
+    # Work requests and run commands already launched in wave 0 — just wait for all
     [[ ${#_pids[@]} -gt 0 ]] && wait "${_pids[@]}"
+    # Also wait for wave 0 background jobs (kubectl, vnics, volumes, WR, RC)
+    for _pid in "${_w0_pids[@]}"; do wait "$_pid" 2>/dev/null; done
     
     # Read wave 1 results
     local cached_vnic_attachments="" cached_boot_vol_attachments="" cached_block_vol_attachments=""
