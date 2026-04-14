@@ -2848,18 +2848,17 @@ fetch_compute_hosts() {
         return 1
     fi
 
-    # Write cache header + pipe-delimited rows
+    # Write cache header + pipe-delimited rows (single atomic write)
     {
         echo "# Compute Hosts"
         echo "# Format: DisplayName|State|Health|Shape|Platform|AD|FD|InstanceID|HostOCID|HPCIslandID|NetworkBlockID|LocalBlockID|HostGroupID|CapResID|GPUFabricID|HasImpacted|TimeCreated|TimeUpdated|CompartmentID"
+        jq -r '.data.items[]? |
+            "\(.["display-name"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.health // "N/A")|\(.shape // "N/A")|\(.platform // "N/A")|\(.["availability-domain"] // "N/A")|\(.["fault-domain"] // "N/A")|\(.["instance-id"] // "N/A")|\(.id // "N/A")|\(.["hpc-island-id"] // "N/A")|\(.["network-block-id"] // "N/A")|\(.["local-block-id"] // "N/A")|\(.["compute-host-group-id"] // "N/A")|\(.["capacity-reservation-id"] // "N/A")|\(.["gpu-memory-fabric-id"] // "N/A")|\(.["has-impacted-components"] // false)|\(.["time-created"] // "N/A")|\(.["time-updated"] // "N/A")|\(.["compartment-id"] // "N/A")"
+        ' <<< "$_json" 2>/dev/null
     } | _cache_write "$COMPUTE_HOST_CACHE"
 
     # Save raw JSON for json viewer (j)
     echo "$_json" | _cache_write "$COMPUTE_HOST_JSON_CACHE"
-
-    jq -r '.data.items[]? |
-        "\(.["display-name"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.health // "N/A")|\(.shape // "N/A")|\(.platform // "N/A")|\(.["availability-domain"] // "N/A")|\(.["fault-domain"] // "N/A")|\(.["instance-id"] // "N/A")|\(.id // "N/A")|\(.["hpc-island-id"] // "N/A")|\(.["network-block-id"] // "N/A")|\(.["local-block-id"] // "N/A")|\(.["compute-host-group-id"] // "N/A")|\(.["capacity-reservation-id"] // "N/A")|\(.["gpu-memory-fabric-id"] // "N/A")|\(.["has-impacted-components"] // false)|\(.["time-created"] // "N/A")|\(.["time-updated"] // "N/A")|\(.["compartment-id"] // "N/A")"
-    ' <<< "$_json" >> "$COMPUTE_HOST_CACHE" 2>/dev/null
 
     return 0
 }
@@ -9519,16 +9518,17 @@ list_maintenance_events() {
         _me_pids+=($!)
     fi
 
-    # Announcements (only when linked)
-    if [[ "$me_link_announcements" == "true" ]]; then
-        (build_announcement_lookup "$compartment_id" 2>/dev/null && touch "$_me_ptmp/ann_done") &
-        _me_pids+=($!)
-    fi
-
     # Wait for all parallel fetches
     for _pid in "${_me_pids[@]}"; do wait "$_pid" 2>/dev/null; done
     _QUIET_SPINNERS=0
     _step_complete "parallel fetches(${#_me_pids[@]})"
+
+    # Announcements run in parent shell (populates global arrays, not subshell-safe)
+    if [[ "$me_link_announcements" == "true" ]]; then
+        _step_active "Announcements"
+        build_announcement_lookup "$compartment_id"
+        _step_complete "Announcements(${#INSTANCE_ANNOUNCEMENTS[@]})"
+    fi
 
     # Read parallel results
     local me_k8s_lookup=""
