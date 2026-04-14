@@ -37289,14 +37289,14 @@ display_instance_details() {
         _ui_subheader "OKE Node Pool" 0
 
         local _np_name_d="N/A" _np_state_d="" _np_k8s_d="" _np_shape_d="" _cl_name_d="N/A"
-        if [[ -s "$_dtmp/oke_nodepool.json" ]]; then
-            _np_name_d=$(jq -r '.data.name // "N/A"' "$_dtmp/oke_nodepool.json" 2>/dev/null)
-            _np_state_d=$(jq -r '.data["lifecycle-state"] // "N/A"' "$_dtmp/oke_nodepool.json" 2>/dev/null)
-            _np_k8s_d=$(jq -r '.data["kubernetes-version"] // "N/A"' "$_dtmp/oke_nodepool.json" 2>/dev/null)
-            _np_shape_d=$(jq -r '.data["node-shape"] // "N/A"' "$_dtmp/oke_nodepool.json" 2>/dev/null)
+        if [[ -s "$_inst_oke_dir/oke_nodepool.json" ]]; then
+            _np_name_d=$(jq -r '.data.name // "N/A"' "$_inst_oke_dir/oke_nodepool.json" 2>/dev/null)
+            _np_state_d=$(jq -r '.data["lifecycle-state"] // "N/A"' "$_inst_oke_dir/oke_nodepool.json" 2>/dev/null)
+            _np_k8s_d=$(jq -r '.data["kubernetes-version"] // "N/A"' "$_inst_oke_dir/oke_nodepool.json" 2>/dev/null)
+            _np_shape_d=$(jq -r '.data["node-shape"] // "N/A"' "$_inst_oke_dir/oke_nodepool.json" 2>/dev/null)
         fi
-        if [[ -s "$_dtmp/oke_cluster.json" ]]; then
-            _cl_name_d=$(jq -r '.data.name // "N/A"' "$_dtmp/oke_cluster.json" 2>/dev/null)
+        if [[ -s "$_inst_oke_dir/oke_cluster.json" ]]; then
+            _cl_name_d=$(jq -r '.data.name // "N/A"' "$_inst_oke_dir/oke_cluster.json" 2>/dev/null)
         fi
 
         local _np_sc; _np_sc=$(color_resource_state "${_np_state_d}")
