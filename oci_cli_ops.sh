@@ -58244,6 +58244,14 @@ manage_compute_host_groups() {
             return
         fi
 
+        # Ensure compute host cache is available for host count column
+        if [[ ! -f "$COMPUTE_HOST_CACHE" ]] && [[ -n "${TENANCY_ID:-}" ]]; then
+            _step_active "compute hosts"
+            fetch_compute_hosts 2>/dev/null
+            _step_complete "compute hosts($(_clc "$COMPUTE_HOST_CACHE"))"
+            _step_finish
+        fi
+
         # ── Display list ──
         _ui_subheader "Existing Host Groups" 0
         echo ""
