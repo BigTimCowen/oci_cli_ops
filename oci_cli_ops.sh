@@ -56833,37 +56833,67 @@ _ch_fetch_impacted_details() {
     local _imp_total=${#_imp_ocids[@]}
     [[ "$_imp_total" -eq 0 ]] && return 0
 
-    # Skip if detail cache is already populated and fresh
     [[ -z "$COMPUTE_HOST_DETAIL_DIR" || "$COMPUTE_HOST_DETAIL_DIR" != */compute_host_detail ]] && return 1
     mkdir -p "$COMPUTE_HOST_DETAIL_DIR"
-    local _existing
-    _existing=$(find "$COMPUTE_HOST_DETAIL_DIR" -maxdepth 1 -type f -name "*.json" 2>/dev/null | wc -l)
-    if [[ "$_existing" -ge "$_imp_total" ]]; then
-        # Check freshness of first file against COMPUTE_HOST_CACHE
-        local _cache_mtime _detail_mtime
-        _cache_mtime=$(stat -c %Y "$COMPUTE_HOST_CACHE" 2>/dev/null || echo 0)
-        _detail_mtime=$(stat -c %Y "$COMPUTE_HOST_DETAIL_DIR"/*.json 2>/dev/null | head -1 || echo 0)
-        if [[ "$_detail_mtime" -ge "$_cache_mtime" ]]; then
-            return 0  # Detail cache is fresh
+
+    # Check freshness — skip if impact cache is fresh and all detail files exist
+    if is_cache_fresh "$COMPUTE_HOST_IMPACT_CACHE" 2>/dev/null; then
+        local _existing
+        _existing=$(find "$COMPUTE_HOST_DETAIL_DIR" -maxdepth 1 -type f -name "*.json" 2>/dev/null | wc -l)
+        if [[ "$_existing" -ge "$_imp_total" ]]; then
+            _step_complete "impacted details(${_imp_total} cached)"
+            return 0
         fi
     fi
 
-    # Parallel fetch with progress bar
-    _step_active "impacted details(${_imp_total})"
-    local _ch_pids=()
+    # Determine which hosts need fetching (skip already-cached detail files)
+    local -a _to_fetch=()
     for _ocid in "${_imp_ocids[@]}"; do
         local _suffix="${_ocid##*.}"
-        (
-            oci compute compute-host get \
-                --compute-host-id "$_ocid" \
-                --region "$region" \
-                --output json > "$COMPUTE_HOST_DETAIL_DIR/${_suffix}.json" 2>/dev/null
-        ) &
-        _ch_pids+=($!)
+        if [[ -s "$COMPUTE_HOST_DETAIL_DIR/${_suffix}.json" ]]; then
+            # Check if file is newer than the host list cache
+            local _cache_mtime _detail_mtime
+            _cache_mtime=$(stat -c %Y "$COMPUTE_HOST_CACHE" 2>/dev/null || stat -f %m "$COMPUTE_HOST_CACHE" 2>/dev/null || echo 0)
+            _detail_mtime=$(stat -c %Y "$COMPUTE_HOST_DETAIL_DIR/${_suffix}.json" 2>/dev/null || stat -f %m "$COMPUTE_HOST_DETAIL_DIR/${_suffix}.json" 2>/dev/null || echo 0)
+            [[ "$_detail_mtime" -ge "$_cache_mtime" ]] && continue
+        fi
+        _to_fetch+=("$_ocid")
     done
 
-    _wait_pids "ch-detail" "${_ch_pids[@]}" || true
-    _step_complete "impacted details(${_imp_total})"
+    local _fetch_ct=${#_to_fetch[@]}
+    if [[ "$_fetch_ct" -eq 0 ]]; then
+        _step_complete "impacted details(${_imp_total} cached)"
+        return 0
+    fi
+
+    # Batched parallel fetch — max 10 concurrent to avoid API rate limits
+    local _batch_size=10
+    _step_active "impacted details(${_fetch_ct}/${_imp_total})"
+    local _fetched=0
+
+    for (( _bi=0; _bi < _fetch_ct; _bi += _batch_size )); do
+        local _ch_pids=()
+        local _batch_end=$(( _bi + _batch_size ))
+        [[ $_batch_end -gt $_fetch_ct ]] && _batch_end=$_fetch_ct
+
+        for (( _bj=_bi; _bj < _batch_end; _bj++ )); do
+            local _ocid="${_to_fetch[$_bj]}"
+            local _suffix="${_ocid##*.}"
+            (
+                oci compute compute-host get \
+                    --compute-host-id "$_ocid" \
+                    --region "$region" \
+                    --output json > "$COMPUTE_HOST_DETAIL_DIR/${_suffix}.json" 2>/dev/null
+            ) &
+            _ch_pids+=($!)
+        done
+
+        # Wait for this batch before starting next
+        for _pid in "${_ch_pids[@]}"; do wait "$_pid" 2>/dev/null; done
+        (( _fetched += ${#_ch_pids[@]} ))
+    done
+
+    _step_complete "impacted details(${_fetched} fetched, ${_imp_total} total)"
 }
 
 #--------------------------------------------------------------------------------
