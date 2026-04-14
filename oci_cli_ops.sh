@@ -9473,42 +9473,78 @@ list_maintenance_events() {
     fi
     
     #==========================================================================
-    # Fetch K8s nodes and OCI instances for cross-reference
+    # Fetch K8s nodes, OCI instances, compute hosts, GPU data in PARALLEL
     #==========================================================================
-    _step_active "K8s nodes"
+    local _me_ptmp="${TEMP_DIR}/me_parallel_$$"
+    mkdir -p "$_me_ptmp"
+    local _me_pids=()
 
-    # K8s lookup: providerID → node_name|ready_status|unschedulable|taint_count|taint_names|serial_number
-    local me_k8s_lookup=""
-    me_k8s_lookup=$(kubectl get nodes -o json 2>/dev/null | jq -r '
+    # Wave 1: All independent fetches in parallel
+    _step_active "parallel fetches"
+
+    # K8s nodes
+    (kubectl get nodes -o json 2>/dev/null | jq -r '
         .items[] |
         "\(.spec.providerID // "")|\(.metadata.name)|\(.status.conditions[] | select(.type=="Ready") | .status)|\(.spec.unschedulable // false)|\(.spec.taints // [] | length)|\(.spec.taints // [] | [.[].key] | join(","))|\(.metadata.labels["oci.oraclecloud.com/host.serial_number"] // "N/A")"
-    ' 2>/dev/null)
-    _step_complete "K8s nodes"
+    ' > "$_me_ptmp/k8s_nodes" 2>/dev/null) &
+    _me_pids+=($!)
 
-    # Pod counts per node
-    _step_active "Pods"
-    local me_pods_per_node
-    me_pods_per_node=$(kubectl get pods --all-namespaces --field-selector=status.phase=Running \
-        -o custom-columns=NODE:.spec.nodeName --no-headers 2>/dev/null | sort | uniq -c | awk '{print $2"|"$1}')
-    _step_complete "Pods"
+    # Pods per node
+    (kubectl get pods --all-namespaces --field-selector=status.phase=Running \
+        -o custom-columns=NODE:.spec.nodeName --no-headers 2>/dev/null | sort | uniq -c | awk '{print $2"|"$1}' > "$_me_ptmp/pods" 2>/dev/null) &
+    _me_pids+=($!)
 
-    # Instance lookup: instance_ocid → display_name|shape|state|ad|gpu_mem_cluster
-    # Uses shared INSTANCE_LIST_CACHE (same cache as o4 announcements view)
+    # Instances (use cache if fresh)
+    if ! is_cache_fresh "$INSTANCE_LIST_CACHE" || [[ ! -s "$INSTANCE_LIST_CACHE" ]]; then
+        (oci compute instance list --compartment-id "$compartment_id" --region "$region" --all --output json > "$_me_ptmp/instances.json" 2>/dev/null) &
+        _me_pids+=($!)
+    fi
+
+    # Compute hosts (use cache if fresh)
+    if ! is_cache_fresh "$COMPUTE_HOST_CACHE"; then
+        _QUIET_SPINNERS=1
+        (fetch_compute_hosts 2>/dev/null && touch "$_me_ptmp/hosts_done") &
+        _me_pids+=($!)
+    fi
+
+    # GPU clusters (use cache if fresh)
+    if ! is_cache_fresh "$CLUSTER_CACHE" || ! is_cache_fresh "$INSTANCE_CLUSTER_MAP_CACHE"; then
+        (fetch_gpu_clusters 2>/dev/null && touch "$_me_ptmp/clusters_done") &
+        _me_pids+=($!)
+    fi
+
+    # GPU fabrics (use cache if fresh)
+    if ! is_cache_fresh "$FABRIC_CACHE"; then
+        (fetch_gpu_fabrics 2>/dev/null && touch "$_me_ptmp/fabrics_done") &
+        _me_pids+=($!)
+    fi
+
+    # Announcements (only when linked)
+    if [[ "$me_link_announcements" == "true" ]]; then
+        (build_announcement_lookup "$compartment_id" 2>/dev/null && touch "$_me_ptmp/ann_done") &
+        _me_pids+=($!)
+    fi
+
+    # Wait for all parallel fetches
+    for _pid in "${_me_pids[@]}"; do wait "$_pid" 2>/dev/null; done
+    _QUIET_SPINNERS=0
+    _step_complete "parallel fetches(${#_me_pids[@]})"
+
+    # Read parallel results
+    local me_k8s_lookup=""
+    [[ -s "$_me_ptmp/k8s_nodes" ]] && me_k8s_lookup=$(cat "$_me_ptmp/k8s_nodes")
+
+    local me_pods_per_node=""
+    [[ -s "$_me_ptmp/pods" ]] && me_pods_per_node=$(cat "$_me_ptmp/pods")
+
+    # Merge instance data into cache if freshly fetched
     local me_inst_temp _me_inst_ct
     me_inst_temp=$(create_temp_file) || return 1
-    if is_cache_fresh "$INSTANCE_LIST_CACHE" && [[ -s "$INSTANCE_LIST_CACHE" ]]; then
-        _me_inst_ct=$(jq '.data | length' "$INSTANCE_LIST_CACHE" 2>/dev/null) || _me_inst_ct=0
-        _step_complete "Instances(${_me_inst_ct} cached)"
-    else
-        _step_active "Instances"
-        oci compute instance list \
-            --compartment-id "$compartment_id" \
-            --region "$region" \
-            --all \
-            --output json 2>/dev/null | _cache_write "$INSTANCE_LIST_CACHE"
-        _me_inst_ct=$(jq '.data | length' "$INSTANCE_LIST_CACHE" 2>/dev/null) || _me_inst_ct=0
-        _step_complete "Instances(${_me_inst_ct})"
+    if [[ -s "$_me_ptmp/instances.json" ]]; then
+        cat "$_me_ptmp/instances.json" | _cache_write "$INSTANCE_LIST_CACHE"
     fi
+    _me_inst_ct=$(jq '.data | length' "$INSTANCE_LIST_CACHE" 2>/dev/null) || _me_inst_ct=0
+
     # Extract fields from cache into temp file for _ME_INST builder
     jq -r '
         .data[] |
@@ -9516,45 +9552,13 @@ list_maintenance_events() {
         "\(.id)|\(.["display-name"] // "N/A")|\(.shape // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["availability-domain"] // "N/A")|\(.["freeform-tags"]["oci:compute:gpumemorycluster"] // "N/A")"
     ' "$INSTANCE_LIST_CACHE" > "$me_inst_temp" 2>/dev/null
 
-    # Build announcement lookup (only when linked)
-    if [[ "$me_link_announcements" == "true" ]]; then
-        _step_active "Announcements"
-        build_announcement_lookup "$compartment_id"
-        if is_cache_fresh "$ANNOUNCEMENTS_LIST_CACHE"; then
-            _step_complete "Announcements(${#INSTANCE_ANNOUNCEMENTS[@]} cached)"
-        else
-            _step_complete "Announcements(${#INSTANCE_ANNOUNCEMENTS[@]})"
-        fi
-    fi
+    rm -rf "$_me_ptmp" 2>/dev/null
 
-    # Additional fetches — suppress sub-function spinners (step-progress handles display)
-    _QUIET_SPINNERS=1
-
-    if is_cache_fresh "$COMPUTE_HOST_CACHE"; then
-        _step_complete "Compute hosts($(_clc "$COMPUTE_HOST_CACHE") cached)"
-    else
-        _step_active "Compute hosts"
-        fetch_compute_hosts
-        _step_complete "Compute hosts($(_clc "$COMPUTE_HOST_CACHE"))"
-    fi
-
-    if is_cache_fresh "$CLUSTER_CACHE" && is_cache_fresh "$INSTANCE_CLUSTER_MAP_CACHE"; then
-        _step_complete "GPU clusters($(_clc "$CLUSTER_CACHE") cached)"
-    else
-        _step_active "GPU clusters"
-        fetch_gpu_clusters
-        _step_complete "GPU clusters($(_clc "$CLUSTER_CACHE"))"
-    fi
-
-    if is_cache_fresh "$FABRIC_CACHE"; then
-        _step_complete "GPU fabrics($(_clc "$FABRIC_CACHE") cached)"
-    else
-        _step_active "GPU fabrics"
-        fetch_gpu_fabrics
-        _step_complete "GPU fabrics($(_clc "$FABRIC_CACHE"))"
-    fi
-
-    _QUIET_SPINNERS=0
+    # Show individual cache status
+    _step_complete "K8s($(echo "$me_k8s_lookup" | grep -c . 2>/dev/null || echo 0))"
+    _step_complete "Instances(${_me_inst_ct})"
+    _step_complete "Hosts($(_clc "$COMPUTE_HOST_CACHE"))"
+    _step_complete "GPU($(_clc "$CLUSTER_CACHE")/$(_clc "$FABRIC_CACHE"))"
 
     #==========================================================================
     # Pre-build associative arrays for O(1) lookups (replaces per-row grep|cut)
@@ -9641,6 +9645,14 @@ list_maintenance_events() {
     local filtered_evt_ids_file
     filtered_evt_ids_file=$(create_temp_file) || true
 
+    # Pre-build reason lookup for O(1) access (avoids per-event jq calls)
+    declare -A _ME_REASON_MAP=()
+    if [[ "$filter_type" == reason:* ]]; then
+        while IFS='|' read -r _mr_id _mr_reason; do
+            [[ -n "$_mr_id" ]] && _ME_REASON_MAP[$_mr_id]="$_mr_reason"
+        done < <(jq -r '.data[] | "\(.id)|\(.["maintenance-reason"] // "N/A")"' "$cache_file" 2>/dev/null)
+    fi
+
     while IFS='|' read -r _filt_id _filt_inst_id _filt_lifecycle _filt_time_finished; do
         [[ -z "$_filt_id" ]] && continue
 
@@ -9661,9 +9673,7 @@ list_maintenance_events() {
             [[ "${_filt_lifecycle^^}" != "${filter_type}" ]] && continue
         elif [[ "$filter_type" == reason:* ]]; then
             local _filt_reason_target="${filter_type#reason:}"
-            local _filt_evt_reason
-            _filt_evt_reason=$(jq -r --arg eid "$_filt_id" '.data[] | select(.id == $eid) | .["maintenance-reason"] // "N/A"' "$cache_file" 2>/dev/null)
-            [[ "${_filt_evt_reason}" != "${_filt_reason_target}" ]] && continue
+            [[ "${_ME_REASON_MAP[$_filt_id]:-N/A}" != "${_filt_reason_target}" ]] && continue
         fi
 
         echo "$_filt_id" >> "$filtered_evt_ids_file"
@@ -9729,7 +9739,7 @@ list_maintenance_events() {
             fault_fetch_pids+=($!)
             ((fault_fetch_count++))
 
-            if [[ $fault_fetch_count -ge 10 ]]; then
+            if [[ $fault_fetch_count -ge 20 ]]; then
                 _wait_with_timeout 120 "${fault_fetch_pids[@]}"
                 fault_fetch_pids=()
                 fault_fetch_count=0
