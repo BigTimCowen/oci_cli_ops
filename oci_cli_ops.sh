@@ -37361,7 +37361,10 @@ display_instance_details() {
             printf "${WHITE}%-10s${NC}${taint_color}%-30s${NC}\n" "Taint:" "$taint_info"
         fi
     else
-        printf "${WHITE}%-10s${NC}${YELLOW}%-50s${NC}\n" "Status:" "Not in cluster (not joined or not found)"
+        local _kctx=""
+        _kctx=$(kubectl config current-context 2>/dev/null) || _kctx="(no context)"
+        printf "${WHITE}%-10s${NC}${YELLOW}%s${NC}\n" "Status:" "Not found in local kubeconfig"
+        printf "${WHITE}%-10s${NC}${GRAY}%s${NC}\n" "Context:" "$_kctx"
     fi
     
     # ========== NETWORK / VNIC INFORMATION (Single Line per VNIC) ==========
