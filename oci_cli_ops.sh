@@ -34130,33 +34130,41 @@ manage_compute_instances() {
         declare -A INSTANCE_INDEX_MAP=()
         local instance_idx=0
 
-        # Fetch compute hosts (parallel, best-effort for impact indicator)
-        _step_active "compute hosts"
+        # Fetch compute hosts + K8s data in parallel (both independent of instances)
+        local _k8s_tmp="${TEMP_DIR}/k8s_nodes_$$" _pods_tmp="${TEMP_DIR}/k8s_pods_$$"
+        local _c1_pids=()
+
+        _step_active "k8s + hosts"
+
+        # K8s nodes (background)
+        (kubectl get nodes -o json > "$_k8s_tmp" 2>/dev/null) &
+        _c1_pids+=($!)
+
+        # K8s pods (background)
+        (kubectl get pods --all-namespaces --field-selector=status.phase=Running \
+            -o custom-columns=NODE:.spec.nodeName --no-headers > "$_pods_tmp" 2>/dev/null) &
+        _c1_pids+=($!)
+
+        # Compute hosts (background, if cache stale)
         local _ch_cached=""
         if is_cache_fresh "$COMPUTE_HOST_CACHE"; then
             _ch_cached=" cached"
         else
-            fetch_compute_hosts 2>/dev/null || true
-            [[ -f "$COMPUTE_HOST_CACHE" ]] && _ch_cached="" || _ch_cached=" n/a"
+            (_QUIET_SPINNERS=1; fetch_compute_hosts 2>/dev/null) &
+            _c1_pids+=($!)
         fi
-        _step_complete "compute hosts($(_clc "$COMPUTE_HOST_CACHE" 2>/dev/null || echo "0")${_ch_cached})"
 
-        # Fetch K8s data (only when instances exist)
-        local _k8s_tmp="${TEMP_DIR}/k8s_nodes_$$" _pods_tmp="${TEMP_DIR}/k8s_pods_$$"
-        _step_active "k8s nodes"
-        (kubectl get nodes -o json > "$_k8s_tmp" 2>/dev/null) &
-        local _k8s_pid=$!
-        (kubectl get pods --all-namespaces --field-selector=status.phase=Running \
-            -o custom-columns=NODE:.spec.nodeName --no-headers > "$_pods_tmp" 2>/dev/null) &
-        local _pods_pid=$!
-        wait "$_k8s_pid" 2>/dev/null
-        wait "$_pods_pid" 2>/dev/null
+        # Wait for all parallel fetches
+        for _pid in "${_c1_pids[@]}"; do wait "$_pid" 2>/dev/null; done
+
+        [[ -f "$COMPUTE_HOST_CACHE" ]] && _ch_cached="${_ch_cached:- cached}" || _ch_cached=" n/a"
+        _step_complete "compute hosts($(_clc "$COMPUTE_HOST_CACHE" 2>/dev/null || echo "0")${_ch_cached})"
 
         local k8s_nodes_json
         k8s_nodes_json=$(cat "$_k8s_tmp" 2>/dev/null)
         rm -f "$_k8s_tmp"
 
-        # Process pods per node from background result (custom-columns = node names only, no JSON)
+        # Process pods per node from background result
         local pods_per_node
         pods_per_node=$(sort "$_pods_tmp" 2>/dev/null | uniq -c | awk '{print $2"|"$1}')
         rm -f "$_pods_tmp"
