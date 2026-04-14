@@ -37108,20 +37108,20 @@ display_instance_details() {
     echo ""
     _ui_subheader "Basic Info" 0
     printf "${WHITE}%-10s${NC}${GREEN}%s${NC}\n" "Name:" "$display_name"
-    printf "${WHITE}%-10s${NC}${GRAY}%s${NC}\n" "OCID:" "$instance_ocid"
-    printf "${WHITE}%-10s${NC}${state_color}%-12s${NC}  ${WHITE}%-10s${NC}%-22s  ${WHITE}%-8s${NC}%s\n" "State:" "$state" "Created:" "${time_created:0:19}" "Launch:" "$launch_mode"
-    printf "${WHITE}%-10s${NC}%-12s  ${WHITE}%-10s${NC}%s\n" "AD:" "${ad##*:}" "FD:" "${fd##*-}"
+    printf "${WHITE}%-10s${NC}${YELLOW}%s${NC}\n" "OCID:" "$instance_ocid"
+    printf "${WHITE}%-10s${NC}${state_color}%-12s${NC}  ${WHITE}%-10s${NC}${CYAN}%-22s${NC}  ${WHITE}%-8s${NC}${CYAN}%s${NC}\n" "State:" "$state" "Created:" "${time_created:0:19}" "Launch:" "$launch_mode"
+    printf "${WHITE}%-10s${NC}${CYAN}%-12s${NC}  ${WHITE}%-10s${NC}${CYAN}%s${NC}\n" "AD:" "${ad##*:}" "FD:" "${fd##*-}"
     
     # ========== SHAPE & COMPUTE (Compact) ==========
     echo ""
     _ui_subheader "Shape & Resources" 0
-    printf "${WHITE}%-10s${NC}${CYAN}%-20s${NC}  ${WHITE}%-8s${NC}%-8s  ${WHITE}%-8s${NC}%-10s\n" "Shape:" "${shape:0:20}" "OCPUs:" "$shape_ocpus" "Memory:" "${shape_memory_gb} GB"
+    printf "${WHITE}%-10s${NC}${CYAN}%-20s${NC}  ${WHITE}%-8s${NC}${CYAN}%-8s${NC}  ${WHITE}%-8s${NC}${CYAN}%-10s${NC}\n" "Shape:" "${shape:0:20}" "OCPUs:" "$shape_ocpus" "Memory:" "${shape_memory_gb} GB"
 
     local gpu_info="N/A"
     if [[ "$shape_gpus" != "0" && "$shape_gpus" != "N/A" ]]; then
         gpu_info="${shape_gpus}x ${shape_gpu_desc:-GPU}"
     fi
-    printf "${WHITE}%-10s${NC}${GREEN}%-20s${NC}  ${WHITE}%-8s${NC}%-8s  ${WHITE}%-8s${NC}%-10s\n" "GPUs:" "$gpu_info" "NetBW:" "${shape_network_bw}Gb" "VNICs:" "$shape_max_nics"
+    printf "${WHITE}%-10s${NC}${CYAN}%-20s${NC}  ${WHITE}%-8s${NC}${CYAN}%-8s${NC}  ${WHITE}%-8s${NC}${CYAN}%-10s${NC}\n" "GPUs:" "$gpu_info" "NetBW:" "${shape_network_bw}Gb" "VNICs:" "$shape_max_nics"
     # K8s host labels: Host ID, Rack ID, Serial Number (single line)
     local _k8s_host_parts=()
     [[ "$k8s_host_id" != "N/A" && -n "$k8s_host_id" ]]         && _k8s_host_parts+=("Host ID:$k8s_host_id")
@@ -37145,7 +37145,7 @@ display_instance_details() {
         image_os=$(jq -r '.data["operating-system"] // "N/A"' <<< "$cached_image_json")
         image_os_version=$(jq -r '.data["operating-system-version"] // "N/A"' <<< "$cached_image_json")
         echo -e "${WHITE}Name:${NC} ${GREEN}$image_name${NC}  ${GRAY}[${YELLOW}$image_id${GRAY}]${NC}"
-        echo -e "${WHITE}OS:${NC}   $image_os $image_os_version"
+        echo -e "${WHITE}OS:${NC}   ${CYAN}$image_os $image_os_version${NC}"
     elif [[ -n "$image_id" ]]; then
         echo -e "${WHITE}Name:${NC} ${GRAY}(not available)${NC}  ${GRAY}[${YELLOW}$image_id${GRAY}]${NC}"
     else
