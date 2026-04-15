@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.2"
-readonly SCRIPT_VERSION_DATE="2026-04-14"
+readonly SCRIPT_VERSION="3.34.3"
+readonly SCRIPT_VERSION_DATE="2026-04-15"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -9443,6 +9443,8 @@ list_maintenance_events() {
         SUCCEEDED)   echo -e "${YELLOW}Filter: Showing only SUCCEEDED events${NC}" ;;
         CANCELED)    echo -e "${YELLOW}Filter: Showing only CANCELED events${NC}" ;;
         SCHEDULED)   echo -e "${YELLOW}Filter: Showing only SCHEDULED events${NC}" ;;
+        reason:*)    echo -e "${YELLOW}Filter: Maintenance reason = ${WHITE}${filter_type#reason:}${NC}" ;;
+        fabric:*)    echo -e "${YELLOW}Filter: GPU Fabric = ${WHITE}${filter_type#fabric:}${NC}" ;;
         none)        ;;
     esac
     echo ""
@@ -9614,12 +9616,39 @@ list_maintenance_events() {
 
     # GPU memory cluster display name: instance OCID → cluster display name
     declare -A _ME_GPU_CLUSTER=()
+    declare -A _ME_INST_CLUSTER_OCID=()
     if [[ -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
         while IFS='|' read -r _gc_inst _gc_cid _gc_name; do
             [[ "$_gc_inst" == "#"* || -z "$_gc_inst" || -z "$_gc_name" ]] && continue
             _ME_GPU_CLUSTER[$_gc_inst]="$_gc_name"
+            [[ -n "$_gc_cid" ]] && _ME_INST_CLUSTER_OCID[$_gc_inst]="$_gc_cid"
         done < "$INSTANCE_CLUSTER_MAP_CACHE"
     fi
+
+    # Build cluster OCID → fabric name map (reuse: get_fabric_from_cluster semantics)
+    declare -A _ME_CLUSTER_FABRIC_SUFFIX=()
+    if [[ -f "$CLUSTER_CACHE" ]]; then
+        while IFS='|' read -r _cc_ocid _cc_name _cc_state _cc_fsuf _; do
+            [[ "$_cc_ocid" == "#"* || -z "$_cc_ocid" ]] && continue
+            [[ -n "$_cc_fsuf" && "$_cc_fsuf" != "N/A" ]] && _ME_CLUSTER_FABRIC_SUFFIX[$_cc_ocid]="$_cc_fsuf"
+        done < "$CLUSTER_CACHE"
+    fi
+    declare -A _ME_FABRIC_SUFFIX_NAME=()
+    if [[ -f "$FABRIC_CACHE" ]]; then
+        while IFS='|' read -r _fc_name _fc_last5 _; do
+            [[ "$_fc_name" == "#"* || -z "$_fc_name" || -z "$_fc_last5" ]] && continue
+            _ME_FABRIC_SUFFIX_NAME[$_fc_last5]="$_fc_name"
+        done < "$FABRIC_CACHE"
+    fi
+    # Instance OCID → fabric display name
+    declare -A _ME_FABRIC=()
+    for _mf_inst in "${!_ME_INST_CLUSTER_OCID[@]}"; do
+        local _mf_cid="${_ME_INST_CLUSTER_OCID[$_mf_inst]}"
+        local _mf_suf="${_ME_CLUSTER_FABRIC_SUFFIX[$_mf_cid]:-}"
+        [[ -z "$_mf_suf" ]] && continue
+        local _mf_name="${_ME_FABRIC_SUFFIX_NAME[$_mf_suf]:-}"
+        [[ -n "$_mf_name" ]] && _ME_FABRIC[$_mf_inst]="$_mf_name"
+    done
 
     #==========================================================================
     # Pre-build fault detail lookup: event_id → faultId~component~severity~description~impact~recommended
@@ -9692,6 +9721,9 @@ list_maintenance_events() {
         elif [[ "$filter_type" == reason:* ]]; then
             local _filt_reason_target="${filter_type#reason:}"
             [[ "${_ME_REASON_MAP[$_filt_id]:-N/A}" != "${_filt_reason_target}" ]] && continue
+        elif [[ "$filter_type" == fabric:* ]]; then
+            local _filt_fabric_target="${filter_type#fabric:}"
+            [[ "${_ME_FABRIC[$_filt_inst_id]:-}" != "${_filt_fabric_target}" ]] && continue
         fi
 
         echo "$_filt_id" >> "$filtered_evt_ids_file"
@@ -10755,6 +10787,7 @@ list_maintenance_events() {
                 echo -e "  ${GREEN}c${NC}   - CANCELED events"
                 echo -e "  ${GREEN}sc${NC}  - SCHEDULED events"
                 echo -e "  ${GREEN}re${NC}  - Filter by maintenance reason"
+                echo -e "  ${GREEN}fa${NC}  - Filter by GPU fabric"
                 echo -e "  ${GREEN}all${NC} - Clear filter (show all)"
                 echo ""
                 _ui_prompt "Filter" "1-5, b, show"
@@ -10796,6 +10829,44 @@ list_maintenance_events() {
                     if [[ "$_mr_sel" =~ ^[0-9]+$ ]] && [[ -n "${_MR_MAP[$_mr_sel]:-}" ]]; then
                         new_filter="reason:${_MR_MAP[$_mr_sel]}"
                     elif [[ -n "$_mr_sel" ]]; then
+                        echo -e "  ${RED}Invalid selection${NC}"
+                        continue
+                    else
+                        continue
+                    fi
+                    ;;
+                fa)
+                    # List unique GPU fabrics found across events' instances
+                    echo ""
+                    echo -e "  ${WHITE}GPU Fabrics found:${NC}"
+                    local _mf_i=0
+                    declare -A _MF_MAP=()
+                    declare -A _MF_COUNTS=()
+                    # Count events by fabric
+                    while IFS='|' read -r _mfe_id _mfe_iid _; do
+                        [[ -z "$_mfe_iid" ]] && continue
+                        local _mfe_fn="${_ME_FABRIC[$_mfe_iid]:-}"
+                        [[ -z "$_mfe_fn" ]] && continue
+                        ((_MF_COUNTS[$_mfe_fn]=${_MF_COUNTS[$_mfe_fn]:-0}+1))
+                    done < <(jq -r '.data[] | "\(.id)|\(.["instance-id"] // "")|"' "$cache_file" 2>/dev/null)
+                    # Sorted listing
+                    while IFS= read -r _mf_name; do
+                        [[ -z "$_mf_name" ]] && continue
+                        ((_mf_i++))
+                        _MF_MAP[$_mf_i]="$_mf_name"
+                        echo -e "    ${YELLOW}${_mf_i}${NC}) ${CYAN}${_mf_name}${NC}  ${GRAY}(${_MF_COUNTS[$_mf_name]} event(s))${NC}"
+                    done < <(printf '%s\n' "${!_MF_COUNTS[@]}" | sort)
+                    if [[ $_mf_i -eq 0 ]]; then
+                        echo -e "  ${GRAY}No GPU fabrics found for current events${NC}"
+                        continue
+                    fi
+                    echo ""
+                    echo -n -e "  ${CYAN}Select fabric [Enter to cancel]: ${NC}"
+                    local _mf_sel
+                    read -r _mf_sel
+                    if [[ "$_mf_sel" =~ ^[0-9]+$ ]] && [[ -n "${_MF_MAP[$_mf_sel]:-}" ]]; then
+                        new_filter="fabric:${_MF_MAP[$_mf_sel]}"
+                    elif [[ -n "$_mf_sel" ]]; then
                         echo -e "  ${RED}Invalid selection${NC}"
                         continue
                     else
