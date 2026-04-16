@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.4"
-readonly SCRIPT_VERSION_DATE="2026-04-15"
+readonly SCRIPT_VERSION="3.34.5"
+readonly SCRIPT_VERSION_DATE="2026-04-16"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -2053,14 +2053,19 @@ fetch_gpu_clusters() {
     [[ ${#_pids[@]} -gt 0 ]] && { _wait_pids "GPU-CLU" "${_pids[@]}" || true; }
 
     # Aggregate results from parallel outputs (check files exist)
+    # Dedup by first field (OCID) to prevent stale duplicates from partial re-fetches
     local _agg_clusters=0 _agg_instances=0
     if ls "$parallel_temp"/cluster_*.txt >/dev/null 2>&1; then
-        cat "$parallel_temp"/cluster_*.txt >> "$CLUSTER_CACHE" 2>/dev/null
-        _agg_clusters=$(wc -l < "$CLUSTER_CACHE" 2>/dev/null || echo 0)
+        { grep '^#' "$CLUSTER_CACHE" 2>/dev/null; cat "$parallel_temp"/cluster_*.txt; } \
+            | awk -F'|' '!/^#/ && !seen[$1]++ { print } /^#/ { print }' \
+            | _cache_write "$CLUSTER_CACHE"
+        _agg_clusters=$(grep -cv '^#' "$CLUSTER_CACHE" 2>/dev/null || echo 0)
     fi
     if ls "$parallel_temp"/instances_*.txt >/dev/null 2>&1; then
-        cat "$parallel_temp"/instances_*.txt >> "$INSTANCE_CLUSTER_MAP_CACHE" 2>/dev/null
-        _agg_instances=$(wc -l < "$INSTANCE_CLUSTER_MAP_CACHE" 2>/dev/null || echo 0)
+        { grep '^#' "$INSTANCE_CLUSTER_MAP_CACHE" 2>/dev/null; cat "$parallel_temp"/instances_*.txt; } \
+            | awk -F'|' '!/^#/ && !seen[$1]++ { print } /^#/ { print }' \
+            | _cache_write "$INSTANCE_CLUSTER_MAP_CACHE"
+        _agg_instances=$(grep -cv '^#' "$INSTANCE_CLUSTER_MAP_CACHE" 2>/dev/null || echo 0)
     fi
     # Merge per-cluster JSON files for JSON viewer
     if ls "$parallel_temp"/cluster_*.json >/dev/null 2>&1; then
