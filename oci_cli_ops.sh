@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.6"
+readonly SCRIPT_VERSION="3.34.7"
 readonly SCRIPT_VERSION_DATE="2026-04-21"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -33743,39 +33743,75 @@ _compute_search_instances() {
     local k8s_lookup="$1"
     local pods_per_node="$2"
     
-    # Pre-build searchable data: iid|name|state|shape|ad|ocid|k8s_node|cordon|taint|pods|time_created
-    local search_data
-    search_data=$(jq -r '
-        .data[] |
-        select(.["lifecycle-state"] != "TERMINATED") |
-        "\(.["time-created"] // "N/A")|\(.["display-name"])|\(.["lifecycle-state"])|\(.shape)|\(.["availability-domain"])|\(.["fault-domain"] // "N/A")|\(.id)"
-    ' "$INSTANCE_LIST_CACHE" 2>/dev/null | sort -t'|' -k1,1 | while IFS='|' read -r time_created name state shape ad fd ocid; do
-        ((idx++))
-        local iid="i${idx}"
-        
-        # K8s info
+    # Pre-build associative arrays for O(1) lookups (replaces per-row grep)
+    declare -A _sk8s=() _spods=() _simp=() _scluster=() _sfw=()
+
+    # K8s lookup: instance OCID → full record
+    while IFS= read -r _sl; do
+        [[ -z "$_sl" ]] && continue
+        local _sk_prov="${_sl%%|*}"
+        local _sk_ocid="$_sk_prov"
+        [[ "$_sk_prov" == *"ocid1."* ]] && _sk_ocid="${_sk_prov##*/}"
+        [[ "$_sk_ocid" == *"ocid1."* ]] && _sk8s[$_sk_ocid]="$_sl"
+    done <<< "$k8s_lookup"
+
+    # Pods per node
+    while IFS='|' read -r _sp_node _sp_cnt; do
+        [[ -n "$_sp_node" ]] && _spods[$_sp_node]="$_sp_cnt"
+    done <<< "$pods_per_node"
+
+    # Compute host impact: instance OCID → "true"
+    if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+        while IFS='|' read -r _ _ _ _ _ _ _ _si_inst _ _ _ _ _ _ _ _si_imp _; do
+            [[ -z "$_si_inst" || "$_si_inst" == "N/A" ]] && continue
+            [[ "$_si_imp" == "true" ]] && _simp[$_si_inst]="true"
+        done < <(grep -v '^#' "$COMPUTE_HOST_CACHE")
+    fi
+
+    # GPU cluster: instance OCID → cluster display name; firmware via fabric suffix
+    declare -A _sfw_by_suffix=()
+    if [[ -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
+        while IFS='|' read -r _sc_inst _sc_cid _sc_name; do
+            [[ "$_sc_inst" == "#"* || -z "$_sc_inst" ]] && continue
+            _scluster[$_sc_inst]="$_sc_name"
+            if [[ -n "$_sc_cid" && -f "$CLUSTER_CACHE" && -f "$FABRIC_CACHE" ]]; then
+                local _sc_fsuf=""
+                _sc_fsuf=$(grep "^${_sc_cid}|" "$CLUSTER_CACHE" 2>/dev/null | head -1 | cut -d'|' -f4)
+                if [[ -n "$_sc_fsuf" ]]; then
+                    if [[ -z "${_sfw_by_suffix[$_sc_fsuf]+x}" ]]; then
+                        local _sc_fw=""
+                        _sc_fw=$(grep -v '^#' "$FABRIC_CACHE" 2>/dev/null | awk -F'|' -v s="$_sc_fsuf" '$2==s {print $8; exit}')
+                        [[ -n "$_sc_fw" && "$_sc_fw" != "N/A" ]] && _sfw_by_suffix[$_sc_fsuf]="..${_sc_fw: -4}" || _sfw_by_suffix[$_sc_fsuf]="-"
+                    fi
+                    _sfw[$_sc_inst]="${_sfw_by_suffix[$_sc_fsuf]}"
+                fi
+            fi
+        done < "$INSTANCE_CLUSTER_MAP_CACHE"
+    fi
+
+    # Build searchable data file using O(1) lookups (no per-row grep)
+    local _search_file="${TEMP_DIR}/search_data_$$.txt"
+    local _sidx=0
+    declare -A _SEARCH_OCID_MAP=()
+
+    while IFS='|' read -r time_created name state shape ad fd ocid; do
+        [[ -z "$ocid" ]] && continue
+        ((_sidx++))
+        local iid="i${_sidx}"
+        _SEARCH_OCID_MAP[$iid]="$ocid"
+
+        # K8s info from associative array
         local k8s_node="" k8s_status="No" cordon_status="-" taint_status="-" pod_count="-"
         local host_id="-" rack_id="-" serial_num="-" clique_id="-"
-        local k8s_match
-        k8s_match=$(echo "$k8s_lookup" | grep -F "$ocid" 2>/dev/null)
+        local k8s_match="${_sk8s[$ocid]:-}"
         if [[ -n "$k8s_match" ]]; then
-            k8s_node=$(echo "$k8s_match" | cut -d'|' -f2)
-            local k8s_ready=$(echo "$k8s_match" | cut -d'|' -f3)
-            local new_node_taint=$(echo "$k8s_match" | cut -d'|' -f4)
-            local unschedulable=$(echo "$k8s_match" | cut -d'|' -f5)
-            host_id=$(echo "$k8s_match" | cut -d'|' -f7)
-            rack_id=$(echo "$k8s_match" | cut -d'|' -f8)
-            serial_num=$(echo "$k8s_match" | cut -d'|' -f9)
-            clique_id=$(echo "$k8s_match" | cut -d'|' -f10)
+            local k8s_ready="" new_node_taint="" unschedulable=""
+            IFS='|' read -r _ k8s_node k8s_ready new_node_taint unschedulable _ host_id rack_id serial_num clique_id _ <<< "$k8s_match"
             [[ -z "$clique_id" ]] && clique_id="-"
-
             [[ "$k8s_ready" == "True" ]] && k8s_status="Ready" || k8s_status="NotRdy"
             [[ "$unschedulable" == "true" ]] && cordon_status="Yes"
             [[ "$new_node_taint" != "N/A" && -n "$new_node_taint" ]] && taint_status="newNode"
-
-            local node_pods
-            node_pods=$(echo "$pods_per_node" | grep "^${k8s_node}|" | cut -d'|' -f2)
-            [[ -n "$node_pods" ]] && pod_count="$node_pods" || pod_count="0"
+            pod_count="${_spods[$k8s_node]:-0}"
         fi
 
         local time_display="$time_created"
@@ -33784,7 +33820,6 @@ _compute_search_instances() {
             time_display="${time_display/T/ }"
         fi
 
-        # Shorten AD: e.g. "xxxx:US-ASHBURN-AD-1" → "AD1"
         local ad_short="-"
         if [[ "$ad" == *-AD-* ]]; then
             ad_short="AD${ad##*-AD-}"
@@ -33792,50 +33827,27 @@ _compute_search_instances() {
             ad_short="${ad##*:}"
         fi
 
-        # Shorten FD values: FAULT-DOMAIN-1→FD1, FAULT-DOMAIN-2→FD2, FAULT-DOMAIN-3→FD3
         local fd_short="${fd}"
         fd_short="${fd_short/FAULT-DOMAIN-1/FD1}"
         fd_short="${fd_short/FAULT-DOMAIN-2/FD2}"
         fd_short="${fd_short/FAULT-DOMAIN-3/FD3}"
 
         local shape_trunc="${shape:0:20}"
-
-        # Check compute host impact status
         local imp_indicator=" "
-        if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
-            local _s_host_rec
-            _s_host_rec=$(grep -F "$ocid" "$COMPUTE_HOST_CACHE" 2>/dev/null | head -1)
-            if [[ -n "$_s_host_rec" ]]; then
-                local _s_has_imp
-                _s_has_imp=$(echo "$_s_host_rec" | cut -d'|' -f16)
-                [[ "$_s_has_imp" == "true" ]] && imp_indicator="I"
-            fi
-        fi
+        [[ "${_simp[$ocid]:-}" == "true" ]] && imp_indicator="I"
+        local fabric_name="${_scluster[$ocid]:--}"
+        local fw_ver="${_sfw[$ocid]:--}"
 
-        # GPU cluster lookup (if cache exists)
-        local fabric_name="-"
-        local fw_ver="-"
-        if [[ -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
-            local _s_cluster_line
-            _s_cluster_line=$(grep -F "$ocid" "$INSTANCE_CLUSTER_MAP_CACHE" 2>/dev/null | head -1)
-            if [[ -n "$_s_cluster_line" ]]; then
-                local _s_cname="${_s_cluster_line##*|}"
-                [[ -n "$_s_cname" && "$_s_cname" != "#"* ]] && fabric_name="$_s_cname"
-                # Firmware: cluster→fabric suffix→current fw
-                local _s_clid; _s_clid=$(echo "$_s_cluster_line" | cut -d'|' -f2)
-                if [[ -n "$_s_clid" && -f "$CLUSTER_CACHE" && -f "$FABRIC_CACHE" ]]; then
-                    local _s_fsuf; _s_fsuf=$(grep "^${_s_clid}|" "$CLUSTER_CACHE" 2>/dev/null | head -1 | cut -d'|' -f4)
-                    if [[ -n "$_s_fsuf" ]]; then
-                        local _s_fw; _s_fw=$(grep -v '^#' "$FABRIC_CACHE" 2>/dev/null | awk -F'|' -v s="$_s_fsuf" '$2==s {print $8; exit}')
-                        [[ -n "$_s_fw" && "$_s_fw" != "N/A" ]] && fw_ver="..${_s_fw: -4}"
-                    fi
-                fi
-            fi
-        fi
-
-        # Output: searchable_text|display fields
         echo "${iid}|${imp_indicator}|${name}|${state}|${k8s_status}|${k8s_node:-"-"}|${cordon_status}|${taint_status}|${pod_count}|${shape_trunc}|${ad_short}|${fd_short}|${time_display}|${host_id}|${rack_id}|${serial_num}|${fabric_name}|${fw_ver}|${clique_id}|${ocid}|${k8s_node}|-|-"
-    done)
+    done < <(jq -r '
+        .data[] |
+        select(.["lifecycle-state"] != "TERMINATED") |
+        "\(.["time-created"] // "N/A")|\(.["display-name"])|\(.["lifecycle-state"])|\(.shape)|\(.["availability-domain"])|\(.["fault-domain"] // "N/A")|\(.id)"
+    ' "$INSTANCE_LIST_CACHE" 2>/dev/null | sort -t'|' -k1,1) > "$_search_file"
+
+    local search_data
+    search_data=$(cat "$_search_file" 2>/dev/null)
+    rm -f "$_search_file" 2>/dev/null
     
     while true; do
         echo ""
@@ -33913,7 +33925,42 @@ _compute_search_instances() {
         done
         
         echo ""
-        echo -e "  ${GRAY}Search again, paste an instance OCID for details, or press Enter to go back${NC}"
+        echo -e "  ${GRAY}Select ${YELLOW}i#${GRAY} for instance details, search again, paste an OCID, or Enter to go back${NC}"
+        _ui_prompt "Search" "i#, /term, Enter=back"
+        local _ssel
+        read -r _ssel
+        [[ "${_ssel:-}" == :* ]] && _nav_try_jump "$_ssel" && return
+
+        if [[ -z "$_ssel" ]]; then
+            return
+        elif [[ "$_ssel" == ocid1.instance.* ]]; then
+            while true; do
+                display_instance_details "$_ssel"
+                local ret=$?
+                [[ -n "${_NAV_JUMP:-}" ]] && break
+                [[ $ret -ne 2 ]] && break
+            done
+            [[ -n "${_NAV_JUMP:-}" ]] && return
+        elif [[ "$_ssel" =~ ^i[0-9]+$ ]]; then
+            local _ssel_ocid="${_SEARCH_OCID_MAP[$_ssel]:-}"
+            if [[ -n "$_ssel_ocid" ]]; then
+                while true; do
+                    display_instance_details "$_ssel_ocid"
+                    local ret=$?
+                    [[ -n "${_NAV_JUMP:-}" ]] && break
+                    [[ $ret -ne 2 ]] && break
+                done
+                [[ -n "${_NAV_JUMP:-}" ]] && return
+            else
+                echo -e "${RED}Invalid selection: $_ssel${NC}"
+            fi
+        elif [[ "$_ssel" == /* ]]; then
+            # Inline search — set term for next loop iteration
+            set -- "$1" "$2" "${_ssel#/}"
+        else
+            # Treat as new search term
+            set -- "$1" "$2" "$_ssel"
+        fi
     done
 }
 
@@ -38355,7 +38402,7 @@ display_instance_details() {
             read -r confirm
             if [[ "$confirm" == "yes" ]]; then
                 log_action "REBOOT" "oci compute instance action --instance-id $instance_ocid --region $region --action $reboot_action"
-                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action "$reboot_action" 2>/dev/null; then
+                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action "$reboot_action" >/dev/null 2>&1; then
                     echo -e "${GREEN}✓ Reboot (${reboot_action}) initiated successfully${NC}"
                     log_action_result "SUCCESS" "Instance $display_name reboot ($reboot_action) initiated"
                 else
@@ -38380,7 +38427,7 @@ display_instance_details() {
             read -r confirm
             if [[ "$confirm" == "yes" ]]; then
                 log_action "FORCE_REBOOT" "oci compute instance action --instance-id $instance_ocid --region $region --action RESET"
-                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action RESET 2>/dev/null; then
+                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action RESET >/dev/null 2>&1; then
                     echo -e "${GREEN}✓ Force reboot initiated successfully${NC}"
                     log_action_result "SUCCESS" "Instance $display_name force reboot initiated"
                 else
@@ -38404,7 +38451,7 @@ display_instance_details() {
             read -r confirm
             if [[ "$confirm" == "yes" ]]; then
                 log_action "STOP" "oci compute instance action --instance-id $instance_ocid --region $region --action SOFTSTOP"
-                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action SOFTSTOP 2>/dev/null; then
+                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action SOFTSTOP >/dev/null 2>&1; then
                     echo -e "${GREEN}✓ Stop initiated successfully${NC}"
                     log_action_result "SUCCESS" "Instance $display_name stop initiated"
                 else
@@ -38428,7 +38475,7 @@ display_instance_details() {
             read -r confirm
             if [[ "$confirm" == "yes" ]]; then
                 log_action "START" "oci compute instance action --instance-id $instance_ocid --region $region --action START"
-                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action START 2>/dev/null; then
+                if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action START >/dev/null 2>&1; then
                     echo -e "${GREEN}✓ Start initiated successfully${NC}"
                     log_action_result "SUCCESS" "Instance $display_name start initiated"
                 else
@@ -38467,7 +38514,7 @@ display_instance_details() {
                 echo ""
                 echo -e "${YELLOW}Terminating instance...${NC}"
                 log_action "TERMINATE" "oci compute instance terminate --instance-id $instance_ocid --region $region --preserve-boot-volume false --force"
-                if oci compute instance terminate --instance-id "$instance_ocid" --region "$region" --preserve-boot-volume false --force 2>/dev/null; then
+                if oci compute instance terminate --instance-id "$instance_ocid" --region "$region" --preserve-boot-volume false --force >/dev/null 2>&1; then
                     echo -e "${GREEN}✓ Terminate initiated successfully${NC}"
                     echo -e "${YELLOW}Instance will be deleted. Boot volume will also be deleted.${NC}"
                     log_action_result "SUCCESS" "Instance $display_name terminate initiated"
