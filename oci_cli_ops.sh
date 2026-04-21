@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.5"
-readonly SCRIPT_VERSION_DATE="2026-04-16"
+readonly SCRIPT_VERSION="3.34.6"
+readonly SCRIPT_VERSION_DATE="2026-04-21"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -57246,7 +57246,7 @@ manage_compute_hosts() {
 
         #-----------------------------------------------------------------------
         # Fetch impacted host details (individual GET calls) + build lookup
-        # Format: host_ocid|maintenanceType|recycleLevel|comp1_type:comp1_action:comp1_faultId:comp1_severity;...
+        # Format: host_ocid|maintenanceType|recycleLevel|comp1_type:comp1_action:comp1_faultId:comp1_severity;...|impactState
         # Uses COMPUTE_HOST_IMPACT_CACHE to avoid jq re-extraction on every display.
         #-----------------------------------------------------------------------
         if is_cache_fresh "$COMPUTE_HOST_IMPACT_CACHE"; then
@@ -57276,10 +57276,11 @@ manage_compute_hosts() {
                         (.["recycle-details"]["recycle-level"] // "N/A") as $rl |
                         (.["impacted-component-details"]["impactedComponents"]["v1"] // {}) |
                         (.maintenanceType // "N/A") as $mt |
+                        (.state // "N/A") as $ist |
                         ([(.components // [])[] |
                             "\(.componentType // "?"):\(.action // "?"):\(.faultId // "?"):\(.severity // "?")"]
                         | join(";")) as $comps |
-                        "\($hid)|\($mt)|\($rl)|\($comps)"
+                        "\($hid)|\($mt)|\($rl)|\($comps)|\($ist)"
                     ' "$_detail_file" >> "$_imp_tmp" 2>/dev/null || true
                 done
             fi
@@ -57292,10 +57293,11 @@ manage_compute_hosts() {
                     (.["recycle-details"]["recycle-level"] // "N/A") as $rl |
                     (.["impacted-component-details"]["impactedComponents"]["v1"] // {}) |
                     (.maintenanceType // "N/A") as $mt |
+                    (.state // "N/A") as $ist |
                     ([(.components // [])[] |
                         "\(.componentType // "?"):\(.action // "?"):\(.faultId // "?"):\(.severity // "?")"]
                     | join(";")) as $comps |
-                    "\($hid)|\($mt)|\($rl)|\($comps)"
+                    "\($hid)|\($mt)|\($rl)|\($comps)|\($ist)"
                 ' "$COMPUTE_HOST_JSON_CACHE" > "$_imp_tmp" 2>/dev/null || true
             fi
 
@@ -57458,40 +57460,45 @@ manage_compute_hosts() {
 
                         local _himpact_flag=""
                         if [[ "$_himpacted" == "true" ]]; then
-                            # Lookup format: host_ocid|maintenanceType|recycleLevel|comps
+                            # Lookup format: host_ocid|maintenanceType|recycleLevel|comps|impactState
                             local _imp_line=""
                             if [[ -s "$_CH_IMPACT_LOOKUP" ]]; then
                                 _imp_line=$(grep "^${_hocid}|" "$_CH_IMPACT_LOOKUP" 2>/dev/null | head -1)
                             fi
                             if [[ -n "$_imp_line" ]]; then
-                                local _imp_mt _imp_rl _imp_comps
+                                local _imp_mt _imp_rl _imp_comps _imp_ist
                                 _imp_mt=$(echo "$_imp_line" | cut -d'|' -f2)
                                 _imp_rl=$(echo "$_imp_line" | cut -d'|' -f3)
                                 _imp_comps=$(echo "$_imp_line" | cut -d'|' -f4)
-                                # Aggregate components by faultId: "HPCRDMA-0002-02 ×8 NIC/DOWNTIME"
-                                local _imp_detail=""
-                                declare -A _imp_agg=()
-                                IFS=';' read -ra _imp_arr <<< "$_imp_comps"
-                                for _ic in "${_imp_arr[@]}"; do
-                                    [[ -z "$_ic" ]] && continue
-                                    local _ic_type _ic_act _ic_fid _ic_sev
-                                    IFS=':' read -r _ic_type _ic_act _ic_fid _ic_sev <<< "$_ic"
-                                    local _agg_key="${_ic_fid}|${_ic_type}/${_ic_act}"
-                                    _imp_agg["$_agg_key"]=$(( ${_imp_agg["$_agg_key"]:-0} + 1 ))
-                                done
-                                for _ak in "${!_imp_agg[@]}"; do
-                                    local _ak_fid="${_ak%%|*}" _ak_label="${_ak#*|}" _ak_ct="${_imp_agg[$_ak]}"
-                                    [[ -n "$_imp_detail" ]] && _imp_detail+=", "
-                                    if [[ "$_ak_ct" -gt 1 ]]; then
-                                        _imp_detail+="${_ak_fid} ×${_ak_ct} ${_ak_label}"
-                                    else
-                                        _imp_detail+="${_ak_fid} ${_ak_label}"
-                                    fi
-                                done
-                                unset _imp_agg
-                                local _imp_suffix="maint:${_imp_mt}"
-                                # recycle level omitted for brevity
-                                _himpact_flag=" ${LIGHT_RED}[Impacted: ${_imp_detail} ${_imp_suffix}]${NC}"
+                                _imp_ist=$(echo "$_imp_line" | cut -d'|' -f5)
+                                # Skip resolved/completed impacts — flag stays true in API but impact is done
+                                if [[ "${_imp_ist^^}" == "RESOLVED" || "${_imp_ist^^}" == "COMPLETE" || "${_imp_ist^^}" == "COMPLETED" ]]; then
+                                    _himpact_flag=" ${GRAY}[Resolved]${NC}"
+                                else
+                                    # Aggregate components by faultId: "HPCRDMA-0002-02 ×8 NIC/DOWNTIME"
+                                    local _imp_detail=""
+                                    declare -A _imp_agg=()
+                                    IFS=';' read -ra _imp_arr <<< "$_imp_comps"
+                                    for _ic in "${_imp_arr[@]}"; do
+                                        [[ -z "$_ic" ]] && continue
+                                        local _ic_type _ic_act _ic_fid _ic_sev
+                                        IFS=':' read -r _ic_type _ic_act _ic_fid _ic_sev <<< "$_ic"
+                                        local _agg_key="${_ic_fid}|${_ic_type}/${_ic_act}"
+                                        _imp_agg["$_agg_key"]=$(( ${_imp_agg["$_agg_key"]:-0} + 1 ))
+                                    done
+                                    for _ak in "${!_imp_agg[@]}"; do
+                                        local _ak_fid="${_ak%%|*}" _ak_label="${_ak#*|}" _ak_ct="${_imp_agg[$_ak]}"
+                                        [[ -n "$_imp_detail" ]] && _imp_detail+=", "
+                                        if [[ "$_ak_ct" -gt 1 ]]; then
+                                            _imp_detail+="${_ak_fid} ×${_ak_ct} ${_ak_label}"
+                                        else
+                                            _imp_detail+="${_ak_fid} ${_ak_label}"
+                                        fi
+                                    done
+                                    unset _imp_agg
+                                    local _imp_suffix="maint:${_imp_mt}"
+                                    _himpact_flag=" ${LIGHT_RED}[Impacted: ${_imp_detail} ${_imp_suffix}]${NC}"
+                                fi
                             else
                                 _himpact_flag=" ${LIGHT_RED}[Impacted]${NC}"
                             fi
@@ -57551,9 +57558,21 @@ manage_compute_hosts() {
         done < <(grep -v "^#" "$COMPUTE_HOST_CACHE" | cut -d'|' -f4 | sort | uniq -c | sort -rn)
         echo ""
 
-        # Impacted host count (used by menu option 5)
-        local impacted_count
-        impacted_count=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' '$16 == "true"' | wc -l)
+        # Impacted host count — exclude resolved/completed impacts
+        local impacted_count=0
+        local impacted_resolved=0
+        while IFS='|' read -r _ _ _ _ _ _ _ _ _ih_ocid _ _ _ _ _ _ _ih_imp _; do
+            [[ "$_ih_imp" != "true" ]] && continue
+            local _ih_ist=""
+            if [[ -s "$_CH_IMPACT_LOOKUP" ]]; then
+                _ih_ist=$(grep "^${_ih_ocid}|" "$_CH_IMPACT_LOOKUP" 2>/dev/null | head -1 | cut -d'|' -f5)
+            fi
+            if [[ "${_ih_ist^^}" == "RESOLVED" || "${_ih_ist^^}" == "COMPLETE" || "${_ih_ist^^}" == "COMPLETED" ]]; then
+                ((impacted_resolved++))
+            else
+                ((impacted_count++))
+            fi
+        done < <(grep -v "^#" "$COMPUTE_HOST_CACHE")
 
         # GPU Memory Fabric — tabular per-fabric summary
         local _fab_count
@@ -57563,13 +57582,23 @@ manage_compute_hosts() {
             _ui_subheader "GPU Memory Fabrics (${_fab_count})" 0
             echo ""
 
+            # Build set of resolved host OCIDs to exclude from impacted counts
+            local _resolved_file="${TEMP_DIR}/ch_resolved_$$.txt"
+            if [[ -s "$_CH_IMPACT_LOOKUP" ]]; then
+                awk -F'|' '{ s=toupper($5) } s=="RESOLVED" || s=="COMPLETE" || s=="COMPLETED" { print $1 }' \
+                    "$_CH_IMPACT_LOOKUP" > "$_resolved_file" 2>/dev/null
+            else
+                : > "$_resolved_file"
+            fi
+
             # Build per-fabric data: fabricOCID|shape|hosts|occupied|available|impacted|ad
             local _fab_data_file="${TEMP_DIR}/ch_fab_summary_$$.txt"
-            grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' '
+            awk -F'|' '
+                NR==FNR { resolved[$1]=1; next }
+                /^#/ { next }
                 $15 != "" && $15 != "N/A" {
-                    fab = $15; shape = $4; state = $2; imp = $16; ad = $6
+                    fab = $15; shape = $4; state = $2; imp = $16; hocid = $9; ad = $6
                     fab_shape[fab] = shape
-                    # Store short AD — extract AD-N suffix
                     if (match(ad, /AD-[0-9]+/))
                         fab_ad[fab] = substr(ad, RSTART, RLENGTH)
                     else
@@ -57577,13 +57606,14 @@ manage_compute_hosts() {
                     fab_total[fab]++
                     if (state == "OCCUPIED") fab_occ[fab]++
                     if (state == "AVAILABLE") fab_avl[fab]++
-                    if (imp == "true") fab_imp[fab]++
+                    if (imp == "true" && !(hocid in resolved)) fab_imp[fab]++
                 }
                 END {
                     for (f in fab_shape) {
                         print f "|" fab_shape[f] "|" fab_total[f] "|" (fab_occ[f]+0) "|" (fab_avl[f]+0) "|" (fab_imp[f]+0) "|" fab_ad[f]
                     }
-                }' | sort -t'|' -k2,2 -k7,7 -k1,1 > "$_fab_data_file"
+                }' "$_resolved_file" "$COMPUTE_HOST_CACHE" | sort -t'|' -k2,2 -k7,7 -k1,1 > "$_fab_data_file"
+            rm -f "$_resolved_file" 2>/dev/null
 
             # Build host→fabric impacted component map
             declare -A _fab_imp_detail=()
@@ -57691,8 +57721,10 @@ manage_compute_hosts() {
         echo -e "  ${YELLOW}2${NC}) View hosts by health"
         echo -e "  ${YELLOW}3${NC}) View all hosts (detailed)"
         echo -e "  ${YELLOW}4${NC}) View by shape"
-        if [[ "$impacted_count" -gt 0 ]]; then
-            echo -e "  ${RED}5${NC}) ${WHITE}View impacted hosts${NC}        - ${RED}${impacted_count} host(s) with impacted components${NC}"
+        if [[ "$impacted_count" -gt 0 || "$impacted_resolved" -gt 0 ]]; then
+            local _imp_menu_label="${RED}${impacted_count} host(s) with impacted components${NC}"
+            [[ "$impacted_resolved" -gt 0 ]] && _imp_menu_label+="${GRAY}, ${impacted_resolved} resolved${NC}"
+            echo -e "  ${RED}5${NC}) ${WHITE}View impacted hosts${NC}        - ${_imp_menu_label}"
             echo -e "  ${RED}f${NC}) ${WHITE}Filter by fault code${NC}       - ${GRAY}View impacted hosts matching a specific fault code${NC}"
         fi
         echo -e "  ${CYAN}/${NC}${YELLOW}term${NC}) Search hosts"
