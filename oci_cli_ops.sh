@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.8"
+readonly SCRIPT_VERSION="3.34.9"
 readonly SCRIPT_VERSION_DATE="2026-04-22"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -38405,6 +38405,7 @@ display_instance_details() {
                 if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action "$reboot_action" >/dev/null 2>&1; then
                     echo -e "${GREEN}✓ Reboot (${reboot_action}) initiated successfully${NC}"
                     log_action_result "SUCCESS" "Instance $display_name reboot ($reboot_action) initiated"
+                    rm -f "$INSTANCE_LIST_CACHE"
                 else
                     echo -e "${RED}✗ Failed to reboot instance${NC}"
                     log_action_result "FAILED" "Instance $display_name reboot ($reboot_action) failed"
@@ -38430,6 +38431,7 @@ display_instance_details() {
                 if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action RESET >/dev/null 2>&1; then
                     echo -e "${GREEN}✓ Force reboot initiated successfully${NC}"
                     log_action_result "SUCCESS" "Instance $display_name force reboot initiated"
+                    rm -f "$INSTANCE_LIST_CACHE"
                 else
                     echo -e "${RED}✗ Failed to force reboot instance${NC}"
                     log_action_result "FAILED" "Instance $display_name force reboot failed"
@@ -38454,6 +38456,7 @@ display_instance_details() {
                 if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action SOFTSTOP >/dev/null 2>&1; then
                     echo -e "${GREEN}✓ Stop initiated successfully${NC}"
                     log_action_result "SUCCESS" "Instance $display_name stop initiated"
+                    rm -f "$INSTANCE_LIST_CACHE"
                 else
                     echo -e "${RED}✗ Failed to stop instance${NC}"
                     log_action_result "FAILED" "Instance $display_name stop failed"
@@ -38478,6 +38481,7 @@ display_instance_details() {
                 if oci compute instance action --instance-id "$instance_ocid" --region "$region" --action START >/dev/null 2>&1; then
                     echo -e "${GREEN}✓ Start initiated successfully${NC}"
                     log_action_result "SUCCESS" "Instance $display_name start initiated"
+                    rm -f "$INSTANCE_LIST_CACHE"
                 else
                     echo -e "${RED}✗ Failed to start instance${NC}"
                     log_action_result "FAILED" "Instance $display_name start failed"
@@ -38518,6 +38522,7 @@ display_instance_details() {
                     echo -e "${GREEN}✓ Terminate initiated successfully${NC}"
                     echo -e "${YELLOW}Instance will be deleted. Boot volume will also be deleted.${NC}"
                     log_action_result "SUCCESS" "Instance $display_name terminate initiated"
+                    rm -f "$INSTANCE_LIST_CACHE"
                 else
                     echo -e "${RED}✗ Failed to terminate instance${NC}"
                     log_action_result "FAILED" "Instance $display_name terminate failed"
@@ -39505,6 +39510,7 @@ tag_instance_unhealthy() {
         if [[ $? -eq 0 ]]; then
             echo -e "${GREEN}✓ Instance termination initiated${NC}"
             log_action_result "SUCCESS" "Instance $display_name termination initiated"
+            rm -f "$INSTANCE_LIST_CACHE"
         else
             echo -e "${RED}✗ Failed to terminate instance:${NC}"
             echo "$terminate_result"
