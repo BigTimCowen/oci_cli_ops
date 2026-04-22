@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.10"
+readonly SCRIPT_VERSION="3.34.11"
 readonly SCRIPT_VERSION_DATE="2026-04-22"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -39323,129 +39323,147 @@ tag_instance_unhealthy() {
         echo -e "  ${GRAY}(none)${NC}"
     fi
     echo ""
-    
-    # Merge in our new tag (preserving all existing tags)
-    local updated_defined_tags
-    updated_defined_tags=$(jq --arg ns "$tag_namespace" --arg key "$tag_key" --arg val "$tag_value" '
-        .[$ns] = ((.[$ns] // {}) + {($key): $val})
-    ' <<< "$current_defined_tags")
-    
-    # Format the JSON for display (compact for command, pretty for log)
-    local updated_tags_compact
-    updated_tags_compact=$(jq -c '.' <<< "$updated_defined_tags")
-    
-    # Build the update command for display
-    local update_cmd="oci compute instance update --instance-id \"$instance_ocid\" --region \"$region\" --defined-tags '${updated_tags_compact}' --force"
-    
-    echo -e "${WHITE}Command to execute:${NC}"
-    echo -e "  ${GRAY}\$ oci compute instance update"
-    echo -e "    --instance-id \"$instance_ocid\""
-    echo -e "    --region \"$region\""
-    echo -e "    --defined-tags '"
-    jq '.' <<< "$updated_defined_tags" | while IFS= read -r line; do
-        echo "    $line"
-    done
-    echo -e "    ' --force${NC}"
-    echo ""
 
-    echo -n -e "${CYAN}Confirm apply tag? (yes/no): ${NC}"
-    local tag_confirm
-    read -r tag_confirm
-    if [[ "$tag_confirm" != "yes" ]]; then
-        echo -e "${YELLOW}Tagging cancelled${NC}"
+    # Check if tag is already set
+    local existing_tag_value
+    existing_tag_value=$(jq -r --arg ns "$tag_namespace" --arg key "$tag_key" '.[$ns][$key] // ""' <<< "$current_defined_tags" 2>/dev/null)
+    if [[ "$existing_tag_value" == "$tag_value" ]]; then
+        echo -e "${YELLOW}Tag already set: ${MAGENTA}${tag_namespace}.${tag_key}${NC} = ${GREEN}${tag_value}${NC}"
         echo ""
-        _ui_pause
-        return
+        if [[ "$do_terminate" == "true" ]]; then
+            # Skip tagging, proceed directly to terminate
+            echo -e "${GRAY}Skipping tag step — proceeding to terminate.${NC}"
+        else
+            echo -e "${GRAY}No action needed.${NC}"
+            echo ""
+            _ui_pause
+            return 0
+        fi
     fi
 
-    echo ""
-    log_action "TAG_UNHEALTHY" "$update_cmd"
-    echo -e "${YELLOW}Applying defined tag...${NC}"
-    
-    local tag_result
-    tag_result=$(oci compute instance update \
-        --instance-id "$instance_ocid" \
-        --region "$region" \
-        --defined-tags "$updated_defined_tags" \
-        --force \
-        --output json 2>&1)
-    
-    local tag_exit_code=$?
-    
-    if [[ $tag_exit_code -eq 0 ]]; then
-        echo -e "${GREEN}✓ Instance tagged as unhealthy successfully${NC}"
-        log_action_result "SUCCESS" "Instance $display_name tagged with $tag_namespace.$tag_key=$tag_value"
-        
-        # Verify the tag was applied
-        local applied_tag
-        applied_tag=$(jq -r --arg ns "$tag_namespace" --arg key "$tag_key" '.data["defined-tags"][$ns][$key] // "NOT_SET"' <<< "$tag_result")
-        echo -e "  ${CYAN}Verified:${NC} ${MAGENTA}$tag_namespace.$tag_key${NC} = ${GREEN}$applied_tag${NC}"
-        
-        # If terminate requested, show instance details with the tag first
-        if [[ "$do_terminate" == "true" ]]; then
+    if [[ "$existing_tag_value" != "$tag_value" ]]; then
+        # Merge in our new tag (preserving all existing tags)
+        local updated_defined_tags
+        updated_defined_tags=$(jq --arg ns "$tag_namespace" --arg key "$tag_key" --arg val "$tag_value" '
+            .[$ns] = ((.[$ns] // {}) + {($key): $val})
+        ' <<< "$current_defined_tags")
+
+        # Format the JSON for display (compact for command, pretty for log)
+        local updated_tags_compact
+        updated_tags_compact=$(jq -c '.' <<< "$updated_defined_tags")
+
+        # Build the update command for display
+        local update_cmd="oci compute instance update --instance-id \"$instance_ocid\" --region \"$region\" --defined-tags '${updated_tags_compact}' --force"
+
+        echo -e "${WHITE}Command to execute:${NC}"
+        echo -e "  ${GRAY}\$ oci compute instance update"
+        echo -e "    --instance-id \"$instance_ocid\""
+        echo -e "    --region \"$region\""
+        echo -e "    --defined-tags '"
+        jq '.' <<< "$updated_defined_tags" | while IFS= read -r line; do
+            echo "    $line"
+        done
+        echo -e "    ' --force${NC}"
+        echo ""
+
+        echo -n -e "${CYAN}Confirm apply tag? (yes/no): ${NC}"
+        local tag_confirm
+        read -r tag_confirm
+        if [[ "$tag_confirm" != "yes" ]]; then
+            echo -e "${YELLOW}Tagging cancelled${NC}"
             echo ""
-            _ui_content_border "$YELLOW"
-            echo -e "${YELLOW}                           INSTANCE DETAILS WITH APPLIED TAG                                                    ${NC}"
-            _ui_content_border "$YELLOW"
-            echo ""
-            
-            # Re-fetch instance to show updated tags
-            local updated_instance_json
-            updated_instance_json=$(oci compute instance get \
-                --instance-id "$instance_ocid" \
-                --region "$region" \
-                --output json 2>/dev/null)
-            
-            if [[ -n "$updated_instance_json" ]]; then
-                # Display key instance info
-                local inst_state inst_shape inst_ad inst_created
-                inst_state=$(jq -r '.data["lifecycle-state"] // "N/A"' <<< "$updated_instance_json")
-                inst_shape=$(jq -r '.data.shape // "N/A"' <<< "$updated_instance_json")
-                inst_ad=$(jq -r '.data["availability-domain"] // "N/A"' <<< "$updated_instance_json")
-                inst_created=$(jq -r '.data["time-created"] // "N/A"' <<< "$updated_instance_json")
-                
-                echo -e "${WHITE}Instance:${NC}       ${GREEN}$display_name${NC}"
-                echo -e "${WHITE}OCID:${NC}           ${YELLOW}$instance_ocid${NC}"
-                echo -e "${WHITE}State:${NC}          ${CYAN}$inst_state${NC}"
-                echo -e "${WHITE}Shape:${NC}          ${CYAN}$inst_shape${NC}"
-                echo -e "${WHITE}AD:${NC}             ${CYAN}${inst_ad##*:}${NC}"
-                echo -e "${WHITE}Created:${NC}        ${GRAY}${inst_created:0:19}${NC}"
-                echo ""
-                
-                # Display defined tags (highlighting the unhealthy tag)
-                _ui_subheader "Defined Tags" 0
-                local defined_tags
-                defined_tags=$(jq -r '.data["defined-tags"] // {}' <<< "$updated_instance_json")
-                
-                if [[ -n "$defined_tags" && "$defined_tags" != "{}" ]]; then
-                    jq -r 'to_entries[] | .key as $ns | .value | to_entries[] | "\($ns).\(.key)=\(.value)"' <<< "$defined_tags" 2>/dev/null | while read -r tag_line; do
-                        if [[ "$tag_line" == *"$tag_namespace.$tag_key"* ]]; then
-                            # Highlight the unhealthy tag
-                            echo -e "  ${RED}★ $tag_line${NC}  ${RED}← UNHEALTHY TAG APPLIED${NC}"
-                        else
-                            echo -e "  ${GRAY}$tag_line${NC}"
-                        fi
-                    done
-                else
-                    echo -e "  ${GRAY}(none)${NC}"
-                fi
-                
-                # Display freeform tags if any
-                local freeform_tags
-                freeform_tags=$(jq -r '.data["freeform-tags"] // {}' <<< "$updated_instance_json")
-                if [[ -n "$freeform_tags" && "$freeform_tags" != "{}" ]]; then
-                    echo ""
-                    _ui_subheader "Freeform Tags" 0
-                    jq -r 'to_entries[] | "  \(.key)=\(.value)"' <<< "$freeform_tags" 2>/dev/null
-                fi
-            fi
-            
-            echo ""
-            _ui_content_border "$YELLOW"
+            _ui_pause
+            return
         fi
-    else
-        echo -e "${RED}✗ Failed to tag instance:${NC}"
-        echo "$tag_result"
+
+        echo ""
+        log_action "TAG_UNHEALTHY" "$update_cmd"
+        echo -e "${YELLOW}Applying defined tag...${NC}"
+
+        local tag_result
+        tag_result=$(oci compute instance update \
+            --instance-id "$instance_ocid" \
+            --region "$region" \
+            --defined-tags "$updated_defined_tags" \
+            --force \
+            --output json 2>&1)
+
+        local tag_exit_code=$?
+
+        if [[ $tag_exit_code -eq 0 ]]; then
+            echo -e "${GREEN}✓ Instance tagged as unhealthy successfully${NC}"
+            log_action_result "SUCCESS" "Instance $display_name tagged with $tag_namespace.$tag_key=$tag_value"
+
+            # Verify the tag was applied
+            local applied_tag
+            applied_tag=$(jq -r --arg ns "$tag_namespace" --arg key "$tag_key" '.data["defined-tags"][$ns][$key] // "NOT_SET"' <<< "$tag_result")
+            echo -e "  ${CYAN}Verified:${NC} ${MAGENTA}$tag_namespace.$tag_key${NC} = ${GREEN}$applied_tag${NC}"
+
+            # If terminate requested, show instance details with the tag first
+            if [[ "$do_terminate" == "true" ]]; then
+                echo ""
+                _ui_content_border "$YELLOW"
+                echo -e "${YELLOW}                           INSTANCE DETAILS WITH APPLIED TAG                                                    ${NC}"
+                _ui_content_border "$YELLOW"
+                echo ""
+
+                # Re-fetch instance to show updated tags
+                local updated_instance_json
+                updated_instance_json=$(oci compute instance get \
+                    --instance-id "$instance_ocid" \
+                    --region "$region" \
+                    --output json 2>/dev/null)
+
+                if [[ -n "$updated_instance_json" ]]; then
+                    # Display key instance info
+                    local inst_state inst_shape inst_ad inst_created
+                    inst_state=$(jq -r '.data["lifecycle-state"] // "N/A"' <<< "$updated_instance_json")
+                    inst_shape=$(jq -r '.data.shape // "N/A"' <<< "$updated_instance_json")
+                    inst_ad=$(jq -r '.data["availability-domain"] // "N/A"' <<< "$updated_instance_json")
+                    inst_created=$(jq -r '.data["time-created"] // "N/A"' <<< "$updated_instance_json")
+
+                    echo -e "${WHITE}Instance:${NC}       ${GREEN}$display_name${NC}"
+                    echo -e "${WHITE}OCID:${NC}           ${YELLOW}$instance_ocid${NC}"
+                    echo -e "${WHITE}State:${NC}          ${CYAN}$inst_state${NC}"
+                    echo -e "${WHITE}Shape:${NC}          ${CYAN}$inst_shape${NC}"
+                    echo -e "${WHITE}AD:${NC}             ${CYAN}${inst_ad##*:}${NC}"
+                    echo -e "${WHITE}Created:${NC}        ${GRAY}${inst_created:0:19}${NC}"
+                    echo ""
+
+                    # Display defined tags (highlighting the unhealthy tag)
+                    _ui_subheader "Defined Tags" 0
+                    local defined_tags
+                    defined_tags=$(jq -r '.data["defined-tags"] // {}' <<< "$updated_instance_json")
+
+                    if [[ -n "$defined_tags" && "$defined_tags" != "{}" ]]; then
+                        jq -r 'to_entries[] | .key as $ns | .value | to_entries[] | "\($ns).\(.key)=\(.value)"' <<< "$defined_tags" 2>/dev/null | while read -r tag_line; do
+                            if [[ "$tag_line" == *"$tag_namespace.$tag_key"* ]]; then
+                                # Highlight the unhealthy tag
+                                echo -e "  ${RED}★ $tag_line${NC}  ${RED}← UNHEALTHY TAG APPLIED${NC}"
+                            else
+                                echo -e "  ${GRAY}$tag_line${NC}"
+                            fi
+                        done
+                    else
+                        echo -e "  ${GRAY}(none)${NC}"
+                    fi
+
+                    # Display freeform tags if any
+                    local freeform_tags
+                    freeform_tags=$(jq -r '.data["freeform-tags"] // {}' <<< "$updated_instance_json")
+                    if [[ -n "$freeform_tags" && "$freeform_tags" != "{}" ]]; then
+                        echo ""
+                        _ui_subheader "Freeform Tags" 0
+                        jq -r 'to_entries[] | "  \(.key)=\(.value)"' <<< "$freeform_tags" 2>/dev/null
+                    fi
+                fi
+
+                echo ""
+                _ui_content_border "$YELLOW"
+            fi
+        else
+            echo -e "${RED}✗ Failed to tag instance:${NC}"
+            echo "$tag_result"
         log_action_result "FAILED" "Failed to tag instance $display_name"
         
         # Check if it's a tag namespace issue
@@ -39465,7 +39483,8 @@ tag_instance_unhealthy() {
         _ui_pause
         return 1
     fi
-    
+    fi  # end: tag not already set
+
     # If terminate requested, do it now
     if [[ "$do_terminate" == "true" ]]; then
         echo ""
