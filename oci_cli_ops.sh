@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.9"
+readonly SCRIPT_VERSION="3.34.10"
 readonly SCRIPT_VERSION_DATE="2026-04-22"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -35005,8 +35005,7 @@ manage_compute_instances() {
                 
                 # ── Step 4: Terminate ──
                 if [[ "$cdt_abort" != "true" ]]; then
-                    local _cdt_region
-                    _cdt_region=$(_ocid_region "$tv_ocid" "${FOCUS_REGION:-$REGION}")
+                    local _cdt_region="${FOCUS_REGION:-$REGION}"
                     local cmd="oci compute instance terminate --instance-id ${tv_ocid} --region ${_cdt_region} --preserve-boot-volume false --force"
                     echo -e "  ${RED}Step 4: Terminate${NC}"
                     echo -e "  ${GRAY}$ ${cmd}${NC}"
@@ -35179,8 +35178,7 @@ manage_compute_instances() {
             for rv in "${reboot_valid[@]}"; do
                 local rv_idx rv_ocid rv_name
                 IFS='|' read -r rv_idx rv_ocid rv_name _ _ <<< "$rv"
-                local _rv_pre_region
-                _rv_pre_region=$(_ocid_region "$rv_ocid" "${FOCUS_REGION:-$REGION}")
+                local _rv_pre_region="${FOCUS_REGION:-$REGION}"
                 echo -e "  ${GRAY}[${rv_idx}] oci compute instance action --action ${reboot_action} --instance-id ${rv_ocid} --region ${_rv_pre_region}${NC}"
             done
             echo ""
@@ -35202,8 +35200,7 @@ manage_compute_instances() {
                 local rv_idx rv_ocid rv_name rv_state rv_k8s
                 IFS='|' read -r rv_idx rv_ocid rv_name rv_state rv_k8s <<< "$rv"
 
-                local _rv_region
-                _rv_region=$(_ocid_region "$rv_ocid" "${FOCUS_REGION:-$REGION}")
+                local _rv_region="${FOCUS_REGION:-$REGION}"
                 local reboot_cmd="oci compute instance action --action ${reboot_action} --instance-id ${rv_ocid} --region ${_rv_region}"
 
                 echo -e "${WHITE}[${rv_idx}] ${rv_name}${NC}"
@@ -35334,8 +35331,7 @@ manage_compute_instances() {
             for tv in "${term_valid[@]}"; do
                 local tv_idx tv_ocid tv_name
                 IFS='|' read -r tv_idx tv_ocid tv_name _ _ <<< "$tv"
-                local _tv_pre_region
-                _tv_pre_region=$(_ocid_region "$tv_ocid" "${FOCUS_REGION:-$REGION}")
+                local _tv_pre_region="${FOCUS_REGION:-$REGION}"
                 echo -e "  ${GRAY}[${tv_idx}] oci compute instance terminate --instance-id ${tv_ocid} --region ${_tv_pre_region} --preserve-boot-volume false --force${NC}"
             done
             echo ""
@@ -35357,8 +35353,7 @@ manage_compute_instances() {
                 local tv_idx tv_ocid tv_name tv_state tv_k8s
                 IFS='|' read -r tv_idx tv_ocid tv_name tv_state tv_k8s <<< "$tv"
                 
-                local _tv_region
-                _tv_region=$(_ocid_region "$tv_ocid" "${FOCUS_REGION:-$REGION}")
+                local _tv_region="${FOCUS_REGION:-$REGION}"
                 local term_cmd="oci compute instance terminate --instance-id ${tv_ocid} --region ${_tv_region} --preserve-boot-volume false --force"
 
                 echo -e "${WHITE}[${tv_idx}] ${tv_name}${NC}"
