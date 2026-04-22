@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.7"
-readonly SCRIPT_VERSION_DATE="2026-04-21"
+readonly SCRIPT_VERSION="3.34.8"
+readonly SCRIPT_VERSION_DATE="2026-04-22"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -39284,24 +39284,10 @@ tag_instance_unhealthy() {
     
     if [[ "$do_terminate" == "true" ]]; then
         echo -e "${RED}⚠️  This will TAG the instance as unhealthy AND TERMINATE it!${NC}"
-        echo ""
-        echo -n -e "${RED}Type 'yes' to confirm TAG + TERMINATE: ${NC}"
     else
         echo -e "${YELLOW}This will TAG the instance as unhealthy (instance will continue running).${NC}"
-        echo ""
-        echo -n -e "${CYAN}Confirm tag? (yes/no): ${NC}"
     fi
-    
-    local confirm
-    read -r confirm
-    
-    if [[ "$confirm" != "yes" ]]; then
-        echo -e "${YELLOW}Operation cancelled${NC}"
-        echo ""
-        _ui_pause
-        return
-    fi
-    
+
     # Get current defined tags
     echo ""
     _step_init
@@ -39352,20 +39338,28 @@ tag_instance_unhealthy() {
     local update_cmd="oci compute instance update --instance-id \"$instance_ocid\" --region \"$region\" --defined-tags '${updated_tags_compact}' --force"
     
     echo -e "${WHITE}Command to execute:${NC}"
-    _ui_oci_cmd "oci compute instance update \\"
-    echo -e "${GRAY}  --instance-id \"$instance_ocid\" \\${NC}"
-    echo -e "${GRAY}  --region \"$region\" \\${NC}"
-    echo -e "${GRAY}  --defined-tags '${NC}"
+    echo -e "  ${GRAY}\$ oci compute instance update"
+    echo -e "    --instance-id \"$instance_ocid\""
+    echo -e "    --region \"$region\""
+    echo -e "    --defined-tags '"
     jq '.' <<< "$updated_defined_tags" | while IFS= read -r line; do
-        echo -e "${GRAY}$line${NC}"
+        echo "    $line"
     done
-    echo -e "${GRAY}' --force${NC}"
+    echo -e "    ' --force${NC}"
     echo ""
-    
-    # Log the action
+
+    echo -n -e "${CYAN}Confirm apply tag? (yes/no): ${NC}"
+    local tag_confirm
+    read -r tag_confirm
+    if [[ "$tag_confirm" != "yes" ]]; then
+        echo -e "${YELLOW}Tagging cancelled${NC}"
+        echo ""
+        _ui_pause
+        return
+    fi
+
+    echo ""
     log_action "TAG_UNHEALTHY" "$update_cmd"
-    
-    # Apply the tag
     echo -e "${YELLOW}Applying defined tag...${NC}"
     
     local tag_result
@@ -39480,26 +39474,25 @@ tag_instance_unhealthy() {
         echo -e "${RED}╚════════════════════════════════════════════════════════════════════════════════╝${NC}"
         echo ""
         echo -e "${WHITE}Instance ${GREEN}$display_name${NC}${WHITE} has been tagged as unhealthy.${NC}"
+        echo ""
+
+        local terminate_cmd="oci compute instance terminate --instance-id \"$instance_ocid\" --region \"$region\" --preserve-boot-volume false --force"
+
+        echo -e "${WHITE}Command to execute:${NC}"
+        echo -e "  ${GRAY}\$ $terminate_cmd${NC}"
+        echo ""
+
         echo -e "${RED}Are you sure you want to TERMINATE this instance?${NC}"
         echo ""
-        
+
         if ! _ui_confirm "TERMINATE" "proceed (or anything else to cancel)"; then
             echo -e "${YELLOW}Termination cancelled. Instance remains tagged as unhealthy.${NC}"
             echo ""
             _ui_pause
             return 0
         fi
-        
+
         echo ""
-        echo -e "${RED}Proceeding with instance termination...${NC}"
-        
-        local terminate_cmd="oci compute instance terminate --instance-id \"$instance_ocid\" --region \"$region\" --preserve-boot-volume false --force"
-        
-        echo ""
-        echo -e "${WHITE}Command to execute:${NC}"
-        echo -e "${GRAY}$terminate_cmd${NC}"
-        echo ""
-        
         log_action "TERMINATE" "$terminate_cmd"
         
         local terminate_result
