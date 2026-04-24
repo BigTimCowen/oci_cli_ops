@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.20"
+readonly SCRIPT_VERSION="3.34.21"
 readonly SCRIPT_VERSION_DATE="2026-04-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -43143,14 +43143,25 @@ manage_firmware_bundles() {
 
     [[ -z "$selected_platform" ]] && return
 
-    # ── Collect current/target firmware bundle counts from ALL fabrics ──
+    # ── Collect current/target firmware bundle counts from fabrics ──
+    # When preselected, only count the selected fabric; otherwise count all
     declare -A _fw_cur_count=()    # bundle OCID → count of fabrics using as current
     declare -A _fw_tgt_count=()    # bundle OCID → count of fabrics targeting
     declare -A _fw_state_count=()  # firmware-update-state → count
     local _total_fabrics=0
+    # Per-fabric data for preselected display
+    local _presel_fab_name="" _presel_fab_curfw="" _presel_fab_tgtfw="" _presel_fab_fwstate=""
     if [[ -f "$FABRIC_CACHE" ]]; then
         # Fields: 1=Name|2=Last5|3=OCID|4=State|5=Healthy|6=Avail|7=Total|8=CurrentFW|9=TargetFW|10=FWState
-        while IFS='|' read -r _ _ _ _ _ _ _ _fcur _ftgt _fwst _; do
+        while IFS='|' read -r _fn _ _focid _ _ _ _ _fcur _ftgt _fwst _; do
+            # When preselected, only count matching fabric
+            if [[ -n "$_preselect_fabric_ocid" ]]; then
+                [[ "$_focid" != "$_preselect_fabric_ocid" ]] && continue
+                _presel_fab_name="$_fn"
+                _presel_fab_curfw="$_fcur"
+                _presel_fab_tgtfw="$_ftgt"
+                _presel_fab_fwstate="$_fwst"
+            fi
             ((_total_fabrics++))
             [[ -n "$_fcur" && "$_fcur" != "N/A" ]] && _fw_cur_count["$_fcur"]=$(( ${_fw_cur_count["$_fcur"]:-0} + 1 ))
             [[ -n "$_ftgt" && "$_ftgt" != "N/A" ]] && _fw_tgt_count["$_ftgt"]=$(( ${_fw_tgt_count["$_ftgt"]:-0} + 1 ))
@@ -43205,59 +43216,79 @@ manage_firmware_bundles() {
 
     # Show per-fabric firmware summary
     if [[ $_total_fabrics -gt 0 ]]; then
-        echo -e "  ${BOLD}${WHITE}Fabrics:${NC} ${_total_fabrics} total"
+        if [[ -n "$_preselect_fabric_ocid" && -n "$_presel_fab_name" ]]; then
+            # Single fabric — show its specific firmware info
+            echo -e "  ${BOLD}${WHITE}Fabric:${NC}  ${ORANGE}${_presel_fab_name}${NC}"
+            if [[ "$_presel_fab_curfw" != "N/A" && -n "$_presel_fab_curfw" ]]; then
+                echo -e "  ${BOLD}${WHITE}Current Firmware:${NC}          ${GREEN}${_presel_fab_curfw}${NC}"
+            fi
+            if [[ "$_presel_fab_tgtfw" != "N/A" && -n "$_presel_fab_tgtfw" && "$_presel_fab_tgtfw" != "$_presel_fab_curfw" ]]; then
+                echo -e "  ${BOLD}${WHITE}Target Firmware:${NC}           ${YELLOW}${_presel_fab_tgtfw}${NC}"
+            fi
+            if [[ "$_presel_fab_fwstate" != "N/A" && -n "$_presel_fab_fwstate" ]]; then
+                local _pfs_color
+                _pfs_color=$(color_firmware_state "$_presel_fab_fwstate")
+                echo -e "  ${BOLD}${WHITE}Firmware Update State:${NC}     ${_pfs_color}${_presel_fab_fwstate}${NC}"
+            fi
+        else
+            # All fabrics — show aggregate counts
+            echo -e "  ${BOLD}${WHITE}Fabrics:${NC} ${_total_fabrics} total"
 
-        # Current firmware — show each unique bundle with fabric count
-        if [[ ${#_fw_cur_count[@]} -gt 0 ]]; then
-            local _first_cur=true
-            for _cid in "${!_fw_cur_count[@]}"; do
-                local _cnt=${_fw_cur_count[$_cid]}
-                local _clabel
-                [[ $_cnt -eq $_total_fabrics ]] && _clabel="all ${_total_fabrics} fabrics" || _clabel="${_cnt}/${_total_fabrics} fabrics"
-                if [[ "$_first_cur" == "true" ]]; then
-                    echo -e "  ${BOLD}${WHITE}Current Firmware:${NC}          ${GREEN}${_cid}${NC}  ${GRAY}(${_clabel})${NC}"
-                    _first_cur=false
-                else
-                    echo -e "                             ${GREEN}${_cid}${NC}  ${GRAY}(${_clabel})${NC}"
-                fi
-            done
-        fi
+            # Current firmware — show each unique bundle with fabric count
+            if [[ ${#_fw_cur_count[@]} -gt 0 ]]; then
+                local _first_cur=true
+                for _cid in "${!_fw_cur_count[@]}"; do
+                    local _cnt=${_fw_cur_count[$_cid]}
+                    local _clabel
+                    [[ $_cnt -eq $_total_fabrics ]] && _clabel="all ${_total_fabrics} fabrics" || _clabel="${_cnt}/${_total_fabrics} fabrics"
+                    if [[ "$_first_cur" == "true" ]]; then
+                        echo -e "  ${BOLD}${WHITE}Current Firmware:${NC}          ${GREEN}${_cid}${NC}  ${GRAY}(${_clabel})${NC}"
+                        _first_cur=false
+                    else
+                        echo -e "                             ${GREEN}${_cid}${NC}  ${GRAY}(${_clabel})${NC}"
+                    fi
+                done
+            fi
 
-        # Target firmware — show bundles being targeted (skip if same as current)
-        if [[ ${#_fw_tgt_count[@]} -gt 0 ]]; then
-            local _first_tgt=true
-            for _tid in "${!_fw_tgt_count[@]}"; do
-                # Skip if this target is the same bundle as current on all fabrics
-                [[ -n "${_fw_cur_count[$_tid]:-}" && ${_fw_cur_count[$_tid]} -eq $_total_fabrics ]] && continue
-                local _tcnt=${_fw_tgt_count[$_tid]}
-                local _tlabel
-                [[ $_tcnt -eq $_total_fabrics ]] && _tlabel="all ${_total_fabrics} fabrics" || _tlabel="${_tcnt}/${_total_fabrics} fabrics"
-                if [[ "$_first_tgt" == "true" ]]; then
-                    echo -e "  ${BOLD}${WHITE}Target Firmware:${NC}           ${YELLOW}${_tid}${NC}  ${GRAY}(${_tlabel})${NC}"
-                    _first_tgt=false
-                else
-                    echo -e "                             ${YELLOW}${_tid}${NC}  ${GRAY}(${_tlabel})${NC}"
-                fi
-            done
-        fi
+            # Target firmware — show bundles being targeted (skip if same as current)
+            if [[ ${#_fw_tgt_count[@]} -gt 0 ]]; then
+                local _first_tgt=true
+                for _tid in "${!_fw_tgt_count[@]}"; do
+                    # Skip if this target is the same bundle as current on all fabrics
+                    [[ -n "${_fw_cur_count[$_tid]:-}" && ${_fw_cur_count[$_tid]} -eq $_total_fabrics ]] && continue
+                    local _tcnt=${_fw_tgt_count[$_tid]}
+                    local _tlabel
+                    [[ $_tcnt -eq $_total_fabrics ]] && _tlabel="all ${_total_fabrics} fabrics" || _tlabel="${_tcnt}/${_total_fabrics} fabrics"
+                    if [[ "$_first_tgt" == "true" ]]; then
+                        echo -e "  ${BOLD}${WHITE}Target Firmware:${NC}           ${YELLOW}${_tid}${NC}  ${GRAY}(${_tlabel})${NC}"
+                        _first_tgt=false
+                    else
+                        echo -e "                             ${YELLOW}${_tid}${NC}  ${GRAY}(${_tlabel})${NC}"
+                    fi
+                done
+            fi
 
-        # Firmware update states — show each unique state with count
-        if [[ ${#_fw_state_count[@]} -gt 0 ]]; then
-            local _state_parts=""
-            for _st in "${!_fw_state_count[@]}"; do
-                local _stc=${_fw_state_count[$_st]}
-                local _stcolor
-                _stcolor=$(color_firmware_state "$_st")
-                [[ -n "$_state_parts" ]] && _state_parts+="  "
-                if [[ $_stc -eq $_total_fabrics ]]; then
-                    _state_parts+="${_stcolor}${_st}${NC} ${GRAY}(all ${_total_fabrics})${NC}"
-                else
-                    _state_parts+="${_stcolor}${_st}${NC} ${GRAY}(${_stc}/${_total_fabrics})${NC}"
-                fi
-            done
-            echo -e "  ${BOLD}${WHITE}Firmware Update State:${NC}     ${_state_parts}"
+            # Firmware update states — show each unique state with count
+            if [[ ${#_fw_state_count[@]} -gt 0 ]]; then
+                local _state_parts=""
+                for _st in "${!_fw_state_count[@]}"; do
+                    local _stc=${_fw_state_count[$_st]}
+                    local _stcolor
+                    _stcolor=$(color_firmware_state "$_st")
+                    [[ -n "$_state_parts" ]] && _state_parts+="  "
+                    if [[ $_stc -eq $_total_fabrics ]]; then
+                        _state_parts+="${_stcolor}${_st}${NC} ${GRAY}(all ${_total_fabrics})${NC}"
+                    else
+                        _state_parts+="${_stcolor}${_st}${NC} ${GRAY}(${_stc}/${_total_fabrics})${NC}"
+                    fi
+                done
+                echo -e "  ${BOLD}${WHITE}Firmware Update State:${NC}     ${_state_parts}"
+            fi
         fi
     fi
+    echo ""
+
+    _ui_subheader "Available Firmware Bundles" 0
     echo ""
 
     # Pre-parse bundles into temp file for two-pass rendering
