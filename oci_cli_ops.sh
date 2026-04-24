@@ -43871,6 +43871,11 @@ _fw_update_fabric_firmware() {
         echo -e "  ${BOLD}${WHITE}Select GPU Memory Fabric:${NC}"
     fi
     echo ""
+    printf "    ${BOLD}%-4s %-32s %-12s %-14s %-8s %-8s %s${NC}\n" \
+        "#" "Fabric Name" "State" "FW State" "Cur FW" "Tgt FW" ""
+    printf "    ${GRAY}%-4s %-32s %-12s %-14s %-8s %-8s${NC}\n" \
+        "----" "--------------------------------" "------------" "--------------" "--------" "--------"
+
     for _i in "${!_fab_names[@]}"; do
         # Skip non-matching fabrics when preselected
         [[ -n "$_preselect_ocid" && "${_fab_ocids[$_i]}" != "$_preselect_ocid" ]] && continue
@@ -43882,12 +43887,25 @@ _fw_update_fabric_firmware() {
             *) _sc="$RED" ;;
         esac
 
-        local _fws_badge=""
+        local _fws_display="-"
+        local _fwsc="$GRAY"
         if [[ "${_fab_fwstates[$_i]}" != "N/A" && -n "${_fab_fwstates[$_i]}" ]]; then
-            local _fwsc
+            _fws_display="${_fab_fwstates[$_i]}"
             _fwsc=$(color_firmware_state "${_fab_fwstates[$_i]}")
-            _fws_badge="  [${_fwsc}${_fab_fwstates[$_i]}${NC}]"
         fi
+
+        # Last 5 chars of current and target firmware OCIDs
+        local _cur_short="-" _tgt_short="-"
+        if [[ "${_fab_curfw[$_i]}" != "N/A" && -n "${_fab_curfw[$_i]}" ]]; then
+            _cur_short="..${_fab_curfw[$_i]: -5}"
+        fi
+        if [[ "${_fab_tarfw[$_i]}" != "N/A" && -n "${_fab_tarfw[$_i]}" ]]; then
+            _tgt_short="..${_fab_tarfw[$_i]: -5}"
+        fi
+
+        # Target color: yellow if different from current, gray if same
+        local _tgt_color="$GRAY"
+        [[ "${_fab_curfw[$_i]}" != "${_fab_tarfw[$_i]}" && "$_tgt_short" != "-" ]] && _tgt_color="$YELLOW"
 
         # Upgrade available indicator
         local _upgrade_badge=""
@@ -43895,13 +43913,8 @@ _fw_update_fabric_firmware() {
             _upgrade_badge="  ${CYAN}↑ upgrade available${NC}"
         fi
 
-        local _fw_inline=""
-        if [[ "${_fab_curfw[$_i]}" != "N/A" && -n "${_fab_curfw[$_i]}" ]]; then
-            _fw_inline="  ${YELLOW}${_fab_curfw[$_i]}${NC}"
-        fi
-
-        printf "    ${GREEN}%2d${NC}) ${WHITE}%-30s${NC} ${_sc}%-12s${NC}${_fws_badge}${_fw_inline}${_upgrade_badge}\n" \
-            "$((_i+1))" "${_fab_names[$_i]}" "${_fab_states[$_i]}"
+        printf "    ${GREEN}%2d${NC}) ${WHITE}%-30s${NC} ${_sc}%-12s${NC} ${_fwsc}%-14s${NC} ${GREEN}%-8s${NC} ${_tgt_color}%-8s${NC}${_upgrade_badge}\n" \
+            "$((_i+1))" "${_fab_names[$_i]}" "${_fab_states[$_i]}" "$_fws_display" "$_cur_short" "$_tgt_short"
     done
 
     local _sel_idx=-1
