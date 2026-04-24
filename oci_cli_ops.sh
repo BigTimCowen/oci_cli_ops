@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.12"
-readonly SCRIPT_VERSION_DATE="2026-04-23"
+readonly SCRIPT_VERSION="3.34.13"
+readonly SCRIPT_VERSION_DATE="2026-04-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -44568,17 +44568,17 @@ update_gpu_memory_cluster_interactive() {
         echo ""
         
         # Show current sizes for reference
-        printf "  ${BOLD}%-6s %-35s %10s  %-40s %6s %6s${NC}\n" \
-            "ID" "Cluster Name" "Curr Size" "Fabric" "Avail" "Total"
-        printf "  ${WHITE}%-6s %-35s %10s  %-40s %6s %6s${NC}\n" \
-            "------" "-----------------------------------" "----------" "----------------------------------------" "------" "------"
+        printf "  ${BOLD}%-6s %-35s %10s  %-40s %6s %8s${NC}\n" \
+            "ID" "Cluster Name" "Curr Size" "Fabric" "Avail" "Fab Size"
+        printf "  ${WHITE}%-6s %-35s %10s  %-40s %6s %8s${NC}\n" \
+            "------" "-----------------------------------" "----------" "----------------------------------------" "------" "--------"
         
         for gid in "${valid_gids[@]}"; do
             local cluster_ocid="${CLUSTER_INDEX_MAP[$gid]}"
             local c_line
             c_line=$(_cache_line "$CLUSTER_CACHE" "$cluster_ocid")
             local c_name="" c_size="" c_fabric_suffix=""
-            IFS='|' read -r _ c_name _ c_fabric_suffix _ _ c_size <<< "$c_line"
+            IFS='|' read -r _ c_name _ c_fabric_suffix _ _ c_size _ <<< "$c_line"
             
             local f_avail="N/A" f_total="N/A"
             if [[ -n "$c_fabric_suffix" ]]; then
@@ -44590,7 +44590,7 @@ update_gpu_memory_cluster_interactive() {
             local fabric_name_short="N/A"
             [[ -n "$f_line" ]] && IFS='|' read -r fabric_name_short _ <<< "$f_line"
             
-            printf "  ${YELLOW}%-6s${NC} ${MAGENTA}%-35s${NC} ${CYAN}%10s${NC}  ${GRAY}%-40s${NC} ${YELLOW}%6s${NC} ${WHITE}%6s${NC}\n" \
+            printf "  ${YELLOW}%-6s${NC} ${MAGENTA}%-35s${NC} ${CYAN}%10s${NC}  ${GRAY}%-40s${NC} ${YELLOW}%6s${NC} ${WHITE}%8s${NC}\n" \
                 "$gid" "${c_name:0:35}" "$c_size" "${fabric_name_short:0:40}" "$f_avail" "$f_total"
         done
         
@@ -44602,14 +44602,14 @@ update_gpu_memory_cluster_interactive() {
             local _sc_ocid="${CLUSTER_INDEX_MAP[$_sg]}"
             local _sc_line _sc_name="" _sc_size="" _sc_fab_suffix=""
             _sc_line=$(_cache_line "$CLUSTER_CACHE" "$_sc_ocid")
-            IFS='|' read -r _ _sc_name _ _sc_fab_suffix _ _ _sc_size <<< "$_sc_line"
+            IFS='|' read -r _ _sc_name _ _sc_fab_suffix _ _ _sc_size _ <<< "$_sc_line"
             local _sc_avail="N/A" _sc_total="N/A"
             if [[ -n "$_sc_fab_suffix" ]]; then
                 local _sc_fline
                 _sc_fline=$(grep -v '^#' "$FABRIC_CACHE" 2>/dev/null | grep "|${_sc_fab_suffix}|" | head -1)
                 [[ -n "$_sc_fline" ]] && IFS='|' read -r _ _ _ _ _ _sc_avail _sc_total _ <<< "$_sc_fline"
             fi
-            echo -e "  ${GRAY}Current: ${WHITE}${_sc_size}${GRAY}  Available: ${YELLOW}${_sc_avail}${GRAY}  Fabric Total: ${WHITE}${_sc_total}${NC}"
+            echo -e "  ${GRAY}Current: ${WHITE}${_sc_size}${GRAY}  Available: ${YELLOW}${_sc_avail}${GRAY}  Fabric Size: ${WHITE}${_sc_total}${NC}"
             echo -n -e "${CYAN}Enter new size for ${YELLOW}${valid_gids[0]}${CYAN}: ${NC}"
             local sz
             read -r sz
