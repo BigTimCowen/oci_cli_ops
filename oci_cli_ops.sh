@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.15"
+readonly SCRIPT_VERSION="3.34.16"
 readonly SCRIPT_VERSION_DATE="2026-04-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -44616,10 +44616,15 @@ update_gpu_memory_cluster_interactive() {
                 _sc_fline=$(grep -v '^#' "$FABRIC_CACHE" 2>/dev/null | grep "|${_sc_fab_suffix}|" | head -1)
                 [[ -n "$_sc_fline" ]] && IFS='|' read -r _ _ _ _ _sc_healthy _sc_avail _sc_total _ <<< "$_sc_fline"
             fi
+            local _sc_default_size="$_sc_size"
+            if [[ "$_sc_avail" =~ ^[0-9]+$ && "$_sc_size" =~ ^[0-9]+$ ]]; then
+                _sc_default_size=$(( _sc_size + _sc_avail ))
+            fi
             echo -e "  ${GRAY}Current: ${WHITE}${_sc_size}${GRAY}  Healthy: ${WHITE}${_sc_healthy}${GRAY}  Available: ${YELLOW}${_sc_avail}${GRAY}  Fabric Size: ${WHITE}${_sc_total}${NC}"
-            echo -n -e "${CYAN}Enter new size for ${YELLOW}${valid_gids[0]}${CYAN}: ${NC}"
+            echo -n -e "${CYAN}Enter new size for ${YELLOW}${valid_gids[0]}${CYAN} (recommend: ${WHITE}${_sc_default_size}${CYAN}): ${NC}"
             local sz
             read -r sz
+            [[ -z "$sz" ]] && sz="$_sc_default_size"
             if ! [[ "$sz" =~ ^[0-9]+$ ]] || [[ "$sz" -lt 1 ]]; then
                 echo -e "${RED}Invalid size: must be a positive integer${NC}"
                 return 1
