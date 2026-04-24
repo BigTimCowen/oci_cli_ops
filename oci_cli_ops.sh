@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.11"
-readonly SCRIPT_VERSION_DATE="2026-04-22"
+readonly SCRIPT_VERSION="3.34.12"
+readonly SCRIPT_VERSION_DATE="2026-04-23"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -10452,7 +10452,7 @@ list_maintenance_events() {
         [[ "$1" -gt 0 ]] || return 0
         _lf_v="$1"
         case "$2" in
-            S) _lf_c="${YELLOW}" ;; P) _lf_c="${GREEN}" ;; F) _lf_c="${RED}" ;; *) _lf_c="${GRAY}" ;;
+            S) _lf_c="${YELLOW}" ;; R) _lf_c="${CYAN}" ;; P) _lf_c="${GREEN}" ;; F) _lf_c="${RED}" ;; *) _lf_c="${GRAY}" ;;
         esac
     }
 
@@ -10470,10 +10470,10 @@ list_maintenance_events() {
     if [[ ${#_me_fault_counts[@]} -gt 0 ]]; then
         echo ""
         echo -e "  ${BOLD}${WHITE}By Fault Code:${NC}"
-        printf "  ${BOLD}${WHITE}%-10s %-22s %6s %7s %7s %7s %7s${NC}\n" "Month" "Fault Code" "Nodes" "SCHED" "PASS" "CANCEL" "FAIL"
-        printf "  ${GRAY}%-10s %-22s %6s %7s %7s %7s %7s${NC}\n" "----------" "----------------------" "------" "-------" "-------" "-------" "-------"
+        printf "  ${BOLD}${WHITE}%-10s %-22s %6s %7s %7s %7s %7s %7s${NC}\n" "Month" "Fault Code" "Nodes" "SCHED" "PROC" "SUCC" "CANCEL" "FAIL"
+        printf "  ${GRAY}%-10s %-22s %6s %7s %7s %7s %7s %7s${NC}\n" "----------" "----------------------" "------" "-------" "-------" "-------" "-------" "-------"
 
-        local _fc_total=0 _fc_t_s=0 _fc_t_p=0 _fc_t_c=0 _fc_t_f=0
+        local _fc_total=0 _fc_t_s=0 _fc_t_r=0 _fc_t_p=0 _fc_t_c=0 _fc_t_f=0
         for _month in "${_me_sorted_months[@]}"; do
             local _month_first=true
             local _fc_key
@@ -10482,47 +10482,52 @@ list_maintenance_events() {
                 local _mf_n="${_me_month_fault_counts["${_month}|${_fc_key}"]:-0}"
                 [[ "$_mf_n" -eq 0 ]] && continue
                 local _mf_s="${_me_month_fault_lc_counts["${_month}|${_fc_key}|SCHEDULED"]:-0}"
+                local _mf_r="${_me_month_fault_lc_counts["${_month}|${_fc_key}|PROCESSING"]:-0}"
                 local _mf_p="${_me_month_fault_lc_counts["${_month}|${_fc_key}|SUCCEEDED"]:-0}"
                 local _mf_c="${_me_month_fault_lc_counts["${_month}|${_fc_key}|CANCELED"]:-0}"
                 local _mf_f="${_me_month_fault_lc_counts["${_month}|${_fc_key}|FAILED"]:-0}"
                 local _ml=""
                 [[ "$_month_first" == true ]] && _ml="$_month" && _month_first=false
                 _me_lc_fmt "$_mf_s" S; local _sc="$_lf_c" _sv="$_lf_v"
+                _me_lc_fmt "$_mf_r" R; local _rc="$_lf_c" _rv="$_lf_v"
                 _me_lc_fmt "$_mf_p" P; local _pc="$_lf_c" _pv="$_lf_v"
                 _me_lc_fmt "$_mf_c" C; local _cc="$_lf_c" _cv="$_lf_v"
                 _me_lc_fmt "$_mf_f" F; local _fcc="$_lf_c" _fv="$_lf_v"
-                printf "  ${WHITE}%-10s${NC} ${CYAN}%-22s${NC} ${WHITE}%6d${NC} ${_sc}%7s${NC} ${_pc}%7s${NC} ${_cc}%7s${NC} ${_fcc}%7s${NC}\n" \
-                    "$_ml" "$_fc_key" "$_mf_n" "$_sv" "$_pv" "$_cv" "$_fv"
-                (( _fc_total += _mf_n )); (( _fc_t_s += _mf_s )); (( _fc_t_p += _mf_p ))
-                (( _fc_t_c += _mf_c )); (( _fc_t_f += _mf_f ))
+                printf "  ${WHITE}%-10s${NC} ${CYAN}%-22s${NC} ${WHITE}%6d${NC} ${_sc}%7s${NC} ${_rc}%7s${NC} ${_pc}%7s${NC} ${_cc}%7s${NC} ${_fcc}%7s${NC}\n" \
+                    "$_ml" "$_fc_key" "$_mf_n" "$_sv" "$_rv" "$_pv" "$_cv" "$_fv"
+                (( _fc_total += _mf_n )); (( _fc_t_s += _mf_s )); (( _fc_t_r += _mf_r ))
+                (( _fc_t_p += _mf_p )); (( _fc_t_c += _mf_c )); (( _fc_t_f += _mf_f ))
             done < <(printf '%s\n' "${!_me_fault_counts[@]}" | sort)
         done
 
         # Totals by fault code (across months)
-        printf "  ${GRAY}%-10s %-22s %6s %7s %7s %7s %7s${NC}\n" "----------" "----------------------" "------" "-------" "-------" "-------" "-------"
+        printf "  ${GRAY}%-10s %-22s %6s %7s %7s %7s %7s %7s${NC}\n" "----------" "----------------------" "------" "-------" "-------" "-------" "-------" "-------"
         echo -e "  ${BOLD}${WHITE}Totals by Fault Code:${NC}"
         local _fc_key
         while IFS= read -r _fc_key; do
             [[ -z "$_fc_key" ]] && continue
             local _tf_n="${_me_fault_counts[$_fc_key]}"
             local _tf_s="${_me_fault_lc_counts["${_fc_key}|SCHEDULED"]:-0}"
+            local _tf_r="${_me_fault_lc_counts["${_fc_key}|PROCESSING"]:-0}"
             local _tf_p="${_me_fault_lc_counts["${_fc_key}|SUCCEEDED"]:-0}"
             local _tf_c="${_me_fault_lc_counts["${_fc_key}|CANCELED"]:-0}"
             local _tf_f="${_me_fault_lc_counts["${_fc_key}|FAILED"]:-0}"
             _me_lc_fmt "$_tf_s" S; local _sc="$_lf_c" _sv="$_lf_v"
+            _me_lc_fmt "$_tf_r" R; local _rc="$_lf_c" _rv="$_lf_v"
             _me_lc_fmt "$_tf_p" P; local _pc="$_lf_c" _pv="$_lf_v"
             _me_lc_fmt "$_tf_c" C; local _cc="$_lf_c" _cv="$_lf_v"
             _me_lc_fmt "$_tf_f" F; local _fcc="$_lf_c" _fv="$_lf_v"
-            printf "  ${WHITE}%-10s${NC} ${CYAN}%-22s${NC} ${WHITE}%6d${NC} ${_sc}%7s${NC} ${_pc}%7s${NC} ${_cc}%7s${NC} ${_fcc}%7s${NC}\n" \
-                "" "$_fc_key" "$_tf_n" "$_sv" "$_pv" "$_cv" "$_fv"
+            printf "  ${WHITE}%-10s${NC} ${CYAN}%-22s${NC} ${WHITE}%6d${NC} ${_sc}%7s${NC} ${_rc}%7s${NC} ${_pc}%7s${NC} ${_cc}%7s${NC} ${_fcc}%7s${NC}\n" \
+                "" "$_fc_key" "$_tf_n" "$_sv" "$_rv" "$_pv" "$_cv" "$_fv"
         done < <(printf '%s\n' "${!_me_fault_counts[@]}" | sort)
-        printf "  ${GRAY}%-10s %-22s %6s %7s %7s %7s %7s${NC}\n" "----------" "----------------------" "------" "-------" "-------" "-------" "-------"
+        printf "  ${GRAY}%-10s %-22s %6s %7s %7s %7s %7s %7s${NC}\n" "----------" "----------------------" "------" "-------" "-------" "-------" "-------" "-------"
         _me_lc_fmt "$_fc_t_s" S; local _ts="$_lf_c" _tsv="$_lf_v"
+        _me_lc_fmt "$_fc_t_r" R; local _tr="$_lf_c" _trv="$_lf_v"
         _me_lc_fmt "$_fc_t_p" P; local _tp="$_lf_c" _tpv="$_lf_v"
         _me_lc_fmt "$_fc_t_c" C; local _tc="$_lf_c" _tcv="$_lf_v"
         _me_lc_fmt "$_fc_t_f" F; local _tf="$_lf_c" _tfv="$_lf_v"
-        printf "  ${BOLD}${WHITE}%-10s %-22s %6d${NC} ${_ts}%7s${NC} ${_tp}%7s${NC} ${_tc}%7s${NC} ${_tf}%7s${NC}\n" \
-            "" "Total" "$_fc_total" "$_tsv" "$_tpv" "$_tcv" "$_tfv"
+        printf "  ${BOLD}${WHITE}%-10s %-22s %6d${NC} ${_ts}%7s${NC} ${_tr}%7s${NC} ${_tp}%7s${NC} ${_tc}%7s${NC} ${_tf}%7s${NC}\n" \
+            "" "Total" "$_fc_total" "$_tsv" "$_trv" "$_tpv" "$_tcv" "$_tfv"
 
         # Fault Code Reference — description and impact per fault code
         if [[ ${#_me_fault_desc[@]} -gt 0 ]]; then
@@ -10551,31 +10556,33 @@ list_maintenance_events() {
         echo -e "  ${BOLD}${WHITE}By GPU Memory Cluster:${NC}"
 
         # Simple cluster → node count summary
-        printf "  ${BOLD}${WHITE}%-30s %6s %7s %7s %7s %7s${NC}\n" "Cluster" "Nodes" "SCHED" "PASS" "CANCEL" "FAIL"
-        printf "  ${GRAY}%-30s %6s %7s %7s %7s %7s${NC}\n" "------------------------------" "------" "-------" "-------" "-------" "-------"
+        printf "  ${BOLD}${WHITE}%-30s %6s %7s %7s %7s %7s %7s${NC}\n" "Cluster" "Nodes" "SCHED" "PROC" "SUCC" "CANCEL" "FAIL"
+        printf "  ${GRAY}%-30s %6s %7s %7s %7s %7s %7s${NC}\n" "------------------------------" "------" "-------" "-------" "-------" "-------" "-------"
         local _gc_key
         while IFS= read -r _gc_key; do
             [[ -z "$_gc_key" ]] && continue
             local _gc_n="${_me_cluster_counts[$_gc_key]}"
             local _gc_s="${_me_cluster_lc_counts["${_gc_key}|SCHEDULED"]:-0}"
+            local _gc_r="${_me_cluster_lc_counts["${_gc_key}|PROCESSING"]:-0}"
             local _gc_p="${_me_cluster_lc_counts["${_gc_key}|SUCCEEDED"]:-0}"
             local _gc_c="${_me_cluster_lc_counts["${_gc_key}|CANCELED"]:-0}"
             local _gc_f="${_me_cluster_lc_counts["${_gc_key}|FAILED"]:-0}"
             _me_lc_fmt "$_gc_s" S; local _gcs="$_lf_c" _gcsv="$_lf_v"
+            _me_lc_fmt "$_gc_r" R; local _gcr="$_lf_c" _gcrv="$_lf_v"
             _me_lc_fmt "$_gc_p" P; local _gcp="$_lf_c" _gcpv="$_lf_v"
             _me_lc_fmt "$_gc_c" C; local _gcc="$_lf_c" _gccv="$_lf_v"
             _me_lc_fmt "$_gc_f" F; local _gcf="$_lf_c" _gcfv="$_lf_v"
-            printf "  ${MAGENTA}%-30s${NC} ${WHITE}%6d${NC} ${_gcs}%7s${NC} ${_gcp}%7s${NC} ${_gcc}%7s${NC} ${_gcf}%7s${NC}\n" \
-                "$_gc_key" "$_gc_n" "$_gcsv" "$_gcpv" "$_gccv" "$_gcfv"
+            printf "  ${MAGENTA}%-30s${NC} ${WHITE}%6d${NC} ${_gcs}%7s${NC} ${_gcr}%7s${NC} ${_gcp}%7s${NC} ${_gcc}%7s${NC} ${_gcf}%7s${NC}\n" \
+                "$_gc_key" "$_gc_n" "$_gcsv" "$_gcrv" "$_gcpv" "$_gccv" "$_gcfv"
         done < <(printf '%s\n' "${!_me_cluster_counts[@]}" | sort)
         echo ""
 
         # Detailed breakdown: cluster × fault code (grouped by month)
         echo -e "  ${BOLD}${WHITE}By GPU Memory Cluster / Fault Code:${NC}"
-        printf "  ${BOLD}${WHITE}%-10s %-25s %-20s %6s %7s %7s %7s %7s${NC}\n" "Month" "Cluster" "Fault Code" "Nodes" "SCHED" "PASS" "CANCEL" "FAIL"
-        printf "  ${GRAY}%-10s %-25s %-20s %6s %7s %7s %7s %7s${NC}\n" "----------" "-------------------------" "--------------------" "------" "-------" "-------" "-------" "-------"
+        printf "  ${BOLD}${WHITE}%-10s %-25s %-20s %6s %7s %7s %7s %7s %7s${NC}\n" "Month" "Cluster" "Fault Code" "Nodes" "SCHED" "PROC" "SUCC" "CANCEL" "FAIL"
+        printf "  ${GRAY}%-10s %-25s %-20s %6s %7s %7s %7s %7s %7s${NC}\n" "----------" "-------------------------" "--------------------" "------" "-------" "-------" "-------" "-------" "-------"
 
-        local _gt_n=0 _gt_s=0 _gt_p=0 _gt_c=0 _gt_f=0 _gt_fabs=0
+        local _gt_n=0 _gt_s=0 _gt_r=0 _gt_p=0 _gt_c=0 _gt_f=0 _gt_fabs=0
         for _month in "${_me_sorted_months[@]}"; do
             local _month_first=true
             local _gc_key
@@ -10590,6 +10597,7 @@ list_maintenance_events() {
                     local _mcf_n="${_me_month_cf_counts["${_month}|${_gc_key}|${_cf_fault}"]:-0}"
                     [[ "$_mcf_n" -eq 0 ]] && continue
                     local _mcf_s="${_me_month_cf_lc_counts["${_month}|${_gc_key}|${_cf_fault}|SCHEDULED"]:-0}"
+                    local _mcf_r="${_me_month_cf_lc_counts["${_month}|${_gc_key}|${_cf_fault}|PROCESSING"]:-0}"
                     local _mcf_p="${_me_month_cf_lc_counts["${_month}|${_gc_key}|${_cf_fault}|SUCCEEDED"]:-0}"
                     local _mcf_c="${_me_month_cf_lc_counts["${_month}|${_gc_key}|${_cf_fault}|CANCELED"]:-0}"
                     local _mcf_f="${_me_month_cf_lc_counts["${_month}|${_gc_key}|${_cf_fault}|FAILED"]:-0}"
@@ -10597,13 +10605,14 @@ list_maintenance_events() {
                     [[ "$_month_first" == true ]] && _ml="$_month" && _month_first=false
                     [[ "$_fab_first" == true ]] && _fl="$_gc_key" && _fab_first=false
                     _me_lc_fmt "$_mcf_s" S; local _sc="$_lf_c" _sv="$_lf_v"
+                    _me_lc_fmt "$_mcf_r" R; local _rc="$_lf_c" _rv="$_lf_v"
                     _me_lc_fmt "$_mcf_p" P; local _pc="$_lf_c" _pv="$_lf_v"
                     _me_lc_fmt "$_mcf_c" C; local _cc="$_lf_c" _cv="$_lf_v"
                     _me_lc_fmt "$_mcf_f" F; local _fcc="$_lf_c" _fv="$_lf_v"
-                    printf "  ${WHITE}%-10s${NC} ${MAGENTA}%-25s${NC} ${CYAN}%-20s${NC} ${WHITE}%6d${NC} ${_sc}%7s${NC} ${_pc}%7s${NC} ${_cc}%7s${NC} ${_fcc}%7s${NC}\n" \
-                        "$_ml" "$_fl" "$_cf_fault" "$_mcf_n" "$_sv" "$_pv" "$_cv" "$_fv"
-                    (( _gt_n += _mcf_n )); (( _gt_s += _mcf_s )); (( _gt_p += _mcf_p ))
-                    (( _gt_c += _mcf_c )); (( _gt_f += _mcf_f ))
+                    printf "  ${WHITE}%-10s${NC} ${MAGENTA}%-25s${NC} ${CYAN}%-20s${NC} ${WHITE}%6d${NC} ${_sc}%7s${NC} ${_rc}%7s${NC} ${_pc}%7s${NC} ${_cc}%7s${NC} ${_fcc}%7s${NC}\n" \
+                        "$_ml" "$_fl" "$_cf_fault" "$_mcf_n" "$_sv" "$_rv" "$_pv" "$_cv" "$_fv"
+                    (( _gt_n += _mcf_n )); (( _gt_s += _mcf_s )); (( _gt_r += _mcf_r ))
+                    (( _gt_p += _mcf_p )); (( _gt_c += _mcf_c )); (( _gt_f += _mcf_f ))
                 done < <(printf '%s\n' "${!_me_cluster_fault_counts[@]}" | sort)
             done < <(printf '%s\n' "${!_me_cluster_counts[@]}" | sort)
         done
@@ -10612,7 +10621,7 @@ list_maintenance_events() {
         _gt_fabs=$(printf '%s\n' "${!_me_cluster_counts[@]}" | wc -l)
 
         # Totals by cluster/fault code (across months)
-        printf "  ${GRAY}%-10s %-25s %-20s %6s %7s %7s %7s %7s${NC}\n" "----------" "-------------------------" "--------------------" "------" "-------" "-------" "-------" "-------"
+        printf "  ${GRAY}%-10s %-25s %-20s %6s %7s %7s %7s %7s %7s${NC}\n" "----------" "-------------------------" "--------------------" "------" "-------" "-------" "-------" "-------" "-------"
         echo -e "  ${BOLD}${WHITE}Totals by Cluster/Fault Code:${NC}"
         local _gc_key
         while IFS= read -r _gc_key; do
@@ -10625,26 +10634,29 @@ list_maintenance_events() {
                 [[ "$_cf_cluster" != "$_gc_key" ]] && continue
                 local _tcf_n="${_me_cluster_fault_counts[$_cf_key]}"
                 local _tcf_s="${_me_cf_lc_counts["${_gc_key}|${_cf_fault}|SCHEDULED"]:-0}"
+                local _tcf_r="${_me_cf_lc_counts["${_gc_key}|${_cf_fault}|PROCESSING"]:-0}"
                 local _tcf_p="${_me_cf_lc_counts["${_gc_key}|${_cf_fault}|SUCCEEDED"]:-0}"
                 local _tcf_c="${_me_cf_lc_counts["${_gc_key}|${_cf_fault}|CANCELED"]:-0}"
                 local _tcf_f="${_me_cf_lc_counts["${_gc_key}|${_cf_fault}|FAILED"]:-0}"
                 local _fl=""
                 [[ "$_fab_first" == true ]] && _fl="$_gc_key" && _fab_first=false
                 _me_lc_fmt "$_tcf_s" S; local _sc="$_lf_c" _sv="$_lf_v"
+                _me_lc_fmt "$_tcf_r" R; local _rc="$_lf_c" _rv="$_lf_v"
                 _me_lc_fmt "$_tcf_p" P; local _pc="$_lf_c" _pv="$_lf_v"
                 _me_lc_fmt "$_tcf_c" C; local _cc="$_lf_c" _cv="$_lf_v"
                 _me_lc_fmt "$_tcf_f" F; local _fcc="$_lf_c" _fv="$_lf_v"
-                printf "  ${WHITE}%-10s${NC} ${MAGENTA}%-25s${NC} ${CYAN}%-20s${NC} ${WHITE}%6d${NC} ${_sc}%7s${NC} ${_pc}%7s${NC} ${_cc}%7s${NC} ${_fcc}%7s${NC}\n" \
-                    "" "$_fl" "$_cf_fault" "$_tcf_n" "$_sv" "$_pv" "$_cv" "$_fv"
+                printf "  ${WHITE}%-10s${NC} ${MAGENTA}%-25s${NC} ${CYAN}%-20s${NC} ${WHITE}%6d${NC} ${_sc}%7s${NC} ${_rc}%7s${NC} ${_pc}%7s${NC} ${_cc}%7s${NC} ${_fcc}%7s${NC}\n" \
+                    "" "$_fl" "$_cf_fault" "$_tcf_n" "$_sv" "$_rv" "$_pv" "$_cv" "$_fv"
             done < <(printf '%s\n' "${!_me_cluster_fault_counts[@]}" | sort)
         done < <(printf '%s\n' "${!_me_cluster_counts[@]}" | sort)
-        printf "  ${GRAY}%-10s %-25s %-20s %6s %7s %7s %7s %7s${NC}\n" "----------" "-------------------------" "--------------------" "------" "-------" "-------" "-------" "-------"
+        printf "  ${GRAY}%-10s %-25s %-20s %6s %7s %7s %7s %7s %7s${NC}\n" "----------" "-------------------------" "--------------------" "------" "-------" "-------" "-------" "-------" "-------"
         _me_lc_fmt "$_gt_s" S; local _gts="$_lf_c" _gtsv="$_lf_v"
+        _me_lc_fmt "$_gt_r" R; local _gtr="$_lf_c" _gtrv="$_lf_v"
         _me_lc_fmt "$_gt_p" P; local _gtp="$_lf_c" _gtpv="$_lf_v"
         _me_lc_fmt "$_gt_c" C; local _gtc="$_lf_c" _gtcv="$_lf_v"
         _me_lc_fmt "$_gt_f" F; local _gtf="$_lf_c" _gtfv="$_lf_v"
-        printf "  ${BOLD}${WHITE}%-10s %-25s %-20s %6d${NC} ${_gts}%7s${NC} ${_gtp}%7s${NC} ${_gtc}%7s${NC} ${_gtf}%7s${NC}  ${GRAY}%s cluster(s)${NC}\n" \
-            "" "" "Total" "$_gt_n" "$_gtsv" "$_gtpv" "$_gtcv" "$_gtfv" "$_gt_fabs"
+        printf "  ${BOLD}${WHITE}%-10s %-25s %-20s %6d${NC} ${_gts}%7s${NC} ${_gtr}%7s${NC} ${_gtp}%7s${NC} ${_gtc}%7s${NC} ${_gtf}%7s${NC}  ${GRAY}%s cluster(s)${NC}\n" \
+            "" "" "Total" "$_gt_n" "$_gtsv" "$_gtrv" "$_gtpv" "$_gtcv" "$_gtfv" "$_gt_fabs"
     fi
 
     # Count tainted nodes for hint in menu
