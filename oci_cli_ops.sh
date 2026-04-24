@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.13"
+readonly SCRIPT_VERSION="3.34.14"
 readonly SCRIPT_VERSION_DATE="2026-04-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -42661,6 +42661,10 @@ interactive_gpu_management() {
                     update_gpu_memory_cluster_interactive
                     break  # Refresh display after update
                     ;;
+                update\ *|UPDATE\ *)
+                    update_gpu_memory_cluster_interactive "${input#* }"
+                    break  # Refresh display after update
+                    ;;
                 fw|FW|firmware|FIRMWARE)
                     manage_firmware_bundles
                     ;;
@@ -44382,6 +44386,7 @@ create_gpu_memory_cluster_interactive() {
 
 # Update GPU Memory Cluster interactively
 update_gpu_memory_cluster_interactive() {
+    local _preselect="${1:-}"
     local compartment_id="${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}"
     local region="${FOCUS_REGION:-$REGION}"
     
@@ -44518,13 +44523,15 @@ update_gpu_memory_cluster_interactive() {
     echo ""
     
     # ── Multi-select: g1, g1,g2,g3, g1-5, all ──
-    echo -e "${WHITE}Select cluster(s) to update:${NC}"
-    echo -e "  ${GRAY}Examples: ${WHITE}g1${GRAY}  |  ${WHITE}g1,g3,g5${GRAY}  |  ${WHITE}g1-5${GRAY}  |  ${WHITE}all${NC}"
-    echo ""
-    echo -n -e "${CYAN}Select GPU Memory Cluster(s): ${NC}"
-    local cluster_input
-    read -r cluster_input
-    
+    local cluster_input="$_preselect"
+    if [[ -z "$cluster_input" ]]; then
+        echo -e "${WHITE}Select cluster(s) to update:${NC}"
+        echo -e "  ${GRAY}Examples: ${WHITE}g1${GRAY}  |  ${WHITE}g1,g3,g5${GRAY}  |  ${WHITE}g1-5${GRAY}  |  ${WHITE}all${NC}"
+        echo ""
+        echo -n -e "${CYAN}Select GPU Memory Cluster(s): ${NC}"
+        read -r cluster_input
+    fi
+
     if [[ -z "$cluster_input" ]]; then
         echo -e "${RED}No cluster selected${NC}"
         return 1
