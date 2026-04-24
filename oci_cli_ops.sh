@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.19"
+readonly SCRIPT_VERSION="3.34.20"
 readonly SCRIPT_VERSION_DATE="2026-04-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -43827,9 +43827,15 @@ _fw_update_fabric_firmware() {
     local _latest_bundle=""
     _latest_bundle=$(jq -r '[.data.items[] | select(.["lifecycle-state"] == "ACTIVE")] | sort_by(.["display-name"]) | last | .id // ""' <<< "$_fw_json" 2>/dev/null)
 
-    echo -e "  ${BOLD}${WHITE}Select GPU Memory Fabric:${NC}"
+    if [[ -n "$_preselect_ocid" ]]; then
+        echo -e "  ${BOLD}${WHITE}GPU Memory Fabric:${NC}"
+    else
+        echo -e "  ${BOLD}${WHITE}Select GPU Memory Fabric:${NC}"
+    fi
     echo ""
     for _i in "${!_fab_names[@]}"; do
+        # Skip non-matching fabrics when preselected
+        [[ -n "$_preselect_ocid" && "${_fab_ocids[$_i]}" != "$_preselect_ocid" ]] && continue
         local _sc="$WHITE"
         case "${_fab_states[$_i]}" in
             ACTIVE|OCCUPIED) _sc="$GREEN" ;;
