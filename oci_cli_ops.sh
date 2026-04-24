@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.16"
+readonly SCRIPT_VERSION="3.34.18"
 readonly SCRIPT_VERSION_DATE="2026-04-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -42668,6 +42668,15 @@ interactive_gpu_management() {
                 fw|FW|firmware|FIRMWARE)
                     manage_firmware_bundles
                     ;;
+                fw\ *|FW\ *|firmware\ *|FIRMWARE\ *)
+                    local _fw_target="${input#* }"
+                    local _fw_target_ocid="${FABRIC_INDEX_MAP[$_fw_target]:-}"
+                    if [[ -n "$_fw_target_ocid" ]]; then
+                        manage_firmware_bundles "$_fw_target_ocid"
+                    else
+                        echo -e "${RED}Invalid fabric ID: ${_fw_target}. Use f# (e.g., fw f1)${NC}"
+                    fi
+                    ;;
                 j|J|json|JSON)
                     if [[ -s "$FABRIC_JSON_CACHE" ]]; then
                         _ui_json_viewer "GPU Fabrics" "-f" "$FABRIC_JSON_CACHE" ".data"
@@ -43026,6 +43035,7 @@ view_gpu_resource() {
 #       oci compute firmware-bundle get  --firmware-bundle-id <id>
 #--------------------------------------------------------------------------------
 manage_firmware_bundles() {
+    local _preselect_fabric_ocid="${1:-}"
     local region="${FOCUS_REGION:-$REGION}"
 
     echo ""
@@ -43366,6 +43376,12 @@ manage_firmware_bundles() {
     fi
     echo ""
 
+    # If a fabric was preselected, go straight to update
+    if [[ -n "$_preselect_fabric_ocid" ]]; then
+        _fw_update_fabric_firmware "$selected_platform" "$_fw_json" "$_preselect_fabric_ocid"
+        return
+    fi
+
     # ── Action loop ──
     while true; do
         echo -e "  ${YELLOW}#${NC}) View bundle    ${GREEN}all${NC}) Expand all    ${GREEN}overview${NC}) Firmware overview    ${GREEN}update${NC}) Update    ${GREEN}r${NC}) Refresh    ${GREEN}col${NC}) Columns    ${CYAN}Enter${NC}) Return"
@@ -43378,7 +43394,7 @@ manage_firmware_bundles() {
 
         case "$_fwsel" in
             update|UPDATE)
-                _fw_update_fabric_firmware "$selected_platform" "$_fw_json"
+                _fw_update_fabric_firmware "$selected_platform" "$_fw_json" "$_preselect_fabric_ocid"
                 return  # Return to GPU menu to refresh display
                 ;;
             overview|OVERVIEW|ov|OV)
@@ -43764,6 +43780,7 @@ _fw_view_bundle_detail() {
 _fw_update_fabric_firmware() {
     local _platform="$1"
     local _fw_json="$2"
+    local _preselect_ocid="${3:-}"
     local region="${FOCUS_REGION:-$REGION}"
     local log_file="${LOGS_DIR}/firmware_update_actions_$(date +%Y%m%d).log"
     mkdir -p "$(dirname "$log_file")" 2>/dev/null
@@ -43836,19 +43853,35 @@ _fw_update_fabric_firmware() {
             "$((_i+1))" "${_fab_names[$_i]}" "${_fab_states[$_i]}"
     done
 
-    echo ""
-    echo -n -e "  ${CYAN}Select fabric #: ${NC}"
-    local _fsel
-    read -r _fsel
-    [[ -z "$_fsel" ]] && return
+    local _sel_idx=-1
+    if [[ -n "$_preselect_ocid" ]]; then
+        # Match preselected OCID to fabric list
+        for _i in "${!_fab_ocids[@]}"; do
+            if [[ "${_fab_ocids[$_i]}" == "$_preselect_ocid" ]]; then
+                _sel_idx=$_i
+                break
+            fi
+        done
+        if [[ $_sel_idx -lt 0 ]]; then
+            echo -e "  ${RED}Preselected fabric not found in cache${NC}"
+            _ui_pause "return"
+            return
+        fi
+    else
+        echo ""
+        echo -n -e "  ${CYAN}Select fabric #: ${NC}"
+        local _fsel
+        read -r _fsel
+        [[ -z "$_fsel" ]] && return
 
-    if ! [[ "$_fsel" =~ ^[0-9]+$ ]] || [[ $((_fsel-1)) -ge $_fidx || $((_fsel-1)) -lt 0 ]]; then
-        echo -e "  ${RED}Invalid selection${NC}"
-        sleep 1
-        return
+        if ! [[ "$_fsel" =~ ^[0-9]+$ ]] || [[ $((_fsel-1)) -ge $_fidx || $((_fsel-1)) -lt 0 ]]; then
+            echo -e "  ${RED}Invalid selection${NC}"
+            sleep 1
+            return
+        fi
+        _sel_idx=$((_fsel-1))
     fi
 
-    local _sel_idx=$((_fsel-1))
     local _sel_fabric_name="${_fab_names[$_sel_idx]}"
     local _sel_fabric_ocid="${_fab_ocids[$_sel_idx]}"
     local _sel_cur_fw="${_fab_curfw[$_sel_idx]}"
@@ -43905,11 +43938,18 @@ _fw_update_fabric_firmware() {
     local _sel_bundle="${_bun_ids[$((_bsel-1))]}"
     local _sel_bundle_name="${_bun_names[$((_bsel-1))]}"
 
-    # Check if same as current
+    # Check if same as current — offer to set target to current (e.g., to cancel a pending upgrade)
     if [[ "$_sel_bundle" == "$_sel_cur_fw" ]]; then
         echo -e "  ${YELLOW}Selected bundle is already the current firmware on this fabric.${NC}"
-        _ui_pause "return"
-        return
+        echo -e "  ${GRAY}This can be used to set the target back to the current firmware (e.g., cancel a pending upgrade).${NC}"
+        echo ""
+        echo -n -e "  ${CYAN}Set target to current firmware? (yes/no): ${NC}"
+        local _set_cur
+        read -r _set_cur
+        if [[ "$_set_cur" != "yes" ]]; then
+            echo -e "  ${YELLOW}Cancelled${NC}"
+            return
+        fi
     fi
 
     # ── Step 3: Select recycle level ──
