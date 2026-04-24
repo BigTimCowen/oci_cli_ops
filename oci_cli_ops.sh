@@ -44621,6 +44621,7 @@ update_gpu_memory_cluster_interactive() {
                 _sc_default_size=$(( _sc_size + _sc_avail ))
             fi
             echo -e "  ${GRAY}Current: ${WHITE}${_sc_size}${GRAY}  Healthy: ${WHITE}${_sc_healthy}${GRAY}  Available: ${YELLOW}${_sc_avail}${GRAY}  Fabric Size: ${WHITE}${_sc_total}${NC}"
+            echo -e "  ${GRAY}Press Enter for recommended value or specify new size${NC}"
             echo -n -e "${CYAN}Enter new size for ${YELLOW}${valid_gids[0]}${CYAN} (recommend: ${WHITE}${_sc_default_size}${CYAN}): ${NC}"
             local sz
             read -r sz
