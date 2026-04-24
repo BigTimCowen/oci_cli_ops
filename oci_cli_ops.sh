@@ -43844,7 +43844,7 @@ _fw_update_fabric_firmware() {
 
     local -a _fab_names=() _fab_ocids=() _fab_states=() _fab_curfw=() _fab_tarfw=() _fab_fwstates=()
     local _fidx=0
-    while IFS='|' read -r _fn _fsuf _focid _fstate _fhealthy _favail _ftotal _fcurfw _ftarfw _ffwstate; do
+    while IFS='|' read -r _fn _fsuf _focid _fstate _fhealthy _favail _ftotal _fcurfw _ftarfw _ffwstate _; do
         [[ -z "$_focid" ]] && continue
         ((_fidx++))
         _fab_names+=("$_fn")
@@ -43871,10 +43871,10 @@ _fw_update_fabric_firmware() {
         echo -e "  ${BOLD}${WHITE}Select GPU Memory Fabric:${NC}"
     fi
     echo ""
-    printf "    ${BOLD}%-4s %-32s %-12s %-14s %-8s %-8s %s${NC}\n" \
+    printf "    ${BOLD}%-4s %-47s %-12s %-14s %-8s %-8s %s${NC}\n" \
         "#" "Fabric Name" "State" "FW State" "Cur FW" "Tgt FW" ""
-    printf "    ${GRAY}%-4s %-32s %-12s %-14s %-8s %-8s${NC}\n" \
-        "----" "--------------------------------" "------------" "--------------" "--------" "--------"
+    printf "    ${GRAY}%-4s %-47s %-12s %-14s %-8s %-8s${NC}\n" \
+        "----" "-----------------------------------------------" "------------" "--------------" "--------" "--------"
 
     for _i in "${!_fab_names[@]}"; do
         # Skip non-matching fabrics when preselected
@@ -43913,8 +43913,8 @@ _fw_update_fabric_firmware() {
             _upgrade_badge="  ${CYAN}↑ upgrade available${NC}"
         fi
 
-        printf "    ${GREEN}%2d${NC}) ${WHITE}%-30s${NC} ${_sc}%-12s${NC} ${_fwsc}%-14s${NC} ${GREEN}%-8s${NC} ${_tgt_color}%-8s${NC}${_upgrade_badge}\n" \
-            "$((_i+1))" "${_fab_names[$_i]}" "${_fab_states[$_i]}" "$_fws_display" "$_cur_short" "$_tgt_short"
+        printf "    ${GREEN}%2d${NC}) ${WHITE}%-45s${NC} ${_sc}%-12s${NC} ${_fwsc}%-14s${NC} ${GREEN}%-8s${NC} ${_tgt_color}%-8s${NC}${_upgrade_badge}\n" \
+            "$((_i+1))" "${_fab_names[$_i]:0:45}" "${_fab_states[$_i]}" "$_fws_display" "$_cur_short" "$_tgt_short"
     done
 
     local _sel_idx=-1
