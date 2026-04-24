@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.18"
+readonly SCRIPT_VERSION="3.34.19"
 readonly SCRIPT_VERSION_DATE="2026-04-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -43094,43 +43094,50 @@ manage_firmware_bundles() {
         done < <(grep -v "^#" "$COMPUTE_HOST_CACHE")
     fi
 
+    # Auto-detect platform from fabric OCID if preselected
     local selected_platform=""
-    if [[ ${#_platforms[@]} -eq 0 ]]; then
-        echo -e "  ${YELLOW}No platforms found. Enter a platform manually.${NC}"
-        echo ""
-        echo -n -e "  ${CYAN}Platform: ${NC}"
-        read -r selected_platform
-        [[ -z "$selected_platform" ]] && return
-    elif [[ ${#_platforms[@]} -eq 1 ]]; then
-        selected_platform="${_platforms[0]}"
-        local _fc_hint="${_plat_fabric_count[$selected_platform]:-0} fabrics"
-        echo -e "  ${WHITE}Platform:${NC} ${CYAN}${selected_platform}${NC}  ${GRAY}← ${_fc_hint}${NC}"
-    else
-        echo -e "  ${WHITE}Select platform:${NC}"
-        local _pidx=0
-        for _p in "${_platforms[@]}"; do
-            ((_pidx++))
-            local _fc=${_plat_fabric_count[$_p]:-0}
-            local _fnames="${_plat_fabric_names[$_p]:-}"
-            # Truncate fabric names list if too long
-            if [[ ${#_fnames} -gt 60 ]]; then
-                _fnames="${_fnames:0:57}..."
-            fi
-            if [[ $_fc -gt 0 ]]; then
-                printf "    ${GREEN}%d${NC}) ${CYAN}%-20s${NC} ${GRAY}← %d fabrics (%s)${NC}\n" "$_pidx" "$_p" "$_fc" "$_fnames"
-            else
-                printf "    ${GREEN}%d${NC}) ${CYAN}%-20s${NC}\n" "$_pidx" "$_p"
-            fi
-        done
-        echo ""
-        echo -n -e "  ${CYAN}Select #: ${NC}"
-        local _psel
-        read -r _psel
-        if [[ "$_psel" =~ ^[0-9]+$ && -n "${_platforms[$((_psel-1))]:-}" ]]; then
-            selected_platform="${_platforms[$((_psel-1))]}"
+    if [[ -n "$_preselect_fabric_ocid" && -f "$COMPUTE_HOST_CACHE" ]]; then
+        selected_platform=$(awk -F'|' -v fab="$_preselect_fabric_ocid" '$1 !~ /^#/ && $15 == fab && $5 != "" && $5 != "N/A" { print $5; exit }' "$COMPUTE_HOST_CACHE" 2>/dev/null)
+        [[ -n "$selected_platform" ]] && echo -e "  ${WHITE}Platform:${NC} ${CYAN}${selected_platform}${NC}  ${GRAY}← auto-detected from fabric${NC}"
+    fi
+
+    if [[ -z "$selected_platform" ]]; then
+        if [[ ${#_platforms[@]} -eq 0 ]]; then
+            echo -e "  ${YELLOW}No platforms found. Enter a platform manually.${NC}"
+            echo ""
+            echo -n -e "  ${CYAN}Platform: ${NC}"
+            read -r selected_platform
+            [[ -z "$selected_platform" ]] && return
+        elif [[ ${#_platforms[@]} -eq 1 ]]; then
+            selected_platform="${_platforms[0]}"
+            local _fc_hint="${_plat_fabric_count[$selected_platform]:-0} fabrics"
+            echo -e "  ${WHITE}Platform:${NC} ${CYAN}${selected_platform}${NC}  ${GRAY}← ${_fc_hint}${NC}"
         else
-            [[ -z "$_psel" ]] && return
-            selected_platform="$_psel"  # Treat as manual entry
+            echo -e "  ${WHITE}Select platform:${NC}"
+            local _pidx=0
+            for _p in "${_platforms[@]}"; do
+                ((_pidx++))
+                local _fc=${_plat_fabric_count[$_p]:-0}
+                local _fnames="${_plat_fabric_names[$_p]:-}"
+                if [[ ${#_fnames} -gt 60 ]]; then
+                    _fnames="${_fnames:0:57}..."
+                fi
+                if [[ $_fc -gt 0 ]]; then
+                    printf "    ${GREEN}%d${NC}) ${CYAN}%-20s${NC} ${GRAY}← %d fabrics (%s)${NC}\n" "$_pidx" "$_p" "$_fc" "$_fnames"
+                else
+                    printf "    ${GREEN}%d${NC}) ${CYAN}%-20s${NC}\n" "$_pidx" "$_p"
+                fi
+            done
+            echo ""
+            echo -n -e "  ${CYAN}Select #: ${NC}"
+            local _psel
+            read -r _psel
+            if [[ "$_psel" =~ ^[0-9]+$ && -n "${_platforms[$((_psel-1))]:-}" ]]; then
+                selected_platform="${_platforms[$((_psel-1))]}"
+            else
+                [[ -z "$_psel" ]] && return
+                selected_platform="$_psel"  # Treat as manual entry
+            fi
         fi
     fi
 
