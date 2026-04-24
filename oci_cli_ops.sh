@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.21"
+readonly SCRIPT_VERSION="3.34.22"
 readonly SCRIPT_VERSION_DATE="2026-04-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -43828,7 +43828,14 @@ _fw_update_fabric_firmware() {
     echo ""
 
     # ── Step 1: Select GPU Memory Fabric ──
-    # Build fabric list from cache
+    # Re-fetch fabric cache if missing (may have been invalidated by a previous update)
+    if [[ ! -f "$FABRIC_CACHE" ]] || ! is_cache_fresh "$FABRIC_CACHE"; then
+        _step_init
+        _step_active "fabrics"
+        fetch_gpu_fabrics
+        _step_complete "fabrics($(_clc "$FABRIC_CACHE"))"
+        _step_finish
+    fi
     if [[ ! -f "$FABRIC_CACHE" ]]; then
         echo -e "  ${RED}No GPU Memory Fabrics cached. Return to GPU menu and refresh first.${NC}"
         _ui_pause "return"
