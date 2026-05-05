@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.29"
+readonly SCRIPT_VERSION="3.34.30"
 readonly SCRIPT_VERSION_DATE="2026-05-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -37748,7 +37748,53 @@ display_instance_details() {
     fi
     
     [[ "$has_defined_tags" == "false" && "$has_freeform_tags" == "false" ]] && echo -e "${GRAY}No tags${NC}"
-    
+
+    # ========== DISPLAY — Instance Maintenance Event ==========
+    local _me_evt_id="" _me_evt_lc="" _me_evt_ws="" _me_evt_hd="" _me_evt_reason="" _me_evt_action="" _me_evt_resched="" _me_evt_dn="" _me_evt_cat=""
+    if [[ -f "$MAINT_EVENTS_CACHE" && -s "$MAINT_EVENTS_CACHE" ]]; then
+        local _me_raw
+        _me_raw=$(jq -r --arg iid "$instance_ocid" '
+            [.data[] | select(.["instance-id"] == $iid and .["lifecycle-state"] != "CANCELED" and .["lifecycle-state"] != "SUCCEEDED" and .["lifecycle-state"] != "FAILED")] |
+            first // empty |
+            "\(.id // "")|\(.["lifecycle-state"] // "")|\(.["time-window-start"] // "null")|\(.["time-hard-due-date"] // "null")|\(.["maintenance-reason"] // "N/A")|\(.["instance-action"] // "N/A")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["maintenance-category"] // "N/A")"
+        ' "$MAINT_EVENTS_CACHE" 2>/dev/null)
+        if [[ -n "$_me_raw" ]]; then
+            IFS='|' read -r _me_evt_id _me_evt_lc _me_evt_ws _me_evt_hd _me_evt_reason _me_evt_action _me_evt_resched _me_evt_dn _me_evt_cat <<< "$_me_raw"
+        fi
+    fi
+
+    if [[ -n "$_me_evt_id" ]]; then
+        echo ""
+        _ui_subheader "Instance Maintenance Event" 0
+
+        local _me_lc_color="$WHITE"
+        case "$_me_evt_lc" in
+            SCHEDULED) _me_lc_color="$YELLOW" ;;
+            PROCESSING|STARTED) _me_lc_color="$CYAN" ;;
+        esac
+
+        local _me_resched_display="${RED}No${NC}"
+        [[ "$_me_evt_resched" == "true" ]] && _me_resched_display="${GREEN}Yes${NC}"
+
+        local _me_action_color="$WHITE"
+        [[ "$_me_evt_action" == "STOP" ]] && _me_action_color="$RED"
+        [[ "$_me_evt_action" == "REBOOT" ]] && _me_action_color="$YELLOW"
+
+        local _me_ws_display="${_me_evt_ws}"
+        [[ "$_me_evt_ws" == "null" || -z "$_me_evt_ws" ]] && _me_ws_display="-"
+        local _me_hd_display="${_me_evt_hd}"
+        [[ "$_me_evt_hd" == "null" || -z "$_me_evt_hd" ]] && _me_hd_display="-"
+
+        printf "  ${WHITE}%-20s${NC}${YELLOW}%s${NC}\n" "Event:" "$_me_evt_reason"
+        printf "  ${WHITE}%-20s${NC}${GRAY}%s${NC}\n" "Event OCID:" "$_me_evt_id"
+        printf "  ${WHITE}%-20s${NC}${_me_lc_color}%s${NC}\n" "Lifecycle:" "$_me_evt_lc"
+        printf "  ${WHITE}%-20s${NC}${WHITE}%s${NC}\n" "Window Start:" "$_me_ws_display"
+        printf "  ${WHITE}%-20s${NC}${WHITE}%s${NC}\n" "Hard Due Date:" "$_me_hd_display"
+        printf "  ${WHITE}%-20s${NC}${_me_resched_display}\n" "Can Reschedule:"
+        printf "  ${WHITE}%-20s${NC}${_me_action_color}%s${NC}\n" "Instance Action:" "$_me_evt_action"
+        [[ "$_me_evt_cat" != "N/A" && -n "$_me_evt_cat" ]] && printf "  ${WHITE}%-20s${NC}${GRAY}%s${NC}\n" "Category:" "$_me_evt_cat"
+    fi
+
     # Check for user_data (cloud-init)
     local user_data_b64
     user_data_b64=$(jq -r '.data.metadata.user_data // empty' <<< "$instance_json")
@@ -38294,6 +38340,9 @@ display_instance_details() {
         if [[ -n "$_ch_host_ocid" && "$_ch_host_ocid" != "N/A" ]]; then
             echo -e "  ${CYAN}h${NC})   View compute host details (${GRAY}..${_ch_host_ocid: -6}${NC})"
         fi
+        if [[ -n "$_me_evt_id" ]]; then
+            echo -e "  ${ORANGE}me${NC}) Reschedule maintenance event (${YELLOW}${_me_evt_lc}${NC} — ${WHITE}${_me_ws_display:0:16}${NC})"
+        fi
 
         if [[ -n "$k8s_node_name" && -z "$oke_nodepool_id" ]]; then
             echo -e "  ${GREEN}bvr${NC}) Boot Volume Replacement"
@@ -38306,9 +38355,9 @@ display_instance_details() {
         echo -e "  ${CYAN}Enter${NC}) Return to list"
         echo ""
         if [[ -n "$k8s_node_name" ]]; then
-            _ui_prompt "Instance - ${display_name}" "r, 1-4, h, p, l, desc, logs, icc, re, fre, stop, 8, t, rt, T, x, j, wr, wr#, rc, rc#, rcc#, d, c, u, cd, bvr, Enter, show"
+            _ui_prompt "Instance - ${display_name}" "r, 1-4, h, p, l, desc, logs, icc, re, fre, stop, 8, t, rt, T, x, me, j, wr, wr#, rc, rc#, rcc#, d, c, u, cd, bvr, Enter, show"
         else
-            _ui_prompt "Instance - ${display_name}" "r, 1-4, h, icc, re, fre, stop, 8, t, rt, T, x, j, wr, wr#, rc, rc#, rcc#, Enter, show"
+            _ui_prompt "Instance - ${display_name}" "r, 1-4, h, icc, re, fre, stop, 8, t, rt, T, x, me, j, wr, wr#, rc, rc#, rcc#, Enter, show"
         fi
         
         local action
@@ -39172,6 +39221,19 @@ display_instance_details() {
         rt|RT|removetag|REMOVETAG)
             # Remove unhealthy tag from instance
             remove_instance_unhealthy_tag "$instance_ocid" "$display_name"
+            ;;
+        me|ME)
+            if [[ -n "$_me_evt_id" ]]; then
+                if [[ "$_me_evt_resched" == "true" ]]; then
+                    reschedule_maintenance_event "$_me_evt_id" "$_me_evt_dn" "$_me_evt_ws" "$compartment_id" "$region"
+                else
+                    echo -e "  ${RED}Maintenance event cannot be rescheduled (can-reschedule=false)${NC}"
+                fi
+            else
+                echo -e "  ${YELLOW}No active maintenance event for this instance${NC}"
+            fi
+            echo ""
+            _ui_pause
             ;;
         j|J|json|JSON)
             echo ""
