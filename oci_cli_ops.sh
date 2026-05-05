@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.25"
+readonly SCRIPT_VERSION="3.34.26"
 readonly SCRIPT_VERSION_DATE="2026-05-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -57164,19 +57164,25 @@ _ch_print_host_row() {
     fi
 
     local host_display="-"
+    local _row_imp_suffix=""
     if [[ "$host_ocid" != "N/A" && -n "$host_ocid" ]]; then
         if [[ "$has_impacted" == "true" ]]; then
-            # Build compact impacted tag from lookup cache
-            # Lookup format: host_ocid|maintenanceType|recycleLevel|comp1_type:action:faultId:severity;...
+            # Build compact impacted tag from lookup cache — rendered as row suffix
+            # Lookup format: host_ocid|maintenanceType|recycleLevel|comp1_type:action:faultId:severity;...|impactState
             local _row_imp_tag="Impacted"
             if [[ -s "${_CH_IMPACT_LOOKUP:-}" ]]; then
                 local _row_imp_line
                 _row_imp_line=$(grep "^${host_ocid}|" "$_CH_IMPACT_LOOKUP" 2>/dev/null | head -1)
                 if [[ -n "$_row_imp_line" ]]; then
-                    local _row_imp_mt _row_imp_rl _row_imp_comps _row_imp_detail=""
+                    local _row_imp_mt _row_imp_rl _row_imp_comps _row_imp_ist _row_imp_detail=""
                     _row_imp_mt=$(echo "$_row_imp_line" | cut -d'|' -f2)
                     _row_imp_rl=$(echo "$_row_imp_line" | cut -d'|' -f3)
                     _row_imp_comps=$(echo "$_row_imp_line" | cut -d'|' -f4)
+                    _row_imp_ist=$(echo "$_row_imp_line" | cut -d'|' -f5)
+                    # Check for resolved impacts
+                    if [[ "${_row_imp_ist^^}" == "RESOLVED" || "${_row_imp_ist^^}" == "COMPLETE" || "${_row_imp_ist^^}" == "COMPLETED" ]]; then
+                        _row_imp_suffix=" ${GRAY}[Resolved]${NC}"
+                    else
                     declare -A _row_imp_agg=()
                     IFS=';' read -ra _row_imp_arr <<< "$_row_imp_comps"
                     for _ric in "${_row_imp_arr[@]}"; do
@@ -57197,17 +57203,21 @@ _ch_print_host_row() {
                     done
                     unset _row_imp_agg
                     if [[ -n "$_row_imp_detail" ]]; then
-                        _row_imp_tag="Impacted: ${_row_imp_detail}"
-                        # recycle level omitted for brevity
+                        _row_imp_suffix=" ${LIGHT_RED}[Impacted: ${_row_imp_detail}]${NC}"
+                    else
+                        _row_imp_suffix=" ${LIGHT_RED}[Impacted]${NC}"
                     fi
+                    fi  # end: not resolved
                 fi
             fi
-            host_display="${host_ocid} ${LIGHT_RED}[${_row_imp_tag}]${NC}"
+            [[ -z "$_row_imp_suffix" ]] && _row_imp_suffix=" ${LIGHT_RED}[Impacted]${NC}"
+            host_display="$host_ocid"
         else
             host_display="$host_ocid"
         fi
     fi
 
+    _COL_ROW_SUFFIX="$_row_imp_suffix"
     _col_print_row "CHOST" "i${_idx}" "$display_name" "$state" "$health" "$impacted_display" "$shape" \
         "$platform" "$k8s_status" "$cordon_status" "$taint_status" "$pod_count" "$serial_num" "$ad_short" "$fd_short" "$host_display" "$inst_display" \
         "$state_color" "$health_color" "$impacted_color" "$k8s_color" "$cordon_color" "$taint_color" "$pod_color"
