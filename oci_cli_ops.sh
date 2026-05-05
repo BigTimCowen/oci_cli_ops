@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.22"
-readonly SCRIPT_VERSION_DATE="2026-04-24"
+readonly SCRIPT_VERSION="3.34.23"
+readonly SCRIPT_VERSION_DATE="2026-05-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -9363,9 +9363,7 @@ reschedule_maintenance_event() {
     echo ""
     echo -e "${YELLOW}Executing reschedule...${NC}"
     _log_masked "$log_file" "EXECUTE: $resched_cmd"
-    echo -e "${WHITE}$ ${resched_cmd}${NC}"
-    echo ""
-    
+
     local resched_output
     log_action "UPDATE" "$resched_cmd"
     resched_output=$(oci compute instance-maintenance-event update \
@@ -9380,9 +9378,10 @@ reschedule_maintenance_event() {
         log_action_result "SUCCESS" "UPDATE operation"
         _log_masked "$log_file" "SUCCESS: Rescheduled $event_display_name ($event_id) to $new_time_window"
         
-        # Show updated event details
+        # Show updated event details — try response JSON, fall back to requested time
         local new_window_start
-        new_window_start=$(jq -r '.data["time-window-start"] // "N/A"' <<< "$resched_output" 2>/dev/null)
+        new_window_start=$(jq -r '.data["time-window-start"] // .data["timeWindowStart"] // empty' <<< "$resched_output" 2>/dev/null)
+        [[ -z "$new_window_start" || "$new_window_start" == "null" ]] && new_window_start="$new_time_window"
         echo -e "  ${WHITE}New window start:${NC} ${GREEN}$new_window_start${NC}"
         
         # Invalidate cache since data changed
