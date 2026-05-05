@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.24"
+readonly SCRIPT_VERSION="3.34.25"
 readonly SCRIPT_VERSION_DATE="2026-05-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -42840,13 +42840,17 @@ _c4_view_fabric_hosts() {
         return
     fi
 
-    # Fetch impacted details if available
-    if [[ -f "$COMPUTE_HOST_IMPACT_CACHE" ]]; then
-        _CH_IMPACT_LOOKUP="$COMPUTE_HOST_IMPACT_CACHE"
-    fi
-
     _step_init
     _step_complete "hosts(${_host_ct})"
+
+    # Fetch impacted details — needed for [Impacted] badges on host rows
+    if is_cache_fresh "$COMPUTE_HOST_IMPACT_CACHE"; then
+        _step_complete "impacted details(cached)"
+    else
+        _ch_fetch_impacted_details
+    fi
+    _CH_IMPACT_LOOKUP="$COMPUTE_HOST_IMPACT_CACHE"
+
     _ch_resolve_instance_names "$_filtered"
     _ch_fetch_k8s_data
     _step_finish
