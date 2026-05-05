@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.28"
+readonly SCRIPT_VERSION="3.34.29"
 readonly SCRIPT_VERSION_DATE="2026-05-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -42910,13 +42910,14 @@ _c4_view_fabric_hosts() {
     else
         _step_complete "maintenance events(cached)"
     fi
-    # Build instance → maintenance window lookup
+    # Build instance → maintenance event lookup
+    # Format: lifecycle|window_start|event_id|event_display_name
     declare -A _c4h_maint_window=()
     if [[ -f "$MAINT_EVENTS_CACHE" && -s "$MAINT_EVENTS_CACHE" ]]; then
-        while IFS='|' read -r _mw_iid _mw_lc _mw_ws; do
+        while IFS='|' read -r _mw_iid _mw_lc _mw_ws _mw_eid _mw_edn _mw_resched; do
             [[ -z "$_mw_iid" || "$_mw_lc" == "CANCELED" || "$_mw_lc" == "SUCCEEDED" || "$_mw_lc" == "FAILED" ]] && continue
-            _c4h_maint_window["$_mw_iid"]="${_mw_lc}|${_mw_ws}"
-        done < <(jq -r '.data[] | "\(.["instance-id"] // "")|\(.["lifecycle-state"] // "")|\(.["time-window-start"] // "null")"' "$MAINT_EVENTS_CACHE" 2>/dev/null)
+            _c4h_maint_window["$_mw_iid"]="${_mw_lc}|${_mw_ws}|${_mw_eid}|${_mw_edn}|${_mw_resched}"
+        done < <(jq -r '.data[] | "\(.["instance-id"] // "")|\(.["lifecycle-state"] // "")|\(.["time-window-start"] // "null")|\(.id // "")|\(.["display-name"] // "N/A")|\(.["can-reschedule"] // false)"' "$MAINT_EVENTS_CACHE" 2>/dev/null)
     fi
 
     _ch_resolve_instance_names "$_filtered"
@@ -42975,7 +42976,61 @@ _c4_view_fabric_hosts() {
     echo -e "  ${WHITE}Total:${NC} ${_host_ct}  ${GREEN}Occupied:${NC} ${_occ_ct}  ${GREEN}Healthy:${NC} ${_healthy_ct}  ${RED}Impacted:${NC} ${_imp_ct}"
 
     _ch_hidden_cols_notice
-    _ch_post_table_actions "Fabric Hosts — ${fab_name}" "fabric:${fabric_ocid}"
+
+    # Custom action loop with reschedule support
+    echo ""
+    while true; do
+        echo -e "  ${YELLOW}i#${NC}) Instance details    ${YELLOW}h#${NC}) Host details    ${ORANGE}re i#${NC}) Reschedule maintenance    ${GREEN}col${NC}) Columns    ${CYAN}Enter${NC}) Return"
+        _ui_prompt "Fabric Hosts — ${fab_name}" "i#, h#, re i#, col, Enter"
+        local _fh_choice
+        read -r _fh_choice
+
+        [[ -z "$_fh_choice" ]] && return
+        [[ "${_fh_choice:-}" == :* ]] && _nav_try_jump "$_fh_choice" && return
+
+        case "$_fh_choice" in
+            col|COL) _col_picker "CHOST" "Compute Hosts"; return ;;
+            re\ i[0-9]*|RE\ i[0-9]*)
+                local _re_idx="${_fh_choice#*i}"
+                local _re_inst="${CH_HOST_MAP[$_re_idx]:-}"
+                if [[ -z "$_re_inst" ]]; then
+                    echo -e "  ${RED}No instance on host #${_re_idx}${NC}"
+                    continue
+                fi
+                local _re_mw="${_c4h_maint_window[$_re_inst]:-}"
+                if [[ -z "$_re_mw" ]]; then
+                    echo -e "  ${YELLOW}No active maintenance event for instance i${_re_idx}${NC}"
+                    continue
+                fi
+                local _re_lc _re_ws _re_eid _re_edn _re_resched
+                IFS='|' read -r _re_lc _re_ws _re_eid _re_edn _re_resched <<< "$_re_mw"
+                if [[ "$_re_resched" != "true" ]]; then
+                    echo -e "  ${RED}Maintenance event for i${_re_idx} cannot be rescheduled (can-reschedule=false)${NC}"
+                    continue
+                fi
+                reschedule_maintenance_event "$_re_eid" "$_re_edn" "$_re_ws" "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" "${FOCUS_REGION:-$REGION}"
+                ;;
+            h[0-9]*)
+                local _hsel="${_fh_choice#h}"
+                if [[ -n "${CH_OCID_MAP[$_hsel]:-}" ]]; then
+                    _ch_view_host "${CH_OCID_MAP[$_hsel]}"
+                    [[ -n "${_NAV_JUMP:-}" ]] && return
+                else
+                    echo -e "  ${RED}Invalid host index: ${_fh_choice}${NC}"
+                fi
+                ;;
+            i[0-9]*)
+                local _isel="${_fh_choice#i}"
+                if [[ -n "${CH_HOST_MAP[$_isel]:-}" ]]; then
+                    _ch_view_instance "${CH_HOST_MAP[$_isel]}"
+                    [[ -n "${_NAV_JUMP:-}" ]] && return
+                else
+                    echo -e "  ${YELLOW}No instance on host #${_isel}${NC}"
+                fi
+                ;;
+            *) echo -e "  ${RED}Invalid selection${NC}" ;;
+        esac
+    done
 }
 
 # View details of a fabric or cluster
