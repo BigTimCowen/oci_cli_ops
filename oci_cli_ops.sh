@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.26"
+readonly SCRIPT_VERSION="3.34.27"
 readonly SCRIPT_VERSION_DATE="2026-05-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -42889,12 +42889,37 @@ _c4_view_fabric_hosts() {
     fi
     _CH_IMPACT_LOOKUP="$COMPUTE_HOST_IMPACT_CACHE"
 
+    # Fetch maintenance events for cross-referencing impacted hosts
+    if [[ ! -f "$MAINT_EVENTS_CACHE" ]] || ! is_cache_fresh "$MAINT_EVENTS_CACHE"; then
+        _step_active "maintenance events"
+        fetch_maintenance_events "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" "${FOCUS_REGION:-$REGION}" 2>/dev/null || true
+        _step_complete "maintenance events"
+    fi
+    # Build instance → maintenance window lookup
+    declare -A _c4h_maint_window=()
+    if [[ -f "$MAINT_EVENTS_CACHE" && -s "$MAINT_EVENTS_CACHE" ]]; then
+        while IFS='|' read -r _mw_iid _mw_lc _mw_ws; do
+            [[ -z "$_mw_iid" || "$_mw_lc" == "CANCELED" || "$_mw_lc" == "SUCCEEDED" || "$_mw_lc" == "FAILED" ]] && continue
+            _c4h_maint_window["$_mw_iid"]="${_mw_lc}|${_mw_ws}"
+        done < <(jq -r '.data[] | "\(.["instance-id"] // "")|\(.["lifecycle-state"] // "")|\(.["time-window-start"] // "null")"' "$MAINT_EVENTS_CACHE" 2>/dev/null)
+    fi
+
     _ch_resolve_instance_names "$_filtered"
     _ch_fetch_k8s_data
     _step_finish
 
-    echo ""
+    # Temporarily hide AD, FD, shape columns for fabric host view
+    _col_load "CHOST"
+    local -a _c4h_saved_cols=("${_CHOST_ENABLED_COLS[@]}")
+    local -a _c4h_cols=()
+    for _ck in "${_CHOST_ENABLED_COLS[@]}"; do
+        [[ "$_ck" == "ad" || "$_ck" == "fd" || "$_ck" == "shape" ]] && continue
+        _c4h_cols+=("$_ck")
+    done
+    _CHOST_ENABLED_COLS=("${_c4h_cols[@]}")
     _col_build_fmt "CHOST"
+
+    echo ""
     printf "${BOLD}${_CHOST_HDR_FMT}${NC}\n" "${_CHOST_HDR_ARGS[@]}"
     print_separator $_CHOST_SEP_WIDTH
 
@@ -42907,10 +42932,24 @@ _c4_view_fabric_hosts() {
     while IFS='|' read -r display_name state health shape platform ad fd inst_id host_ocid _hpc _netblk _locblk _hostgrp _capres _gpufab has_impacted _rest; do
         [[ -z "$display_name" ]] && continue
         ((_ch_idx++))
+
+        # Append maintenance window to impacted suffix if available
+        if [[ "$has_impacted" == "true" && -n "${_c4h_maint_window[$inst_id]:-}" ]]; then
+            local _mw_info="${_c4h_maint_window[$inst_id]}"
+            local _mw_lc="${_mw_info%%|*}" _mw_ws="${_mw_info#*|}"
+            [[ "$_mw_ws" != "null" && -n "$_mw_ws" ]] && _C4H_MAINT_SUFFIX=" ${YELLOW}ME:${_mw_lc} ${_mw_ws:0:16}${NC}"
+        else
+            _C4H_MAINT_SUFFIX=""
+        fi
+
         _ch_print_host_row "$_ch_idx" "$display_name" "$state" "$health" "$shape" \
             "$platform" "$ad" "$fd" "$inst_id" "$host_ocid" "$has_impacted" "$_gpufab"
     done < "$_filtered"
     rm -f "$_filtered" 2>/dev/null
+
+    # Restore original column config
+    _CHOST_ENABLED_COLS=("${_c4h_saved_cols[@]}")
+    _col_load "CHOST"
 
     # Summary line
     echo ""
@@ -57217,7 +57256,7 @@ _ch_print_host_row() {
         fi
     fi
 
-    _COL_ROW_SUFFIX="$_row_imp_suffix"
+    _COL_ROW_SUFFIX="${_row_imp_suffix}${_C4H_MAINT_SUFFIX:-}"
     _col_print_row "CHOST" "i${_idx}" "$display_name" "$state" "$health" "$impacted_display" "$shape" \
         "$platform" "$k8s_status" "$cordon_status" "$taint_status" "$pod_count" "$serial_num" "$ad_short" "$fd_short" "$host_display" "$inst_display" \
         "$state_color" "$health_color" "$impacted_color" "$k8s_color" "$cordon_color" "$taint_color" "$pod_color"
