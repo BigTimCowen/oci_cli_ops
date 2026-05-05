@@ -42889,11 +42889,13 @@ _c4_view_fabric_hosts() {
     fi
     _CH_IMPACT_LOOKUP="$COMPUTE_HOST_IMPACT_CACHE"
 
-    # Fetch maintenance events for cross-referencing impacted hosts
+    # Fetch maintenance events for cross-referencing impacted hosts (quiet — no nested spinners)
     if [[ ! -f "$MAINT_EVENTS_CACHE" ]] || ! is_cache_fresh "$MAINT_EVENTS_CACHE"; then
         _step_active "maintenance events"
-        fetch_maintenance_events "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" "${FOCUS_REGION:-$REGION}" 2>/dev/null || true
+        _QUIET_SPINNERS=1 fetch_maintenance_events "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" "${FOCUS_REGION:-$REGION}" 2>/dev/null || true
         _step_complete "maintenance events"
+    else
+        _step_complete "maintenance events(cached)"
     fi
     # Build instance → maintenance window lookup
     declare -A _c4h_maint_window=()
