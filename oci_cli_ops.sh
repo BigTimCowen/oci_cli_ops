@@ -42848,6 +42848,44 @@ _c4_view_fabric_hosts() {
         _step_complete "impacted details(cached)"
     else
         _ch_fetch_impacted_details
+        # Build impact cache from per-host detail JSONs
+        local _imp_tmp=""
+        _imp_tmp=$(create_temp_file) || true
+        : > "$_imp_tmp"
+        if [[ -d "$COMPUTE_HOST_DETAIL_DIR" ]]; then
+            for _detail_file in "$COMPUTE_HOST_DETAIL_DIR"/*.json; do
+                [[ -s "$_detail_file" ]] || continue
+                jq -r '.data |
+                    select(.["impacted-component-details"] != null) |
+                    .id as $hid |
+                    (.["recycle-details"]["recycle-level"] // "N/A") as $rl |
+                    (.["impacted-component-details"]["impactedComponents"]["v1"] // {}) |
+                    (.maintenanceType // "N/A") as $mt |
+                    (.state // "N/A") as $ist |
+                    ([(.components // [])[] |
+                        "\(.componentType // "?"):\(.action // "?"):\(.faultId // "?"):\(.severity // "?")"]
+                    | join(";")) as $comps |
+                    "\($hid)|\($mt)|\($rl)|\($comps)|\($ist)"
+                ' "$_detail_file" >> "$_imp_tmp" 2>/dev/null || true
+            done
+        fi
+        if [[ ! -s "$_imp_tmp" && -s "$COMPUTE_HOST_JSON_CACHE" ]]; then
+            jq -r '(.data.items // .data // [])[] |
+                select(.["has-impacted-components"] == true) |
+                .id as $hid |
+                (.["recycle-details"]["recycle-level"] // "N/A") as $rl |
+                (.["impacted-component-details"]["impactedComponents"]["v1"] // {}) |
+                (.maintenanceType // "N/A") as $mt |
+                (.state // "N/A") as $ist |
+                ([(.components // [])[] |
+                    "\(.componentType // "?"):\(.action // "?"):\(.faultId // "?"):\(.severity // "?")"]
+                | join(";")) as $comps |
+                "\($hid)|\($mt)|\($rl)|\($comps)|\($ist)"
+            ' "$COMPUTE_HOST_JSON_CACHE" > "$_imp_tmp" 2>/dev/null || true
+        fi
+        _cache_write "$COMPUTE_HOST_IMPACT_CACHE" < "$_imp_tmp"
+        rm -f "$_imp_tmp" 2>/dev/null
+        _step_complete "impacted details(built)"
     fi
     _CH_IMPACT_LOOKUP="$COMPUTE_HOST_IMPACT_CACHE"
 
