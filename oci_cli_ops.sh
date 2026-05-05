@@ -42503,6 +42503,7 @@ interactive_gpu_management() {
         
         _ui_actions
         echo -e "  ${YELLOW}f#/g#/i#/c#${NC} - View resource details (e.g., 'f1', 'g2', 'i3', 'c1')"
+        echo -e "  ${YELLOW}h f#${NC}        - View compute hosts for a fabric (e.g., 'h f1')"
         echo -e "  ${GREEN}create${NC}      - Create a new GPU Memory Cluster on a Fabric"
         echo -e "  ${GREEN}update${NC}      - Update an existing GPU Memory Cluster (size/instance config)"
         echo -e "  ${RED}d${NC}           - Delete GPU Memory Cluster(s) (e.g., 'd g1', 'd g1,g2', 'd g1-g3')"
