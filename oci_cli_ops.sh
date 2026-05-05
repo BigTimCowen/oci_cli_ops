@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.23"
+readonly SCRIPT_VERSION="3.34.24"
 readonly SCRIPT_VERSION_DATE="2026-05-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -42515,7 +42515,7 @@ interactive_gpu_management() {
 
         # Inner loop: stay at prompt without redrawing after view actions
         while true; do
-            _ui_prompt "GPU Fabrics" "f#, g#, i#, c#, create, update, d g#, fw, toggle, j, r, back, show"
+            _ui_prompt "GPU Fabrics" "f#, g#, h f#, i#, c#, create, update, d g#, fw, toggle, j, r, back, show"
             
             local input
             read -r input
@@ -42771,12 +42771,114 @@ interactive_gpu_management() {
                 show|SHOW)
                     break
                     ;;
+                h|H)
+                    echo -e "${YELLOW}Usage: h f1 — view compute hosts for a fabric${NC}"
+                    ;;
+                h\ *|H\ *)
+                    local _h_target="${input#* }"
+                    local _h_fab_ocid="${FABRIC_INDEX_MAP[$_h_target]:-}"
+                    if [[ -n "$_h_fab_ocid" ]]; then
+                        _c4_view_fabric_hosts "$_h_fab_ocid" "$_h_target"
+                    else
+                        echo -e "${RED}Invalid fabric ID: ${_h_target}. Use h f# (e.g., h f1)${NC}"
+                    fi
+                    ;;
                 *)
                     echo -e "${RED}Unknown command: $input${NC}"
                     ;;
             esac
         done
     done
+}
+
+# View compute hosts filtered by GPU memory fabric (called from c4 menu)
+_c4_view_fabric_hosts() {
+    local fabric_ocid="$1"
+    local fabric_label="${2:-}"
+    local region="${FOCUS_REGION:-$REGION}"
+
+    # Resolve fabric name
+    local fab_name=""
+    if [[ -f "$FABRIC_CACHE" ]]; then
+        fab_name=$(grep -v "^#" "$FABRIC_CACHE" | awk -F'|' -v ocid="$fabric_ocid" '$3 == ocid { print $1; exit }')
+    fi
+    [[ -z "$fab_name" ]] && fab_name="${fabric_label}"
+
+    # Ensure compute host cache is fresh
+    if [[ ! -f "$COMPUTE_HOST_CACHE" ]] || ! is_cache_fresh "$COMPUTE_HOST_CACHE"; then
+        _step_init
+        _step_active "compute hosts"
+        fetch_compute_hosts
+        _step_complete "compute hosts($(_clc "$COMPUTE_HOST_CACHE"))"
+        _step_finish
+    fi
+
+    if [[ ! -f "$COMPUTE_HOST_CACHE" ]]; then
+        echo -e "${RED}No compute host data available${NC}"
+        _ui_pause
+        return
+    fi
+
+    # Filter hosts by fabric OCID (field 15)
+    local _filtered="${TEMP_DIR}/ch_fab_hosts_$$.txt"
+    grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v fab="$fabric_ocid" '$15 == fab' > "$_filtered"
+
+    local _host_ct
+    _host_ct=$(wc -l < "$_filtered" 2>/dev/null)
+
+    echo ""
+    _ui_subheader "Compute Hosts — ${fab_name}" 0
+    echo -e "  ${GRAY}Fabric OCID: ${YELLOW}${fabric_ocid}${NC}"
+    echo ""
+
+    if [[ "${_host_ct:-0}" -eq 0 ]]; then
+        echo -e "  ${YELLOW}No compute hosts found for this fabric${NC}"
+        rm -f "$_filtered" 2>/dev/null
+        echo ""
+        _ui_pause
+        return
+    fi
+
+    # Fetch impacted details if available
+    if [[ -f "$COMPUTE_HOST_IMPACT_CACHE" ]]; then
+        _CH_IMPACT_LOOKUP="$COMPUTE_HOST_IMPACT_CACHE"
+    fi
+
+    _step_init
+    _step_complete "hosts(${_host_ct})"
+    _ch_resolve_instance_names "$_filtered"
+    _ch_fetch_k8s_data
+    _step_finish
+
+    echo ""
+    _col_build_fmt "CHOST"
+    printf "${BOLD}${_CHOST_HDR_FMT}${NC}\n" "${_CHOST_HDR_ARGS[@]}"
+    print_separator $_CHOST_SEP_WIDTH
+
+    local _ch_idx=0
+    declare -gA CH_HOST_MAP=()
+    CH_HOST_MAP=()
+    declare -gA CH_OCID_MAP=()
+    CH_OCID_MAP=()
+
+    while IFS='|' read -r display_name state health shape platform ad fd inst_id host_ocid _hpc _netblk _locblk _hostgrp _capres _gpufab has_impacted _rest; do
+        [[ -z "$display_name" ]] && continue
+        ((_ch_idx++))
+        _ch_print_host_row "$_ch_idx" "$display_name" "$state" "$health" "$shape" \
+            "$platform" "$ad" "$fd" "$inst_id" "$host_ocid" "$has_impacted" "$_gpufab"
+    done < "$_filtered"
+    rm -f "$_filtered" 2>/dev/null
+
+    # Summary line
+    echo ""
+    local _occ_ct _healthy_ct _imp_ct
+    _occ_ct=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v fab="$fabric_ocid" '$15 == fab && $2 == "OCCUPIED"' | wc -l)
+    _healthy_ct=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v fab="$fabric_ocid" '$15 == fab && $3 == "HEALTHY"' | wc -l)
+    _imp_ct=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v fab="$fabric_ocid" '$15 == fab && $16 == "true"' | wc -l)
+    echo -e "  ${WHITE}Total:${NC} ${_host_ct}  ${GREEN}Occupied:${NC} ${_occ_ct}  ${GREEN}Healthy:${NC} ${_healthy_ct}  ${RED}Impacted:${NC} ${_imp_ct}"
+
+    _ch_hidden_cols_notice
+    _ch_post_table_actions "Fabric Hosts — ${fab_name}" "fabric:${fabric_ocid}"
 }
 
 # View details of a fabric or cluster
