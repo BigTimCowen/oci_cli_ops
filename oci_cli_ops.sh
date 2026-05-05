@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.30"
+readonly SCRIPT_VERSION="3.34.31"
 readonly SCRIPT_VERSION_DATE="2026-05-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -36799,6 +36799,11 @@ display_instance_details() {
     _w0_pids+=($!)
     (oci instance-agent command-execution list --compartment-id "$compartment_id" --instance-id "$instance_ocid" --region "$region" --sort-by TIMECREATED --sort-order DESC --limit 20 --output json > "$_dtmp/inst_rc.json" 2>/dev/null) &
     _w0_pids+=($!)
+    # Maintenance events (fetch if not cached — needed for ME section)
+    if [[ ! -f "$MAINT_EVENTS_CACHE" || ! -s "$MAINT_EVENTS_CACHE" ]] || ! is_cache_fresh "$MAINT_EVENTS_CACHE"; then
+        (oci compute instance-maintenance-event list --compartment-id "$compartment_id" --region "$region" --all --output json > "$_dtmp/maint_events.json" 2>/dev/null) &
+        _w0_pids+=($!)
+    fi
 
     # Wait for instance get (others continue in background)
     wait "$_inst_pid" 2>/dev/null
@@ -36867,9 +36872,14 @@ display_instance_details() {
     fi
     # Work requests and run commands already launched in wave 0 — just wait for all
     [[ ${#_pids[@]} -gt 0 ]] && wait "${_pids[@]}"
-    # Also wait for wave 0 background jobs (kubectl, vnics, volumes, WR, RC)
+    # Also wait for wave 0 background jobs (kubectl, vnics, volumes, WR, RC, ME)
     for _pid in "${_w0_pids[@]}"; do wait "$_pid" 2>/dev/null; done
-    
+
+    # Populate maintenance events cache from parallel fetch if freshly fetched
+    if [[ -s "$_dtmp/maint_events.json" ]] && jq -e '.data' "$_dtmp/maint_events.json" >/dev/null 2>&1; then
+        cp "$_dtmp/maint_events.json" "$MAINT_EVENTS_CACHE" 2>/dev/null
+    fi
+
     # Read wave 1 results
     local cached_vnic_attachments="" cached_boot_vol_attachments="" cached_block_vol_attachments=""
     [[ -s "$_dtmp/vnic_attach.json" ]] && cached_vnic_attachments=$(cat "$_dtmp/vnic_attach.json")
