@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.27"
+readonly SCRIPT_VERSION="3.34.28"
 readonly SCRIPT_VERSION_DATE="2026-05-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -1871,9 +1871,16 @@ fetch_gpu_fabrics() {
     [[ -z "$TENANCY_ID" ]] && { log_warn "TENANCY_ID not set. GPU fabric details unavailable."; return 1; }
     local region="${FOCUS_REGION:-$REGION}"
 
-    # Check cache freshness; invalidate if any fabric is in a transitional state
+    # Check cache freshness; invalidate only for short-lived transitional states
+    # PROVISIONING is long-lived and should not force constant re-fetches
     if is_cache_fresh "$FABRIC_CACHE"; then
-        _cache_invalidate_text_if_transitional "$FABRIC_CACHE" || return 0
+        local _fab_transitional
+        _fab_transitional=$(grep -ciE '\|UPDATING\||\|CREATING\||\|SCALING\||\|DELETING\||\|TERMINATING\|' "$FABRIC_CACHE" 2>/dev/null)
+        if [[ "${_fab_transitional:-0}" -gt 0 ]]; then
+            rm -f "$FABRIC_CACHE"
+        else
+            return 0
+        fi
     fi
 
     local raw_json
@@ -32864,10 +32871,10 @@ _CTOP_SEARCH_INDICES=()
 _CHOST_COL_CONF="$CHOST_COLUMNS_CONF"
 _CHOST_COL_KEYS=(           "id"     "name"            "state"    "health"   "impacted"  "shape"    "platform"  "k8s"      "cordon"   "taint"     "pods"   "sn"           "ad"     "fd"     "hostocid"      "instance"     )
 _CHOST_COL_LABELS=(         "#"      "Display Name"    "State"    "Health"   "Impacted"  "Shape"    "Platform"  "K8s"      "Cordon"   "Taint"     "Pods"   "SN"           "AD"     "FD"     "Host OCID"     "Instance OCID")
-_CHOST_COL_DEFAULT_WIDTHS=( 4        28                10         10         4           18         20          8          8          10          5        14             4        4        98              98             )
-_CHOST_COL_WIDTHS=(         4        28                10         10         4           18         20          8          8          10          5        14             4        4        98              98             )
+_CHOST_COL_DEFAULT_WIDTHS=( 4        28                10         10         4           18         20          8          8          6           5        11             4        4        98              98             )
+_CHOST_COL_WIDTHS=(         4        28                10         10         4           18         20          8          8          6           5        11             4        4        98              98             )
 _CHOST_COL_ALIGN=(          "-"      "-"               "-"        "-"        "-"         "-"        "-"         "-"        "-"        "-"         "-"      "-"            "-"      "-"      "-"             "-"            )
-_CHOST_COL_FMTS=(           "%-4.4s" "%-28.28s"        "%-10.10s" "%-10.10s" "%-4.4s"    "%-18.18s" "%-20.20s"  "%-8.8s"   "%-8.8s"   "%-10.10s"  "%-5.5s" "%-14.14s"     "%-4.4s" "%-4.4s" "%-98.98s"      "%-98.98s"     )
+_CHOST_COL_FMTS=(           "%-4.4s" "%-28.28s"        "%-10.10s" "%-10.10s" "%-4.4s"    "%-18.18s" "%-20.20s"  "%-8.8s"   "%-8.8s"   "%-6.6s"    "%-5.5s" "%-11.11s"     "%-4.4s" "%-4.4s" "%-98.98s"      "%-98.98s"     )
 _CHOST_COL_COLORS=(         "YELLOW" "WHITE"           "@1"       "@2"       "@3"        ""         "GRAY"      "@4"       "@5"       "@6"        "@7"     "CYAN"         "GRAY"   "GRAY"   "YELLOW"        "GRAY"         )
 _CHOST_COL_LOCKED=( "id" )
 # Columns enabled by default (name, platform, instance disabled; user can toggle via col)
@@ -42889,11 +42896,17 @@ _c4_view_fabric_hosts() {
     fi
     _CH_IMPACT_LOOKUP="$COMPUTE_HOST_IMPACT_CACHE"
 
-    # Fetch maintenance events for cross-referencing impacted hosts (quiet — no nested spinners)
-    if [[ ! -f "$MAINT_EVENTS_CACHE" ]] || ! is_cache_fresh "$MAINT_EVENTS_CACHE"; then
+    # Fetch maintenance events for cross-referencing impacted hosts
+    # Direct OCI call instead of fetch_maintenance_events to avoid nested _step_init
+    if [[ ! -f "$MAINT_EVENTS_CACHE" || ! -s "$MAINT_EVENTS_CACHE" ]] || ! is_cache_fresh "$MAINT_EVENTS_CACHE"; then
         _step_active "maintenance events"
-        _QUIET_SPINNERS=1 fetch_maintenance_events "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" "${FOCUS_REGION:-$REGION}" 2>/dev/null || true
-        _step_complete "maintenance events"
+        oci compute instance-maintenance-event list \
+            --compartment-id "${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}" \
+            --region "${FOCUS_REGION:-$REGION}" \
+            --all --output json > "$MAINT_EVENTS_CACHE" 2>/dev/null || true
+        local _me_ct
+        _me_ct=$(jq '.data | length // 0' "$MAINT_EVENTS_CACHE" 2>/dev/null || echo 0)
+        _step_complete "maintenance events(${_me_ct})"
     else
         _step_complete "maintenance events(cached)"
     fi
