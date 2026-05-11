@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.31"
-readonly SCRIPT_VERSION_DATE="2026-05-05"
+readonly SCRIPT_VERSION="3.34.32"
+readonly SCRIPT_VERSION_DATE="2026-05-11"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -10237,8 +10237,7 @@ list_maintenance_events() {
         # Window Start color coding based on lifecycle and time
         local window_color="$WHITE"
         local hard_due_color="$WHITE"
-        local ws_field_width=26
-        
+
         # Parse window start epoch for time comparisons
         local ws_epoch=""
         if [[ "$window_display" != "-" && "$evt_window_start" != "null" && -n "$evt_window_start" ]]; then
@@ -10287,15 +10286,13 @@ list_maintenance_events() {
                 ;;
             SCHEDULED)
                 if [[ "$ws_in_past" == "true" ]]; then
-                    # Past due - gray with warning indicator
+                    # Past due - gray with warning indicator (ASCII to preserve column width)
                     window_color="$GRAY"
-                    window_display="⚠ ${window_display}"
-                    ws_field_width=28
+                    window_display="! ${window_display}"
                 elif [[ -n "$ws_epoch" && $ws_epoch -le $me_5min_epoch ]]; then
                     # Within 5 minutes - IMMINENT - bold yellow
                     window_color="${BOLD}${YELLOW}"
-                    window_display="⚠ ${window_display}"
-                    ws_field_width=28
+                    window_display="! ${window_display}"
                 fi
                 # else: future → stays WHITE (default)
                 ;;
