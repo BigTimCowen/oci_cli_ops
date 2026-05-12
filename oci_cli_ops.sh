@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.32"
+readonly SCRIPT_VERSION="3.34.33"
 readonly SCRIPT_VERSION_DATE="2026-05-11"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -9569,7 +9569,7 @@ list_maintenance_events() {
     jq -r '
         .data[] |
         select(.["lifecycle-state"] != "TERMINATED") |
-        "\(.id)|\(.["display-name"] // "N/A")|\(.shape // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["availability-domain"] // "N/A")|\(.["freeform-tags"]["oci:compute:gpumemorycluster"] // "N/A")"
+        "\(.id)|\(.["display-name"] // "N/A")|\(.shape // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["availability-domain"] // "N/A")|\(.["fault-domain"] // "N/A")|\(.["freeform-tags"]["oci:compute:gpumemorycluster"] // "N/A")"
     ' "$INSTANCE_LIST_CACHE" > "$me_inst_temp" 2>/dev/null
 
     rm -rf "$_me_ptmp" 2>/dev/null
@@ -10111,11 +10111,14 @@ list_maintenance_events() {
         fi
 
         # Look up instance details from pre-built map
-        local inst_name="N/A" inst_shape="N/A" inst_state="N/A" inst_ad="N/A" inst_gpu_mem="N/A"
+        local inst_name="N/A" inst_shape="N/A" inst_state="N/A" inst_ad="N/A" inst_fd="N/A" inst_gpu_mem="N/A"
         local inst_info="${_ME_INST[$evt_instance_id]:-}"
         if [[ -n "$inst_info" ]]; then
-            IFS='|' read -r inst_name inst_shape inst_state inst_ad inst_gpu_mem <<< "$inst_info"
+            IFS='|' read -r inst_name inst_shape inst_state inst_ad inst_fd inst_gpu_mem <<< "$inst_info"
         fi
+        # Abbreviate fault domain for display: "FAULT-DOMAIN-1" → "FD-1"
+        local inst_fd_short="$inst_fd"
+        [[ "$inst_fd" == *FAULT-DOMAIN-* ]] && inst_fd_short="FD-${inst_fd##*FAULT-DOMAIN-}"
 
         # Resolve GPU memory cluster display name from instance→cluster map
         local inst_gpu_cluster_name="${_ME_GPU_CLUSTER[$evt_instance_id]:-N/A}"
@@ -10373,7 +10376,7 @@ list_maintenance_events() {
             
             # ── Detail view: full row + fault sub-line + blank line ──
             printf "  "
-            _col_print_row "ME" "$me_idx" "$inst_name" "${k8s_node:0:20}" "${k8s_serial:0:14}" "$inst_state" "$k8s_display" "$cordon_display" "${taint_display:0:8}" "$k8s_pods" "${evt_reason:0:22}" "${evt_category:0:12}" "$evt_lifecycle" "${evt_display_name:0:28}" "${window_display:0:28}" "${time_finished_display:0:22}" "$resched_display" "${inst_announcement:0:10}" "-" "$evt_cap_topo" "$evt_id" "$evt_instance_id" "${inst_gpu_cluster_name:0:30}" "$k8s_node_color" "$serial_color" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pods_color" "$reason_color" "$lifecycle_color" "$window_color" "$time_finished_color" "$resched_color" "$ann_color" "$GRAY" "$cap_topo_color" "$GRAY" "$GRAY" "$MAGENTA"
+            _col_print_row "ME" "$me_idx" "$inst_name" "${k8s_node:0:20}" "${k8s_serial:0:14}" "$inst_state" "$k8s_display" "$cordon_display" "${taint_display:0:8}" "$k8s_pods" "${evt_reason:0:22}" "${evt_category:0:12}" "$evt_lifecycle" "${evt_display_name:0:28}" "${window_display:0:28}" "${time_finished_display:0:22}" "$resched_display" "${inst_announcement:0:10}" "-" "$evt_cap_topo" "$evt_id" "$evt_instance_id" "${inst_gpu_cluster_name:0:30}" "$inst_fd_short" "$k8s_node_color" "$serial_color" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pods_color" "$reason_color" "$lifecycle_color" "$window_color" "$time_finished_color" "$resched_color" "$ann_color" "$GRAY" "$cap_topo_color" "$GRAY" "$GRAY" "$MAGENTA"
             
             # Display fault/additional details as dim sub-line aligned to main row columns
             # ↳ indented 3 spaces, then:  Fault ID→Instance Name  Component→K8s Node  Sev→Serial
@@ -10438,7 +10441,7 @@ list_maintenance_events() {
             cap_topo_color=$(color_host_health "$evt_cap_topo")
             
             printf "  "
-            _col_print_row "ME" "$me_idx" "$inst_name" "${k8s_node:0:20}" "${k8s_serial:0:14}" "$inst_state" "$k8s_display" "$cordon_display" "${taint_display:0:8}" "$k8s_pods" "${evt_reason:0:22}" "${evt_category:0:12}" "$evt_lifecycle" "${evt_display_name:0:28}" "${window_display:0:28}" "${time_finished_display:0:22}" "$resched_display" "${inst_announcement:0:10}" "${compact_fault_code:0:22}" "$evt_cap_topo" "$evt_id" "$evt_instance_id" "${inst_gpu_cluster_name:0:30}" "$k8s_node_color" "$serial_color" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pods_color" "$reason_color" "$lifecycle_color" "$window_color" "$time_finished_color" "$resched_color" "$ann_color" "$fault_code_color" "$cap_topo_color" "$GRAY" "$GRAY" "$MAGENTA"
+            _col_print_row "ME" "$me_idx" "$inst_name" "${k8s_node:0:20}" "${k8s_serial:0:14}" "$inst_state" "$k8s_display" "$cordon_display" "${taint_display:0:8}" "$k8s_pods" "${evt_reason:0:22}" "${evt_category:0:12}" "$evt_lifecycle" "${evt_display_name:0:28}" "${window_display:0:28}" "${time_finished_display:0:22}" "$resched_display" "${inst_announcement:0:10}" "${compact_fault_code:0:22}" "$evt_cap_topo" "$evt_id" "$evt_instance_id" "${inst_gpu_cluster_name:0:30}" "$inst_fd_short" "$k8s_node_color" "$serial_color" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pods_color" "$reason_color" "$lifecycle_color" "$window_color" "$time_finished_color" "$resched_color" "$ann_color" "$fault_code_color" "$cap_topo_color" "$GRAY" "$GRAY" "$MAGENTA"
         fi
             
     done < <(jq -r '.data[] | "\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["time-hard-due-date"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")|\(.["time-finished"] // "null")|\(.["time-created"] // "null")|\(.["additional-details"] // "{}" | @json)"' "$cache_file" 2>/dev/null | sort -t'|' -k6,6)
@@ -32942,13 +32945,13 @@ _ANN_ENABLED_INDICES=()
 
 # ── Column config — ME (Maintenance Events, --manage o,3) ──
 _ME_COL_CONF="$ME_COLUMNS_CONF"
-_ME_COL_KEYS=(           "id"     "inst_name"  "k8s_node"   "serial"     "state"    "k8s"    "cordon"  "taints"  "pods"   "reason"     "category"   "lifecycle"  "event_name"  "window"     "finished"     "resched" "announce"  "fault_code"  "comp_host"  "evt_ocid"     "inst_ocid"    "gpu_cluster"  )
-_ME_COL_LABELS=(         "#"      "Instance Name" "K8s Node" "Serial"   "State"    "K8s"    "Crdn"    "Taints"  "Pods"   "Maint Reason" "Category" "Lifecycle"  "Event Name"  "Window Start" "Time Finished" "Re"   "Announce"  "Fault Code"  "CompHost"   "Event OCID"   "Instance OCID" "GPU Cluster"  )
-_ME_COL_DEFAULT_WIDTHS=( 4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             )
-_ME_COL_WIDTHS=(         4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             )
-_ME_COL_ALIGN=(          "-"      "-"          "-"          "-"          "-"        "-"      "-"       "-"       "-"      "-"          "-"          "-"          "-"           "-"          "-"            "-"       "-"         "-"           "-"          "-"            "-"            "-"            )
-_ME_COL_FMTS=(           "%-4.4s" "%-45.45s"   "%-13.13s"   "%-12.12s"   "%-4.4s"   "%-4.4s" "%-6.6s"  "%-6.6s"  "%-4.4s" "%-22.22s"   "%-12.12s"   "%-11.11s"   "%-28.28s"    "%-20.20s"   "%-20.20s"     "%-4.4s"  "%-10.10s"  "%-17.17s"    "%-10.10s"   "%-100s"       "%-100s"       "%-13.13s"     )
-_ME_COL_COLORS=(         "YELLOW" ""           "@1"         "@2"         "@3"       "@4"     "@5"      "@6"      "@7"     "@8"         ""           "@9"         ""            "@10"        "@11"          "@12"     "@13"       "@14"         "@15"        "@16"          "@17"          "@18"          )
+_ME_COL_KEYS=(           "id"     "inst_name"  "k8s_node"   "serial"     "state"    "k8s"    "cordon"  "taints"  "pods"   "reason"     "category"   "lifecycle"  "event_name"  "window"     "finished"     "resched" "announce"  "fault_code"  "comp_host"  "evt_ocid"     "inst_ocid"    "gpu_cluster"  "fd"     )
+_ME_COL_LABELS=(         "#"      "Instance Name" "K8s Node" "Serial"   "State"    "K8s"    "Crdn"    "Taints"  "Pods"   "Maint Reason" "Category" "Lifecycle"  "Event Name"  "Window Start" "Time Finished" "Re"   "Announce"  "Fault Code"  "CompHost"   "Event OCID"   "Instance OCID" "GPU Cluster"  "FD"     )
+_ME_COL_DEFAULT_WIDTHS=( 4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             4        )
+_ME_COL_WIDTHS=(         4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             4        )
+_ME_COL_ALIGN=(          "-"      "-"          "-"          "-"          "-"        "-"      "-"       "-"       "-"      "-"          "-"          "-"          "-"           "-"          "-"            "-"       "-"         "-"           "-"          "-"            "-"            "-"            "-"      )
+_ME_COL_FMTS=(           "%-4.4s" "%-45.45s"   "%-13.13s"   "%-12.12s"   "%-4.4s"   "%-4.4s" "%-6.6s"  "%-6.6s"  "%-4.4s" "%-22.22s"   "%-12.12s"   "%-11.11s"   "%-28.28s"    "%-20.20s"   "%-20.20s"     "%-4.4s"  "%-10.10s"  "%-17.17s"    "%-10.10s"   "%-100s"       "%-100s"       "%-13.13s"     "%-4.4s" )
+_ME_COL_COLORS=(         "YELLOW" ""           "@1"         "@2"         "@3"       "@4"     "@5"      "@6"      "@7"     "@8"         ""           "@9"         ""            "@10"        "@11"          "@12"     "@13"       "@14"         "@15"        "@16"          "@17"          "@18"          "CYAN"   )
 _ME_COL_LOCKED=( "id" )
 _ME_COL_DEFAULTS=( "id" "inst_name" "k8s_node" "serial" "state" "k8s" "cordon" "taints" "pods" "reason" "lifecycle" "event_name" "window" "finished" "resched" "fault_code" "comp_host" "gpu_cluster" )
 
