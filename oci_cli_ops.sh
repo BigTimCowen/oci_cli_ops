@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.33"
-readonly SCRIPT_VERSION_DATE="2026-05-11"
+readonly SCRIPT_VERSION="3.34.34"
+readonly SCRIPT_VERSION_DATE="2026-05-13"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -58116,9 +58116,17 @@ manage_compute_hosts() {
             fi
 
             # Build per-fabric data: fabricOCID|shape|hosts|occupied|available|impacted|ad
+            # Note: load resolved set via BEGIN+getline (not multi-file NR==FNR) because
+            #       an empty _resolved_file would otherwise cause NR==FNR to swallow
+            #       every host cache row, producing an empty fabric summary.
             local _fab_data_file="${TEMP_DIR}/ch_fab_summary_$$.txt"
-            awk -F'|' '
-                NR==FNR { resolved[$1]=1; next }
+            awk -F'|' -v RES="$_resolved_file" '
+                BEGIN {
+                    if (RES != "") {
+                        while ((getline _rl < RES) > 0) resolved[_rl] = 1
+                        close(RES)
+                    }
+                }
                 /^#/ { next }
                 $15 != "" && $15 != "N/A" {
                     fab = $15; shape = $4; state = $2; imp = $16; hocid = $9; ad = $6
@@ -58136,7 +58144,7 @@ manage_compute_hosts() {
                     for (f in fab_shape) {
                         print f "|" fab_shape[f] "|" fab_total[f] "|" (fab_occ[f]+0) "|" (fab_avl[f]+0) "|" (fab_imp[f]+0) "|" fab_ad[f]
                     }
-                }' "$_resolved_file" "$COMPUTE_HOST_CACHE" | sort -t'|' -k2,2 -k7,7 -k1,1 > "$_fab_data_file"
+                }' "$COMPUTE_HOST_CACHE" | sort -t'|' -k2,2 -k7,7 -k1,1 > "$_fab_data_file"
             rm -f "$_resolved_file" 2>/dev/null
 
             # Build host→fabric impacted component map
