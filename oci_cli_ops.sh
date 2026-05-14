@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.34"
-readonly SCRIPT_VERSION_DATE="2026-05-13"
+readonly SCRIPT_VERSION="3.34.35"
+readonly SCRIPT_VERSION_DATE="2026-05-14"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -11805,27 +11805,53 @@ list_maintenance_events() {
             # Quick action from detail view
             if [[ "$d_can_resched" == "true" ]]; then
                 echo ""
-                echo -e "  ${YELLOW}re${NC}) Reschedule this event     ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)     ${CYAN}b${NC}) Back"
+                echo -e "  ${YELLOW}re${NC}) Reschedule this event     ${YELLOW}i${NC}) View instance details     ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)     ${CYAN}b${NC}) Back"
                 echo ""
-                echo -n -e "${CYAN}Action [re/j/b]: ${NC}"
+                echo -n -e "${CYAN}Action [re/i/j/b]: ${NC}"
                 read -r detail_action
 
                 if [[ "$detail_action" == "re" || "$detail_action" == "RE" || "$detail_action" == "resched" || "$detail_action" == "RESCHED" ]]; then
                     reschedule_maintenance_event "$d_evt_id" "$d_evt_name" "$d_window_start" "$compartment_id" "$region"
                 fi
                 case "$detail_action" in
+                    i|I)
+                        if [[ -n "$d_inst_id" ]]; then
+                            while true; do
+                                display_instance_details "$d_inst_id"
+                                local _ret=$?
+                                [[ -n "${_NAV_JUMP:-}" ]] && break
+                                [[ $_ret -ne 2 ]] && break
+                            done
+                            [[ -n "${_NAV_JUMP:-}" ]] && { rm -f "$me_inst_temp"; return; }
+                        else
+                            echo -e "${RED}No instance OCID associated with this event${NC}"
+                        fi
+                        ;;
                     j|J|json|JSON) [[ -n "$full_evt_json" ]] && _ui_json_viewer "Maintenance Event: ${d_evt_name}" "$full_evt_json" ".data" ;;
                     j\ *|J\ *|json\ *|JSON\ *) [[ -n "$full_evt_json" ]] && _ui_json_viewer "Maintenance Event: ${d_evt_name}" "$full_evt_json" ".data" "${detail_action#* }" ;;
                 esac
             else
                 echo ""
-                echo -e "  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
+                echo -e "  ${YELLOW}i${NC}) View instance details  ${YELLOW}j${NC}) View raw JSON (j <keyword> to search)  ${CYAN}Enter${NC}) Return"
                 echo ""
-                _ui_prompt "Event - ${d_evt_name}" "j, Enter"
+                _ui_prompt "Event - ${d_evt_name}" "i, j, Enter"
                 local _med_choice
                 read -r _med_choice
                 [[ "${_med_choice:-}" == :* ]] && _nav_try_jump "$_med_choice" && { rm -f "$me_inst_temp"; return; }
                 case "$_med_choice" in
+                    i|I)
+                        if [[ -n "$d_inst_id" ]]; then
+                            while true; do
+                                display_instance_details "$d_inst_id"
+                                local _ret=$?
+                                [[ -n "${_NAV_JUMP:-}" ]] && break
+                                [[ $_ret -ne 2 ]] && break
+                            done
+                            [[ -n "${_NAV_JUMP:-}" ]] && { rm -f "$me_inst_temp"; return; }
+                        else
+                            echo -e "${RED}No instance OCID associated with this event${NC}"
+                        fi
+                        ;;
                     j|J|json|JSON) [[ -n "$full_evt_json" ]] && _ui_json_viewer "Maintenance Event: ${d_evt_name}" "$full_evt_json" ".data" ;;
                     j\ *|J\ *|json\ *|JSON\ *) [[ -n "$full_evt_json" ]] && _ui_json_viewer "Maintenance Event: ${d_evt_name}" "$full_evt_json" ".data" "${_med_choice#* }" ;;
                 esac
