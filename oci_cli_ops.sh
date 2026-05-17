@@ -59052,6 +59052,53 @@ _view_compute_host_group_details() {
             fetch_compute_hosts
             _step_complete "bare metal hosts"
         fi
+
+        local _attached_hosts=""
+        local _attached_count=0
+        if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+            _attached_hosts=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v gid="$hg_id" '$13 == gid')
+            [[ -n "$_attached_hosts" ]] && _attached_count=$(echo "$_attached_hosts" | grep -c .)
+        fi
+
+        # Fetch per-host detail so the table can show the node's recycle level.
+        if [[ "$_attached_count" -gt 0 && -n "$COMPUTE_HOST_DETAIL_DIR" && "$COMPUTE_HOST_DETAIL_DIR" == */compute_host_detail ]]; then
+            mkdir -p "$COMPUTE_HOST_DETAIL_DIR"
+            _step_active "host recycle levels"
+
+            local _host_detail_pids=()
+            local _host_detail_fetch=0
+            local _host_detail_cached=0
+            local _host_cache_mtime
+            _host_cache_mtime=$(stat -c %Y "$COMPUTE_HOST_CACHE" 2>/dev/null || stat -f %m "$COMPUTE_HOST_CACHE" 2>/dev/null || echo 0)
+
+            while IFS='|' read -r _an _as _ah _ashape _aplatform _aad _afd _ainst _aocid _rest; do
+                [[ -z "$_aocid" || "$_aocid" == "N/A" ]] && continue
+                local _suffix="${_aocid##*.}"
+                local _detail_file="$COMPUTE_HOST_DETAIL_DIR/${_suffix}.json"
+
+                if [[ -s "$_detail_file" ]]; then
+                    local _detail_mtime
+                    _detail_mtime=$(stat -c %Y "$_detail_file" 2>/dev/null || stat -f %m "$_detail_file" 2>/dev/null || echo 0)
+                    if [[ "$_detail_mtime" -ge "$_host_cache_mtime" ]]; then
+                        ((_host_detail_cached++))
+                        continue
+                    fi
+                fi
+
+                (
+                    oci compute compute-host get \
+                        --compute-host-id "$_aocid" \
+                        --region "$region" \
+                        --output json > "$_detail_file" 2>/dev/null
+                ) &
+                _host_detail_pids+=($!)
+                ((_host_detail_fetch++))
+            done <<< "$_attached_hosts"
+
+            local _pid
+            for _pid in "${_host_detail_pids[@]}"; do wait "$_pid" 2>/dev/null; done
+            _step_complete "host recycle levels(${_host_detail_fetch} fetched, ${_host_detail_cached} cached)"
+        fi
         _step_finish
 
         if [[ -z "$hg_detail" ]] || ! jq -e '.data' <<< "$hg_detail" >/dev/null 2>&1; then
@@ -59094,6 +59141,7 @@ _view_compute_host_group_details() {
         _ui_subheader "Configurations (${_cfg_count})" 0
         echo ""
 
+        declare -A _HG_RECYCLE_BY_TARGET=()
         if [[ "${_cfg_count:-0}" -gt 0 ]]; then
             printf "  ${GRAY}%-4s %-25s %-20s %-30s %-10s${NC}\n" "#" "Target Shape" "Recycle Level" "Firmware Bundle" "State"
             echo -e "  ${GRAY}$(printf '─%.0s' {1..95})${NC}"
@@ -59103,6 +59151,7 @@ _view_compute_host_group_details() {
                 ((_ci++))
                 [[ "$_cf" == "null" || -z "$_cf" ]] && _cf="-"
                 [[ "$_cs" == "null" || -z "$_cs" ]] && _cs="-"
+                [[ -n "$_ct" && "$_ct" != "N/A" ]] && _HG_RECYCLE_BY_TARGET["$_ct"]="${_cr:-N/A}"
                 printf "  ${YELLOW}%-4s${NC} ${WHITE}%-25s${NC} ${CYAN}%-20s${NC} %-30s %-10s\n" \
                     "$_ci" "$_ct" "$_cr" "$_cf" "$_cs"
             done < <(jq -r '.data.configurations[]? | [
@@ -59118,20 +59167,25 @@ _view_compute_host_group_details() {
         # ── Attached Bare Metal Hosts ──
         echo ""
 
-        local _attached_hosts=""
-        local _attached_count=0
-        if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
-            _attached_hosts=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v gid="$hg_id" '$13 == gid')
-            [[ -n "$_attached_hosts" ]] && _attached_count=$(echo "$_attached_hosts" | grep -c .)
-        fi
-
         _ui_subheader "Attached Bare Metal Hosts (${_attached_count})" 0
         echo ""
 
+        declare -A _HOST_RECYCLE_LEVEL=()
+        if [[ "$_attached_count" -gt 0 && -d "$COMPUTE_HOST_DETAIL_DIR" ]]; then
+            while IFS='|' read -r _an _as _ah _ashape _aplatform _aad _afd _ainst _aocid _rest; do
+                [[ -z "$_aocid" || "$_aocid" == "N/A" ]] && continue
+                local _detail_file="$COMPUTE_HOST_DETAIL_DIR/${_aocid##*.}.json"
+                [[ -s "$_detail_file" ]] || continue
+                local _host_rl
+                _host_rl=$(jq -r '.data["recycle-details"]["recycle-level"] // empty' "$_detail_file" 2>/dev/null)
+                [[ -n "$_host_rl" && "$_host_rl" != "null" ]] && _HOST_RECYCLE_LEVEL["$_aocid"]="$_host_rl"
+            done <<< "$_attached_hosts"
+        fi
+
         declare -a _ATT_HOST_LIST=()
         if [[ "$_attached_count" -gt 0 ]]; then
-            printf "  ${GRAY}%-4s %-40s %-15s %-12s %-10s %s${NC}\n" "#" "Display Name" "Shape" "State" "Health" "Bare Metal Host OCID"
-            echo -e "  ${GRAY}$(printf '─%.0s' {1..170})${NC}"
+            printf "  ${GRAY}%-4s %-40s %-15s %-12s %-16s %-10s %s${NC}\n" "#" "Display Name" "Shape" "State" "Recycle Level" "Health" "Bare Metal Host OCID"
+            echo -e "  ${GRAY}$(printf '─%.0s' {1..190})${NC}"
 
             local _ai=0
             while IFS='|' read -r _an _as _ah _ashape _aplatform _aad _afd _ainst _aocid _rest; do
@@ -59152,8 +59206,10 @@ _view_compute_host_group_details() {
                     *) _ahc="$RED" ;;
                 esac
 
-                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${_asc}%-12s${NC} ${_ahc}%-10s${NC} ${YELLOW}%s${NC}\n" \
-                    "$_ai" "$_an" "$_ashape" "$_as" "$_ah" "$_aocid"
+                local _arl="${_HOST_RECYCLE_LEVEL[$_aocid]:-${_HG_RECYCLE_BY_TARGET[$_ashape]:-N/A}}"
+
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${_asc}%-12s${NC} ${CYAN}%-16s${NC} ${_ahc}%-10s${NC} ${YELLOW}%s${NC}\n" \
+                    "$_ai" "$_an" "$_ashape" "$_as" "$_arl" "$_ah" "$_aocid"
             done <<< "$_attached_hosts"
         else
             echo -e "  ${GRAY}(No bare metal hosts attached to this group)${NC}"
