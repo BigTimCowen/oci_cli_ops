@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.36"
-readonly SCRIPT_VERSION_DATE="2026-05-17"
+readonly SCRIPT_VERSION="3.34.37"
+readonly SCRIPT_VERSION_DATE="2026-05-18"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -42609,6 +42609,7 @@ interactive_gpu_management() {
         _ui_actions
         echo -e "  ${YELLOW}f#/g#/i#/c#${NC} - View resource details (e.g., 'f1', 'g2', 'i3', 'c1')"
         echo -e "  ${YELLOW}h f#${NC}        - View compute hosts for a fabric (e.g., 'h f1')"
+        echo -e "  ${CYAN}np${NC}          - List hosts not provisioned into any GPU memory cluster (empty + orphan)"
         echo -e "  ${GREEN}create${NC}      - Create a new GPU Memory Cluster on a Fabric"
         echo -e "  ${GREEN}update${NC}      - Update an existing GPU Memory Cluster (size/instance config)"
         echo -e "  ${RED}d${NC}           - Delete GPU Memory Cluster(s) (e.g., 'd g1', 'd g1,g2', 'd g1-g3')"
@@ -42621,7 +42622,7 @@ interactive_gpu_management() {
 
         # Inner loop: stay at prompt without redrawing after view actions
         while true; do
-            _ui_prompt "GPU Fabrics" "f#, g#, h f#, i#, c#, create, update, d g#, fw, toggle, j, r, back, show"
+            _ui_prompt "GPU Fabrics" "f#, g#, h f#, np, i#, c#, create, update, d g#, fw, toggle, j, r, back, show"
             
             local input
             read -r input
@@ -42889,6 +42890,9 @@ interactive_gpu_management() {
                         echo -e "${RED}Invalid fabric ID: ${_h_target}. Use h f# (e.g., h f1)${NC}"
                     fi
                     ;;
+                np|NP|unprov|UNPROV|missing|MISSING)
+                    _c4_view_unprovisioned_hosts
+                    ;;
                 *)
                     echo -e "${RED}Unknown command: $input${NC}"
                     ;;
@@ -43129,6 +43133,119 @@ _c4_view_fabric_hosts() {
             *) echo -e "  ${RED}Invalid selection${NC}" ;;
         esac
     done
+}
+
+# List fabric-attached compute hosts NOT provisioned into a GPU memory
+# cluster (called from c4 menu via `np`). Two cases, tagged per row:
+#   EMPTY  — host has no instance (free fabric capacity, nothing provisioned)
+#   ORPHAN — host has an instance, but it is not a member of any GPU memory
+#            cluster (provisioned compute that never joined a cluster)
+# Cross-references COMPUTE_HOST_CACHE (field 8=instance, 15=fabric) against
+# INSTANCE_CLUSTER_MAP_CACHE (provisioned instances). Read-only, no API calls.
+_c4_view_unprovisioned_hosts() {
+    # Ensure compute host cache is fresh (same pattern as _c4_view_fabric_hosts)
+    if [[ ! -f "$COMPUTE_HOST_CACHE" ]] || ! is_cache_fresh "$COMPUTE_HOST_CACHE"; then
+        _step_init
+        _step_active "compute hosts"
+        fetch_compute_hosts
+        _step_complete "compute hosts($(_clc "$COMPUTE_HOST_CACHE"))"
+        _step_finish
+    fi
+
+    if [[ ! -f "$COMPUTE_HOST_CACHE" ]]; then
+        echo -e "${RED}No compute host data available${NC}"
+        _ui_pause
+        return
+    fi
+
+    # Provisioned instance OCIDs → cluster name (membership set)
+    declare -A _prov_inst=()
+    if [[ -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
+        while IFS='|' read -r _pi_inst _pi_cid _pi_cname; do
+            [[ "$_pi_inst" == "#"* || -z "$_pi_inst" ]] && continue
+            _prov_inst["$_pi_inst"]="$_pi_cname"
+        done < <(grep -v '^#' "$INSTANCE_CLUSTER_MAP_CACHE" 2>/dev/null)
+    fi
+
+    # Fabric OCID → display name
+    declare -A _fab_name=()
+    if [[ -f "$FABRIC_CACHE" ]]; then
+        while IFS='|' read -r _fn_name _fn_suf _fn_ocid _fn_rest; do
+            [[ "$_fn_name" == "#"* || -z "$_fn_ocid" ]] && continue
+            _fab_name["$_fn_ocid"]="$_fn_name"
+        done < <(grep -v '^#' "$FABRIC_CACHE" 2>/dev/null)
+    fi
+
+    # Collect rows: fabricName|case|display|state|health|instOCID|hostOCID
+    local _unprov_tmp="${TEMP_DIR}/c4_unprov_$$.txt"
+    : > "$_unprov_tmp"
+    local _empty_ct=0 _orphan_ct=0
+    while IFS='|' read -r _h_name _h_state _h_health _h_shape _h_plat _h_ad _h_fd _h_inst _h_ocid _h_rest; do
+        [[ -z "$_h_name" || "$_h_name" == "#"* ]] && continue
+        # _h_rest = fields 10..20; GPUFabricID is field 15 = index 5.
+        local -a _hr=(); IFS='|' read -ra _hr <<< "$_h_rest"
+        local _h_fab="${_hr[5]:-N/A}"
+        [[ -z "$_h_fab" || "$_h_fab" == "N/A" ]] && continue   # not fabric-attached
+        local _case=""
+        if [[ -z "$_h_inst" || "$_h_inst" == "N/A" ]]; then
+            _case="EMPTY"; ((_empty_ct++))
+        elif [[ -z "${_prov_inst[$_h_inst]:-}" ]]; then
+            _case="ORPHAN"; ((_orphan_ct++))
+        else
+            continue   # instance is a cluster member → provisioned
+        fi
+        local _fabnm="${_fab_name[$_h_fab]:-${_h_fab: -12}}"
+        echo "${_fabnm}|${_case}|${_h_name}|${_h_state}|${_h_health}|${_h_inst:-N/A}|${_h_ocid}" >> "$_unprov_tmp"
+    done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
+
+    local _total_ct
+    _total_ct=$(wc -l < "$_unprov_tmp" 2>/dev/null | tr -d ' ')
+    [[ -z "$_total_ct" ]] && _total_ct=0
+
+    echo ""
+    _ui_subheader "Unprovisioned / Missing-from-Cluster Hosts (${_total_ct})" 0
+    echo -e "  ${GRAY}Fabric-attached hosts not in any GPU memory cluster.${NC}"
+    echo -e "  ${GRAY}${CYAN}EMPTY${GRAY} = no instance (free capacity)   ${YELLOW}ORPHAN${GRAY} = instance exists but not in a cluster${NC}"
+    echo ""
+
+    if [[ "$_total_ct" -eq 0 ]]; then
+        echo -e "  ${GREEN}All fabric-attached hosts are provisioned into a GPU memory cluster.${NC}"
+        rm -f "$_unprov_tmp" 2>/dev/null
+        echo ""
+        _ui_pause
+        return
+    fi
+
+    printf "  ${BOLD}%-4s %-28s %-7s %-20s %-11s %-9s %-40s %s${NC}\n" \
+        "#" "Fabric" "Case" "Display Name" "State" "Health" "Instance OCID" "Host OCID"
+    print_separator 170
+
+    local _idx=0
+    while IFS='|' read -r _r_fab _r_case _r_name _r_state _r_health _r_inst _r_ocid; do
+        ((_idx++))
+        local _case_c="$CYAN"
+        [[ "$_r_case" == "ORPHAN" ]] && _case_c="$YELLOW"
+        local _st_c="$WHITE"
+        case "$_r_state" in
+            OCCUPIED) _st_c="$GREEN" ;;
+            AVAILABLE) _st_c="$CYAN" ;;
+            *) _st_c="$YELLOW" ;;
+        esac
+        local _h_c="$GREEN"
+        case "$_r_health" in
+            HEALTHY) _h_c="$GREEN" ;;
+            DEGRADED|IMPAIRED) _h_c="$YELLOW" ;;
+            *) _h_c="$RED" ;;
+        esac
+        printf "  ${YELLOW}%-4s${NC} ${MAGENTA}%-28.28s${NC} ${_case_c}%-7s${NC} ${WHITE}%-20.20s${NC} ${_st_c}%-11s${NC} ${_h_c}%-9s${NC} ${GRAY}%-40s${NC} ${YELLOW}%s${NC}\n" \
+            "$_idx" "$_r_fab" "$_r_case" "$_r_name" "$_r_state" "$_r_health" "$_r_inst" "$_r_ocid"
+    done < <(sort -t'|' -k1,1f -k2,2 "$_unprov_tmp")
+    rm -f "$_unprov_tmp" 2>/dev/null
+
+    echo ""
+    echo -e "  ${WHITE}Total:${NC} ${_total_ct}   ${CYAN}Empty:${NC} ${_empty_ct}   ${YELLOW}Orphan:${NC} ${_orphan_ct}"
+    echo ""
+    _ui_pause
 }
 
 # View details of a fabric or cluster
