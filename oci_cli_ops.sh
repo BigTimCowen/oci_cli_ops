@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.35"
-readonly SCRIPT_VERSION_DATE="2026-05-14"
+readonly SCRIPT_VERSION="3.34.36"
+readonly SCRIPT_VERSION_DATE="2026-05-17"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -2865,9 +2865,9 @@ fetch_compute_hosts() {
     # Write cache header + pipe-delimited rows (single atomic write)
     {
         echo "# Compute Hosts"
-        echo "# Format: DisplayName|State|Health|Shape|Platform|AD|FD|InstanceID|HostOCID|HPCIslandID|NetworkBlockID|LocalBlockID|HostGroupID|CapResID|GPUFabricID|HasImpacted|TimeCreated|TimeUpdated|CompartmentID"
+        echo "# Format: DisplayName|State|Health|Shape|Platform|AD|FD|InstanceID|HostOCID|HPCIslandID|NetworkBlockID|LocalBlockID|HostGroupID|CapResID|GPUFabricID|HasImpacted|TimeCreated|TimeUpdated|CompartmentID|RecycleLevel"
         jq -r '.data.items[]? |
-            "\(.["display-name"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.health // "N/A")|\(.shape // "N/A")|\(.platform // "N/A")|\(.["availability-domain"] // "N/A")|\(.["fault-domain"] // "N/A")|\(.["instance-id"] // "N/A")|\(.id // "N/A")|\(.["hpc-island-id"] // "N/A")|\(.["network-block-id"] // "N/A")|\(.["local-block-id"] // "N/A")|\(.["compute-host-group-id"] // "N/A")|\(.["capacity-reservation-id"] // "N/A")|\(.["gpu-memory-fabric-id"] // "N/A")|\(.["has-impacted-components"] // false)|\(.["time-created"] // "N/A")|\(.["time-updated"] // "N/A")|\(.["compartment-id"] // "N/A")"
+            "\(.["display-name"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.health // "N/A")|\(.shape // "N/A")|\(.platform // "N/A")|\(.["availability-domain"] // "N/A")|\(.["fault-domain"] // "N/A")|\(.["instance-id"] // "N/A")|\(.id // "N/A")|\(.["hpc-island-id"] // "N/A")|\(.["network-block-id"] // "N/A")|\(.["local-block-id"] // "N/A")|\(.["compute-host-group-id"] // "N/A")|\(.["capacity-reservation-id"] // "N/A")|\(.["gpu-memory-fabric-id"] // "N/A")|\(.["has-impacted-components"] // false)|\(.["time-created"] // "N/A")|\(.["time-updated"] // "N/A")|\(.["compartment-id"] // "N/A")|\(.["recycle-details"]["recycle-level"] // "N/A")"
         ' <<< "$_json" 2>/dev/null
     } | _cache_write "$COMPUTE_HOST_CACHE"
 
@@ -59094,6 +59094,10 @@ _view_compute_host_group_details() {
         _ui_subheader "Configurations (${_cfg_count})" 0
         echo ""
 
+        # Shape → group-config recycle level, used as a fallback for attached
+        # hosts whose per-host recycle level is unavailable. Declared before the
+        # configs block so the lookup is always safe under `set -u`.
+        declare -A _HG_RECYCLE_BY_TARGET=()
         if [[ "${_cfg_count:-0}" -gt 0 ]]; then
             printf "  ${GRAY}%-4s %-25s %-20s %-30s %-10s${NC}\n" "#" "Target Shape" "Recycle Level" "Firmware Bundle" "State"
             echo -e "  ${GRAY}$(printf '─%.0s' {1..95})${NC}"
@@ -59103,6 +59107,7 @@ _view_compute_host_group_details() {
                 ((_ci++))
                 [[ "$_cf" == "null" || -z "$_cf" ]] && _cf="-"
                 [[ "$_cs" == "null" || -z "$_cs" ]] && _cs="-"
+                [[ -n "$_ct" && "$_ct" != "N/A" ]] && _HG_RECYCLE_BY_TARGET["$_ct"]="${_cr:-N/A}"
                 printf "  ${YELLOW}%-4s${NC} ${WHITE}%-25s${NC} ${CYAN}%-20s${NC} %-30s %-10s\n" \
                     "$_ci" "$_ct" "$_cr" "$_cf" "$_cs"
             done < <(jq -r '.data.configurations[]? | [
@@ -59130,8 +59135,8 @@ _view_compute_host_group_details() {
 
         declare -a _ATT_HOST_LIST=()
         if [[ "$_attached_count" -gt 0 ]]; then
-            printf "  ${GRAY}%-4s %-40s %-15s %-12s %-10s %s${NC}\n" "#" "Display Name" "Shape" "State" "Health" "Bare Metal Host OCID"
-            echo -e "  ${GRAY}$(printf '─%.0s' {1..170})${NC}"
+            printf "  ${GRAY}%-4s %-40s %-15s %-12s %-16s %-10s %s${NC}\n" "#" "Display Name" "Shape" "State" "Recycle Level" "Health" "Bare Metal Host OCID"
+            echo -e "  ${GRAY}$(printf '─%.0s' {1..187})${NC}"
 
             local _ai=0
             while IFS='|' read -r _an _as _ah _ashape _aplatform _aad _afd _ainst _aocid _rest; do
@@ -59152,8 +59157,15 @@ _view_compute_host_group_details() {
                     *) _ahc="$RED" ;;
                 esac
 
-                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${_asc}%-12s${NC} ${_ahc}%-10s${NC} ${YELLOW}%s${NC}\n" \
-                    "$_ai" "$_an" "$_ashape" "$_as" "$_ah" "$_aocid"
+                # Recycle level = cache field 20 = 11th sub-field of _rest (fields
+                # 10-20). Empty on a pre-upgrade 19-field cache row, so fall back
+                # to the group's configured recycle level for this shape.
+                local -a _rf=(); IFS='|' read -ra _rf <<< "$_rest"
+                local _arl="${_rf[10]:-N/A}"
+                [[ -z "$_arl" || "$_arl" == "N/A" || "$_arl" == "null" ]] && _arl="${_HG_RECYCLE_BY_TARGET[$_ashape]:-N/A}"
+
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${_asc}%-12s${NC} ${CYAN}%-16.16s${NC} ${_ahc}%-10s${NC} ${YELLOW}%s${NC}\n" \
+                    "$_ai" "$_an" "$_ashape" "$_as" "$_arl" "$_ah" "$_aocid"
             done <<< "$_attached_hosts"
         else
             echo -e "  ${GRAY}(No bare metal hosts attached to this group)${NC}"
