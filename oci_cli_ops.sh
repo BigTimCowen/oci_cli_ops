@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.37"
-readonly SCRIPT_VERSION_DATE="2026-05-18"
+readonly SCRIPT_VERSION="3.34.38"
+readonly SCRIPT_VERSION_DATE="2026-05-21"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -44312,6 +44312,8 @@ _fw_update_fabric_firmware() {
 
     local -a _fab_names=() _fab_ocids=() _fab_states=() _fab_curfw=() _fab_tarfw=() _fab_fwstates=()
     local _fidx=0
+    # Sort matches display_gpu_management_menu (case-insensitive by display name)
+    # so the position-based 'f#' IDs shown here line up with the c4 main screen.
     while IFS='|' read -r _fn _fsuf _focid _fstate _fhealthy _favail _ftotal _fcurfw _ftarfw _ffwstate _; do
         [[ -z "$_focid" ]] && continue
         ((_fidx++))
@@ -44321,7 +44323,7 @@ _fw_update_fabric_firmware() {
         _fab_curfw+=("$_fcurfw")
         _fab_tarfw+=("$_ftarfw")
         _fab_fwstates+=("$_ffwstate")
-    done < <(grep -v "^#" "$FABRIC_CACHE")
+    done < <(grep -v "^#" "$FABRIC_CACHE" | sort -t'|' -k1,1f)
 
     if [[ $_fidx -eq 0 ]]; then
         echo -e "  ${RED}No GPU Memory Fabrics found in cache.${NC}"
@@ -44340,7 +44342,7 @@ _fw_update_fabric_firmware() {
     fi
     echo ""
     printf "    ${BOLD}%-5s%-46s %-12s %-14s %-8s %-8s %s${NC}\n" \
-        "#" "Fabric Name" "State" "FW State" "Cur FW" "Tgt FW" ""
+        "ID" "Fabric Name" "State" "FW State" "Cur FW" "Tgt FW" ""
     printf "    ${GRAY}%-5s%-46s %-12s %-14s %-8s %-8s${NC}\n" \
         "-----" "----------------------------------------------" "------------" "--------------" "--------" "--------"
 
@@ -44381,8 +44383,8 @@ _fw_update_fabric_firmware() {
             _upgrade_badge="  ${CYAN}↑ upgrade available${NC}"
         fi
 
-        printf "    ${GREEN}%-3d${NC}) ${WHITE}%-45s${NC} ${_sc}%-12s${NC} ${_fwsc}%-14s${NC} ${GREEN}%-8s${NC} ${_tgt_color}%-8s${NC}${_upgrade_badge}\n" \
-            "$((_i+1))" "${_fab_names[$_i]:0:45}" "${_fab_states[$_i]}" "$_fws_display" "$_cur_short" "$_tgt_short"
+        printf "    ${GREEN}%-4s${NC} ${WHITE}%-45s${NC} ${_sc}%-12s${NC} ${_fwsc}%-14s${NC} ${GREEN}%-8s${NC} ${_tgt_color}%-8s${NC}${_upgrade_badge}\n" \
+            "f$((_i+1)))" "${_fab_names[$_i]:0:45}" "${_fab_states[$_i]}" "$_fws_display" "$_cur_short" "$_tgt_short"
     done
 
     local _sel_idx=-1
@@ -44401,17 +44403,19 @@ _fw_update_fabric_firmware() {
         fi
     else
         echo ""
-        echo -n -e "  ${CYAN}Select fabric #: ${NC}"
+        echo -n -e "  ${CYAN}Select fabric (e.g., f1 or 1): ${NC}"
         local _fsel
         read -r _fsel
         [[ -z "$_fsel" ]] && return
 
-        if ! [[ "$_fsel" =~ ^[0-9]+$ ]] || [[ $((_fsel-1)) -ge $_fidx || $((_fsel-1)) -lt 0 ]]; then
-            echo -e "  ${RED}Invalid selection${NC}"
+        # Accept both 'f#' (matching c4 main IDs) and bare '#'.
+        local _fsel_num="${_fsel#[fF]}"
+        if ! [[ "$_fsel_num" =~ ^[0-9]+$ ]] || [[ $((_fsel_num-1)) -ge $_fidx || $((_fsel_num-1)) -lt 0 ]]; then
+            echo -e "  ${RED}Invalid selection: ${_fsel}. Use f# or # (e.g., f1 or 1)${NC}"
             sleep 1
             return
         fi
-        _sel_idx=$((_fsel-1))
+        _sel_idx=$((_fsel_num-1))
     fi
 
     local _sel_fabric_name="${_fab_names[$_sel_idx]}"
