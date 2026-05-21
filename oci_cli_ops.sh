@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.38"
+readonly SCRIPT_VERSION="3.34.39"
 readonly SCRIPT_VERSION_DATE="2026-05-21"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -44310,7 +44310,25 @@ _fw_update_fabric_firmware() {
         return
     fi
 
-    local -a _fab_names=() _fab_ocids=() _fab_states=() _fab_curfw=() _fab_tarfw=() _fab_fwstates=()
+    # Build fabric_suffix → comma-joined active cluster names from CLUSTER_CACHE.
+    # CLUSTER_CACHE format: ClusterOCID|DisplayName|State|FabricSuffix|...
+    # Skip DELETED/TERMINATED clusters — they aren't "running on" the fabric.
+    declare -A _fab_clusters=()
+    if [[ -f "$CLUSTER_CACHE" ]]; then
+        while IFS='|' read -r _cl_ocid _cl_name _cl_state _cl_fsuf _cl_rest; do
+            [[ -z "$_cl_fsuf" || "$_cl_fsuf" == "N/A" ]] && continue
+            case "$_cl_state" in
+                DELETED|TERMINATED) continue ;;
+            esac
+            if [[ -n "${_fab_clusters[$_cl_fsuf]:-}" ]]; then
+                _fab_clusters[$_cl_fsuf]+=", $_cl_name"
+            else
+                _fab_clusters[$_cl_fsuf]="$_cl_name"
+            fi
+        done < <(grep -v "^#" "$CLUSTER_CACHE" 2>/dev/null)
+    fi
+
+    local -a _fab_names=() _fab_ocids=() _fab_states=() _fab_curfw=() _fab_tarfw=() _fab_fwstates=() _fab_suffixes=()
     local _fidx=0
     # Sort matches display_gpu_management_menu (case-insensitive by display name)
     # so the position-based 'f#' IDs shown here line up with the c4 main screen.
@@ -44323,6 +44341,7 @@ _fw_update_fabric_firmware() {
         _fab_curfw+=("$_fcurfw")
         _fab_tarfw+=("$_ftarfw")
         _fab_fwstates+=("$_ffwstate")
+        _fab_suffixes+=("$_fsuf")
     done < <(grep -v "^#" "$FABRIC_CACHE" | sort -t'|' -k1,1f)
 
     if [[ $_fidx -eq 0 ]]; then
@@ -44341,10 +44360,10 @@ _fw_update_fabric_firmware() {
         echo -e "  ${BOLD}${WHITE}Select GPU Memory Fabric:${NC}"
     fi
     echo ""
-    printf "    ${BOLD}%-5s%-46s %-12s %-14s %-8s %-8s %s${NC}\n" \
-        "ID" "Fabric Name" "State" "FW State" "Cur FW" "Tgt FW" ""
-    printf "    ${GRAY}%-5s%-46s %-12s %-14s %-8s %-8s${NC}\n" \
-        "-----" "----------------------------------------------" "------------" "--------------" "--------" "--------"
+    printf "    ${BOLD}%-5s%-46s %-12s %-14s %-8s %-8s %-40s${NC}\n" \
+        "ID" "Fabric Name" "State" "FW State" "Cur FW" "Tgt FW" "Clusters"
+    printf "    ${GRAY}%-5s%-46s %-12s %-14s %-8s %-8s %-40s${NC}\n" \
+        "-----" "----------------------------------------------" "------------" "--------------" "--------" "--------" "----------------------------------------"
 
     for _i in "${!_fab_names[@]}"; do
         # Skip non-matching fabrics when preselected
@@ -44383,8 +44402,11 @@ _fw_update_fabric_firmware() {
             _upgrade_badge="  ${CYAN}↑ upgrade available${NC}"
         fi
 
-        printf "    ${GREEN}%-4s${NC} ${WHITE}%-45s${NC} ${_sc}%-12s${NC} ${_fwsc}%-14s${NC} ${GREEN}%-8s${NC} ${_tgt_color}%-8s${NC}${_upgrade_badge}\n" \
-            "f$((_i+1)))" "${_fab_names[$_i]:0:45}" "${_fab_states[$_i]}" "$_fws_display" "$_cur_short" "$_tgt_short"
+        # Cluster list (from suffix-keyed map); "-" when fabric has none.
+        local _fab_cl="${_fab_clusters[${_fab_suffixes[$_i]}]:--}"
+
+        printf "    ${GREEN}%-4s${NC} ${WHITE}%-45s${NC} ${_sc}%-12s${NC} ${_fwsc}%-14s${NC} ${GREEN}%-8s${NC} ${_tgt_color}%-8s${NC} ${CYAN}%-40.40s${NC}${_upgrade_badge}\n" \
+            "f$((_i+1)))" "${_fab_names[$_i]:0:45}" "${_fab_states[$_i]}" "$_fws_display" "$_cur_short" "$_tgt_short" "$_fab_cl"
     done
 
     local _sel_idx=-1
