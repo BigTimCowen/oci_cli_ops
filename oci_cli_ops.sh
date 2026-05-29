@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.39"
-readonly SCRIPT_VERSION_DATE="2026-05-21"
+readonly SCRIPT_VERSION="3.34.40"
+readonly SCRIPT_VERSION_DATE="2026-05-28"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -1826,6 +1826,18 @@ _detect_tool_versions() {
         _TOOL_HELM_VER=$(helm version --short 2>/dev/null | grep -oE 'v[0-9.]+' | head -1)
         [[ -z "$_TOOL_HELM_VER" ]] && _TOOL_HELM_VER="installed"
     fi
+}
+
+# Fast pre-check: is kubectl invokable against a configured cluster?
+# Local-only — `kubectl config current-context` reads kubeconfig from
+# ~/.kube/config or $KUBECONFIG and returns immediately with no network IO.
+# Returns 0 when there is a current context (even if the cluster is later
+# unreachable — that's defended against via --request-timeout at call sites);
+# returns 1 when kubectl is missing or no kubeconfig context is configured.
+# Use to short-circuit kubectl background fetches and avoid spurious waits.
+_k8s_usable() {
+    command -v kubectl >/dev/null 2>&1 || return 1
+    kubectl config current-context >/dev/null 2>&1
 }
 
 # Build formatted tools/auth line for environment display headers
@@ -34274,14 +34286,23 @@ manage_compute_instances() {
 
         _step_active "k8s + hosts"
 
-        # K8s nodes (background)
-        (kubectl get nodes -o json > "$_k8s_tmp" 2>/dev/null) &
-        _c1_pids+=($!)
-
-        # K8s pods (background)
-        (kubectl get pods --all-namespaces --field-selector=status.phase=Running \
-            -o custom-columns=NODE:.spec.nodeName --no-headers > "$_pods_tmp" 2>/dev/null) &
-        _c1_pids+=($!)
+        # K8s nodes + pods (background). Skip entirely when kubectl has no
+        # current context — otherwise kubectl spends time probing a missing
+        # / unreachable cluster and stalls the c1 discovery wave.
+        # --request-timeout=5s caps the wait if a context is configured but
+        # the cluster turns out to be unreachable (defense in depth).
+        local _k8s_skipped=false
+        if _k8s_usable; then
+            (kubectl --request-timeout=5s get nodes -o json > "$_k8s_tmp" 2>/dev/null) &
+            _c1_pids+=($!)
+            (kubectl --request-timeout=5s get pods --all-namespaces --field-selector=status.phase=Running \
+                -o custom-columns=NODE:.spec.nodeName --no-headers > "$_pods_tmp" 2>/dev/null) &
+            _c1_pids+=($!)
+        else
+            _k8s_skipped=true
+            : > "$_k8s_tmp" 2>/dev/null
+            : > "$_pods_tmp" 2>/dev/null
+        fi
 
         # Compute hosts (background, if cache stale)
         local _ch_cached=""
@@ -34316,8 +34337,12 @@ manage_compute_instances() {
             (.spec.unschedulable // false) as $unschedulable |
             "\(.spec.providerID)|\(.metadata.name)|\(.status.conditions[] | select(.type=="Ready") | .status)|\($newNodeTaint)|\($unschedulable)|\($maintenanceTaint)|\(.metadata.labels["oci.oraclecloud.com/host.id"] // "-")|\(.metadata.labels["oci.oraclecloud.com/host.rack_id"] // "-")|\(.metadata.labels["oci.oraclecloud.com/host.serial_number"] // "-")|\(.metadata.labels["nvidia.com/gpu.clique"] // "-")"
         ' <<< "$k8s_nodes_json" 2>/dev/null)
-        local _nc=$(echo "$k8s_lookup" | grep -c . 2>/dev/null || true)
-        _step_complete "k8s nodes(${_nc})"
+        if [[ "$_k8s_skipped" == "true" ]]; then
+            _step_complete "k8s nodes(skipped — no kubeconfig)"
+        else
+            local _nc=$(echo "$k8s_lookup" | grep -c . 2>/dev/null || true)
+            _step_complete "k8s nodes(${_nc})"
+        fi
 
         # GPU Cluster lookup: key=instance OCID, value=cluster display name
         # Only fetch if the fabric or fw_ver column is enabled (off by default)
