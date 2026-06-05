@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.41"
+readonly SCRIPT_VERSION="3.34.42"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -26428,7 +26428,7 @@ display_cross_region_drg_map() {
                 oci network remote-peering-connection list --compartment-id "$comp" --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/rpc_${_ci}.json" 2>/dev/null &
                 _oci_throttle
                 oci network virtual-circuit list --compartment-id "$comp" --region "$q_region" --all --output json > "$_par_dir/fc_${_ci}.json" 2>/dev/null &
-                oci network ip-sec-connection list --compartment-id "$comp" --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/vpn_${_ci}.json" 2>/dev/null &
+                oci network ip-sec-connection list --compartment-id "$comp" --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/vpn_${_ci}.json" 2>/dev/null &
                 ((_ci++))
             done
             
@@ -26602,7 +26602,7 @@ display_cross_region_drg_map() {
                     oci network virtual-circuit list --compartment-id "$_scomp" --region "$q_region" --all --output json > "$_par_dir/fc_${_si}.json" 2>/dev/null &
                     _par_pids2+=($!)
                     _oci_throttle
-                    oci network ip-sec-connection list --compartment-id "$_scomp" --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/vpn_${_si}.json" 2>/dev/null &
+                    oci network ip-sec-connection list --compartment-id "$_scomp" --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/vpn_${_si}.json" 2>/dev/null &
                     _par_pids2+=($!)
                 done
                 _wait_with_timeout 120 "${_par_pids2[@]}"
@@ -26736,7 +26736,7 @@ display_cross_region_drg_map() {
                     XR_REGION_DRT_NAMES["${q_region}:${q_drg_id}:${drt_id}"]="$drt_name"
                     _drg_dbg_cmd "Route rules" "oci network drg-route-rule list --drg-route-table-id ${drt_id} ($drt_name)"
                     _oci_throttle
-                    oci network drg-route-rule list --drg-route-table-id "$drt_id" --region "$q_region" --output json > "$_par_dir/rules_${drt_id: -8}.json" 2>/dev/null &
+                    oci network drg-route-rule list --drg-route-table-id "$drt_id" --region "$q_region" --all --output json > "$_par_dir/rules_${drt_id: -8}.json" 2>/dev/null &
                     _par_pids3+=($!)
                 done < <(jq -r '.data[] | "\(.id)|\(.["display-name"])"' <<< "$drt_json" 2>/dev/null)
                 _wait_with_timeout 120 "${_par_pids3[@]}"
@@ -26781,7 +26781,7 @@ display_cross_region_drg_map() {
                         oci network virtual-circuit list --compartment-id "$_pf_comp" --region "$q_region" --all --output json > "$_par_dir/fc_${_pf}.json" 2>/dev/null &
                         _par_pids4+=($!)
                         _oci_throttle
-                        oci network ip-sec-connection list --compartment-id "$_pf_comp" --drg-id "$q_drg_id" --region "$q_region" --output json > "$_par_dir/vpn_${_pf}.json" 2>/dev/null &
+                        oci network ip-sec-connection list --compartment-id "$_pf_comp" --drg-id "$q_drg_id" --region "$q_region" --all --output json > "$_par_dir/vpn_${_pf}.json" 2>/dev/null &
                         _par_pids4+=($!)
                     done
                     _wait_with_timeout 120 "${_par_pids4[@]}"
