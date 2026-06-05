@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.40"
-readonly SCRIPT_VERSION_DATE="2026-05-28"
+readonly SCRIPT_VERSION="3.34.41"
+readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -13850,6 +13850,29 @@ display_gpu_management_menu() {
         done < "$INSTANCE_CLUSTER_MAP_CACHE"
     fi
 
+    # Pre-compute active maintenance-event counts per cluster — same source as
+    # --manage o3 (MAINT_EVENTS_CACHE, already fetched in c4 discovery wave).
+    # "Active" matches o3's filter: excludes CANCELED/SUCCEEDED/FAILED.
+    declare -A _cl_maint_map=()
+    if [[ -f "$MAINT_EVENTS_CACHE" && -s "$MAINT_EVENTS_CACHE" && -f "$INSTANCE_CLUSTER_MAP_CACHE" ]]; then
+        declare -A _active_me_inst=()
+        while IFS='|' read -r _me_inst _me_lc; do
+            [[ -z "$_me_inst" || "$_me_inst" == "null" ]] && continue
+            case "${_me_lc^^}" in
+                CANCELED|CANCELLED|SUCCEEDED|FAILED) continue ;;
+            esac
+            _active_me_inst["$_me_inst"]=$(( ${_active_me_inst[$_me_inst]:-0} + 1 ))
+        done < <(jq -r '.data[]? | "\(.["instance-id"] // "")|\(.["lifecycle-state"] // "")"' "$MAINT_EVENTS_CACHE" 2>/dev/null)
+
+        while IFS='|' read -r _mc_inst _mc_cid _mc_cname; do
+            [[ "$_mc_inst" == "#"* || -z "$_mc_inst" || -z "$_mc_cname" ]] && continue
+            local _mc_n="${_active_me_inst[$_mc_inst]:-0}"
+            if [[ "$_mc_n" -gt 0 ]]; then
+                _cl_maint_map["$_mc_cname"]=$(( ${_cl_maint_map["$_mc_cname"]:-0} + _mc_n ))
+            fi
+        done < "$INSTANCE_CLUSTER_MAP_CACHE"
+    fi
+
     # Pre-compute clique summary per cluster: cluster_name → "0,1,2" (sorted unique clique IDs)
     # Also track node count per cluster for the summary: cluster_name → count
     # Lookup chain: INSTANCE_CLUSTER_MAP (inst→cluster_name) + _C4_INST_CLIQUE (inst→clique)
@@ -14027,22 +14050,38 @@ display_gpu_management_menu() {
                     _cl_date=$(_date_mmddyyyy "${cluster_created:-}")
                     _cl_age=$(_days_since "${cluster_created:-}")
 
-                    # Check if this cluster has degraded/unhealthy compute hosts (from pre-computed map)
-                    local _cl_maint_badge=""
-                    local _cl_degraded_count="${_cl_degraded_map[$cluster_name]:-0}"
-                    [[ $_cl_degraded_count -gt 0 ]] && _cl_maint_badge="${LIGHT_RED}[Degraded: ${_cl_degraded_count}]${NC}"
+                    # Compute D (degraded compute hosts) + M (active maintenance events)
+                    # badges from pre-computed maps. Both badges may apply; join with a
+                    # space. Width math uses the plain-text length so colour escapes
+                    # don't break alignment of the State column.
+                    local _cl_d_count="${_cl_degraded_map[$cluster_name]:-0}"
+                    local _cl_m_count="${_cl_maint_map[$cluster_name]:-0}"
+                    local _cl_d_text="" _cl_m_text=""
+                    [[ $_cl_d_count -gt 0 ]] && _cl_d_text="[D: ${_cl_d_count}]"
+                    [[ $_cl_m_count -gt 0 ]] && _cl_m_text="[M: ${_cl_m_count}]"
+                    local _cl_badges_plain="" _cl_badges_colored=""
+                    if [[ -n "$_cl_d_text" && -n "$_cl_m_text" ]]; then
+                        _cl_badges_plain="${_cl_d_text} ${_cl_m_text}"
+                        _cl_badges_colored="${LIGHT_RED}${_cl_d_text}${NC} ${RED}${_cl_m_text}${NC}"
+                    elif [[ -n "$_cl_d_text" ]]; then
+                        _cl_badges_plain="$_cl_d_text"
+                        _cl_badges_colored="${LIGHT_RED}${_cl_d_text}${NC}"
+                    elif [[ -n "$_cl_m_text" ]]; then
+                        _cl_badges_plain="$_cl_m_text"
+                        _cl_badges_colored="${RED}${_cl_m_text}${NC}"
+                    fi
 
-                    # Cluster line: ID, Name [Degraded: N], State, Created, Age, Size(under Total), OCID
+                    # Cluster line: ID, Name [D: N] [M: N], State, Created, Age, Size(under Total), OCID
                     # Prefix: 3(indent)+2(tree)+1(sp)+4(gid)+1(sp) = 11 visible chars before name
-                    if [[ -n "$_cl_maint_badge" ]]; then
-                        # Pad badge to col 31 (aligns with CC/IC name start), then State at col 79
+                    if [[ -n "$_cl_badges_plain" ]]; then
+                        # Pad badges to col 31 (aligns with CC/IC name start), then State at col 79
                         printf "   ${WHITE}${connector}${NC} ${YELLOW}%-4s${NC} ${MAGENTA}%s${NC}" "$gid" "$cluster_name"
                         local _cl_name_end=$(( 11 + ${#cluster_name} ))
                         local _cl_to_badge=$(( 31 - _cl_name_end ))
                         [[ $_cl_to_badge -lt 1 ]] && _cl_to_badge=1
                         printf "%${_cl_to_badge}s" ""
-                        printf "${_cl_maint_badge}"
-                        local _cl_badge_len=$(( ${#_cl_degraded_count} + 12 ))  # "[Degraded: ]" visible
+                        printf "${_cl_badges_colored}"
+                        local _cl_badge_len=${#_cl_badges_plain}
                         local _cl_badge_end=$(( 31 + _cl_badge_len ))
                         local _cl_to_state=$(( 78 - _cl_badge_end ))
                         [[ $_cl_to_state -lt 1 ]] && _cl_to_state=1
@@ -14151,6 +14190,10 @@ display_gpu_management_menu() {
             prov_pct=$(awk "BEGIN { printf \"%.1f\", ($summary_cluster_nodes / $summary_total) * 100 }")
         fi
         printf "%-3s ${GRAY}GPU Memory Clusters: ${WHITE}${summary_clusters}${GRAY}   Cluster Nodes Provisioned: ${WHITE}${summary_cluster_nodes}/${summary_total} (${prov_pct}%%)${NC}\n" ""
+        # Badge legend — describe what the per-cluster [D:] / [M:] indicators mean.
+        echo ""
+        echo -e "  ${GRAY}Cluster badges:${NC}  ${LIGHT_RED}[D: N]${NC}${GRAY} = N compute hosts in cluster with health != HEALTHY (source: ${NC}oci compute compute-host list${GRAY}, same as ${NC}--manage c10${GRAY})${NC}"
+        echo -e "                  ${RED}[M: N]${NC}${GRAY} = N active instance maintenance events for cluster hosts (source: ${NC}oci compute instance-maintenance-event list${GRAY}, same as ${NC}--manage o3${GRAY}; excludes CANCELED/SUCCEEDED/FAILED)${NC}"
     fi
     echo ""
     
