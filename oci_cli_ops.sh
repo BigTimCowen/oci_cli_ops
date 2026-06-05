@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.56"
+readonly SCRIPT_VERSION="3.34.57"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -40671,6 +40671,7 @@ manage_instance_configurations() {
         _ui_actions
         echo -e "  ${CYAN}c#${NC}          - View instance configuration details and user-data (e.g., 'c1', 'c2')"
         echo -e "  ${GREEN}c${NC}           - Create a new Instance Configuration"
+        echo -e "  ${YELLOW}u${NC}           - Usage view: which Instance Pools / GPU Mem Clusters / Cluster Networks use each IC (togglable A/B views)"
         echo -e "  ${YELLOW}re${NC}          - Rename an Instance Configuration (e.g., ${YELLOW}re c1${NC})"
         echo -e "  ${RED}d #${NC}         - Delete Instance Configuration (d 1, d 1,2,3, d 1-3, d all)"
         echo -e "  ${CYAN}comp${NC}        - Compare configs (e.g., ${CYAN}comp c1 c2${NC}) (alias: ${CYAN}diff${NC})"
@@ -40679,7 +40680,7 @@ manage_instance_configurations() {
         echo -e "  ${MAGENTA}r${NC}           - Refresh data from OCI"
         echo -e "  ${CYAN}back${NC}        - Return to main menu"
         echo ""
-        _ui_prompt "Instance Configs" "c#, c, cci, re, re c#, d #, comp c# c#, ua, r, back, show"
+        _ui_prompt "Instance Configs" "c#, c, u, cci, re, re c#, d #, comp c# c#, ua, r, back, show"
         
         local input
         read -r input
@@ -40719,6 +40720,9 @@ manage_instance_configurations() {
             d\ *|D\ *|delete\ *|DELETE\ *)
                 local delete_args="${input#* }"
                 delete_instance_configuration_interactive "$delete_args"
+                ;;
+            u|U|usage|USAGE)
+                _pool_topology_by_instance_config "$compartment_id" "$region"
                 ;;
             ua|UA|update-all|UPDATE-ALL)
                 update_all_clusters_instance_config
@@ -47781,11 +47785,11 @@ _pool_topology_summary() {
 
         _ui_actions
         echo -e "  ${YELLOW}s${NC}) ${WHITE}By HPC Island${NC} - Pivot: per-island view (which pools use each island, availability, blast-radius overlap)"
-        echo -e "  ${YELLOW}i${NC}) ${WHITE}By IC${NC}         - Pivot: per-IC view (which pools/GMCs/CNs use each instance configuration; togglable view A/B)"
         echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC}       - Re-fetch all pool instances and impacted details"
         echo -e "  ${CYAN}Enter${NC}) Return"
+        echo -e "  ${GRAY}(For 'By Instance Configuration' usage view, see --manage c2 → u)${NC}"
         echo ""
-        _ui_prompt "Topology" "s, i, r, Enter"
+        _ui_prompt "Topology" "s, r, Enter"
         local _t_choice
         read -r _t_choice
         [[ "${_t_choice:-}" == :* ]] && _nav_try_jump "$_t_choice" && return
@@ -47797,9 +47801,6 @@ _pool_topology_summary() {
                 ;;
             s|S|island|ISLAND)
                 _pool_topology_by_hpc_island "$pools_json" "$compartment_id" "$region"
-                ;;
-            i|I|ic|IC)
-                _pool_topology_by_instance_config "$pools_json" "$compartment_id" "$region"
                 ;;
             *) return ;;
         esac
@@ -47981,22 +47982,34 @@ _pool_topology_by_hpc_island() {
 # reference ICs in the OCI API (probe confirms no direct field).
 #--------------------------------------------------------------------------------
 _pool_topology_by_instance_config() {
-    local pools_json="$1"
-    local compartment_id="${2:-${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}}"
-    local region="${3:-${FOCUS_REGION:-$REGION}}"
+    local compartment_id="${1:-${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}}"
+    local region="${2:-${FOCUS_REGION:-$REGION}}"
     local _view="A"
 
     while true; do
         echo ""
         _ui_menu_header "INSTANCE CONFIGURATION USAGE" \
             --color "$YELLOW" \
-            --breadcrumb "Compute" "Instance Pools" "Topology" "By IC" \
+            --breadcrumb "Compute" "Instance Configs" "Usage" \
             --env
         echo ""
 
         _step_init
 
-        # Ensure caches: ICs, CNs, GMCs (CLUSTER_CACHE), CCs, instance pools.
+        # Pool cache — pulled from INSTANCE_POOL_CACHE rather than a live pools_json
+        # so the pivot can be entered from c2 (Instance Configs) without pool context.
+        if ! is_cache_fresh "$INSTANCE_POOL_CACHE"; then
+            _step_active "instance pools"
+            oci compute-management instance-pool list \
+                --compartment-id "$compartment_id" --region "$region" \
+                --all --output json > "$INSTANCE_POOL_CACHE" 2>/dev/null || true
+            local _ip_ct; _ip_ct=$(jq '.data | length // 0' "$INSTANCE_POOL_CACHE" 2>/dev/null || echo 0)
+            _step_complete "instance pools(${_ip_ct})"
+        else
+            _step_complete "instance pools(cached)"
+        fi
+
+        # Ensure caches: ICs, CNs, GMCs (CLUSTER_CACHE), CCs.
         if ! is_cache_fresh "$INSTANCE_CONFIG_CACHE"; then
             _step_active "instance configurations"
             fetch_instance_configurations 2>/dev/null || true
@@ -48039,12 +48052,14 @@ _pool_topology_by_instance_config() {
             done < <(grep -v '^#' "$INSTANCE_CONFIG_CACHE" 2>/dev/null)
         fi
 
-        # Pool OCID → "name|ic_ocid" (from pools_json — already in memory)
+        # Pool OCID → "name|ic_ocid|size" from the cache (TTL-fresh above).
         declare -A _POOL_META=()
-        while IFS=$'\t' read -r _pm_ocid _pm_name _pm_ic _pm_size; do
-            [[ -z "$_pm_ocid" ]] && continue
-            _POOL_META["$_pm_ocid"]="${_pm_name}|${_pm_ic}|${_pm_size}"
-        done < <(jq -r '.data[]? | select(.["lifecycle-state"] != "TERMINATED") | [.id, .["display-name"], .["instance-configuration-id"], (.size // 0)] | @tsv' <<< "$pools_json" 2>/dev/null)
+        if [[ -f "$INSTANCE_POOL_CACHE" ]]; then
+            while IFS=$'\t' read -r _pm_ocid _pm_name _pm_ic _pm_size; do
+                [[ -z "$_pm_ocid" ]] && continue
+                _POOL_META["$_pm_ocid"]="${_pm_name}|${_pm_ic}|${_pm_size}"
+            done < <(jq -r '.data[]? | select(.["lifecycle-state"] != "TERMINATED") | [.id, .["display-name"], .["instance-configuration-id"], (.size // 0)] | @tsv' "$INSTANCE_POOL_CACHE" 2>/dev/null)
+        fi
 
         # GMC OCID → "name|ic_ocid|cc_ocid|size" (CLUSTER_CACHE format:
         # ClusterOCID|DisplayName|State|FabricSuffix|InstanceConfigurationId|ComputeClusterId|Size|TimeCreated)
