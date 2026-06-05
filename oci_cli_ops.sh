@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.55"
+readonly SCRIPT_VERSION="3.34.56"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -47781,10 +47781,11 @@ _pool_topology_summary() {
 
         _ui_actions
         echo -e "  ${YELLOW}s${NC}) ${WHITE}By HPC Island${NC} - Pivot: per-island view (which pools use each island, availability, blast-radius overlap)"
+        echo -e "  ${YELLOW}i${NC}) ${WHITE}By IC${NC}         - Pivot: per-IC view (which pools/GMCs/CNs use each instance configuration; togglable view A/B)"
         echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC}       - Re-fetch all pool instances and impacted details"
         echo -e "  ${CYAN}Enter${NC}) Return"
         echo ""
-        _ui_prompt "Topology" "s, r, Enter"
+        _ui_prompt "Topology" "s, i, r, Enter"
         local _t_choice
         read -r _t_choice
         [[ "${_t_choice:-}" == :* ]] && _nav_try_jump "$_t_choice" && return
@@ -47796,6 +47797,9 @@ _pool_topology_summary() {
                 ;;
             s|S|island|ISLAND)
                 _pool_topology_by_hpc_island "$pools_json" "$compartment_id" "$region"
+                ;;
+            i|I|ic|IC)
+                _pool_topology_by_instance_config "$pools_json" "$compartment_id" "$region"
                 ;;
             *) return ;;
         esac
@@ -47960,6 +47964,325 @@ _pool_topology_by_hpc_island() {
         [[ "${_s_choice:-}" == :* ]] && _nav_try_jump "$_s_choice" && return
         case "$_s_choice" in
             r|R|refresh|REFRESH) continue ;;
+            *) return ;;
+        esac
+    done
+}
+
+#--------------------------------------------------------------------------------
+# Instance Configuration Usage  (entered via 'i' from pool topology page)
+# Two togglable views (press 'v' to switch):
+#   A — IC-centric: per-IC tree showing Pools (direct), GPU Mem Clusters
+#       (direct), and Cluster Networks (transitive via pools).
+#   B — Resource-centric: per-resource-type sections listing each resource
+#       with its direct IC. Honest about which resource kinds reference
+#       ICs at all (Pools + GMCs do; CNs + CCs don't).
+# Compute Clusters are listed separately (when present) noting they do not
+# reference ICs in the OCI API (probe confirms no direct field).
+#--------------------------------------------------------------------------------
+_pool_topology_by_instance_config() {
+    local pools_json="$1"
+    local compartment_id="${2:-${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}}"
+    local region="${3:-${FOCUS_REGION:-$REGION}}"
+    local _view="A"
+
+    while true; do
+        echo ""
+        _ui_menu_header "INSTANCE CONFIGURATION USAGE" \
+            --color "$YELLOW" \
+            --breadcrumb "Compute" "Instance Pools" "Topology" "By IC" \
+            --env
+        echo ""
+
+        _step_init
+
+        # Ensure caches: ICs, CNs, GMCs (CLUSTER_CACHE), CCs, instance pools.
+        if ! is_cache_fresh "$INSTANCE_CONFIG_CACHE"; then
+            _step_active "instance configurations"
+            fetch_instance_configurations 2>/dev/null || true
+            _step_complete "instance configurations($(_clc "$INSTANCE_CONFIG_CACHE" 2>/dev/null || echo 0))"
+        else
+            _step_complete "instance configurations(cached)"
+        fi
+        if ! is_cache_fresh "$CLUSTER_NETWORK_CACHE"; then
+            _step_active "cluster networks"
+            oci compute-management cluster-network list \
+                --compartment-id "$compartment_id" --region "$region" \
+                --all --output json > "$CLUSTER_NETWORK_CACHE" 2>/dev/null || true
+            local _cn_ct; _cn_ct=$(jq '.data | length // 0' "$CLUSTER_NETWORK_CACHE" 2>/dev/null || echo 0)
+            _step_complete "cluster networks(${_cn_ct})"
+        else
+            _step_complete "cluster networks(cached)"
+        fi
+        if ! is_cache_fresh "$CLUSTER_CACHE"; then
+            _step_active "GPU memory clusters"
+            fetch_gpu_clusters 2>/dev/null || true
+            _step_complete "GPU memory clusters($(_clc "$CLUSTER_CACHE" 2>/dev/null || echo 0))"
+        else
+            _step_complete "GPU memory clusters(cached)"
+        fi
+        if ! is_cache_fresh "$COMPUTE_CLUSTER_CACHE"; then
+            _step_active "compute clusters"
+            fetch_compute_clusters 2>/dev/null || true
+            _step_complete "compute clusters($(_clc "$COMPUTE_CLUSTER_CACHE" 2>/dev/null || echo 0))"
+        else
+            _step_complete "compute clusters(cached)"
+        fi
+        _step_finish
+
+        # IC OCID → name
+        declare -A _IC_NAME=()
+        if [[ -f "$INSTANCE_CONFIG_CACHE" ]]; then
+            while IFS='|' read -r _ic_ocid _ic_name _; do
+                [[ -z "$_ic_ocid" || "$_ic_ocid" == "#"* ]] && continue
+                _IC_NAME["$_ic_ocid"]="$_ic_name"
+            done < <(grep -v '^#' "$INSTANCE_CONFIG_CACHE" 2>/dev/null)
+        fi
+
+        # Pool OCID → "name|ic_ocid" (from pools_json — already in memory)
+        declare -A _POOL_META=()
+        while IFS=$'\t' read -r _pm_ocid _pm_name _pm_ic _pm_size; do
+            [[ -z "$_pm_ocid" ]] && continue
+            _POOL_META["$_pm_ocid"]="${_pm_name}|${_pm_ic}|${_pm_size}"
+        done < <(jq -r '.data[]? | select(.["lifecycle-state"] != "TERMINATED") | [.id, .["display-name"], .["instance-configuration-id"], (.size // 0)] | @tsv' <<< "$pools_json" 2>/dev/null)
+
+        # GMC OCID → "name|ic_ocid|cc_ocid|size" (CLUSTER_CACHE format:
+        # ClusterOCID|DisplayName|State|FabricSuffix|InstanceConfigurationId|ComputeClusterId|Size|TimeCreated)
+        declare -A _GMC_META=()
+        if [[ -f "$CLUSTER_CACHE" ]]; then
+            while IFS='|' read -r _gm_ocid _gm_name _gm_state _gm_fsuf _gm_ic _gm_cc _gm_size _gm_tc; do
+                [[ -z "$_gm_ocid" || "$_gm_ocid" == "#"* ]] && continue
+                [[ "$_gm_state" == "DELETED" || "$_gm_state" == "TERMINATED" ]] && continue
+                _GMC_META["$_gm_ocid"]="${_gm_name}|${_gm_ic}|${_gm_cc}|${_gm_size}"
+            done < <(grep -v '^#' "$CLUSTER_CACHE" 2>/dev/null)
+        fi
+
+        # CC OCID → name (COMPUTE_CLUSTER_CACHE format: OCID|Name|AD|State|TimeCreated)
+        declare -A _CC_NAME=()
+        if [[ -f "$COMPUTE_CLUSTER_CACHE" ]]; then
+            while IFS='|' read -r _cc_ocid _cc_name _cc_ad _cc_state _cc_tc; do
+                [[ -z "$_cc_ocid" || "$_cc_ocid" == "#"* ]] && continue
+                [[ "$_cc_state" == "DELETED" ]] && continue
+                _CC_NAME["$_cc_ocid"]="$_cc_name"
+            done < <(grep -v '^#' "$COMPUTE_CLUSTER_CACHE" 2>/dev/null)
+        fi
+
+        # Pool → CN reverse map (same as c8 Topology)
+        declare -A _POOL_CN_NAME=()
+        if [[ -f "$CLUSTER_NETWORK_CACHE" && -s "$CLUSTER_NETWORK_CACHE" ]]; then
+            while IFS=$'\t' read -r _pcn_pool _pcn_cn_name; do
+                [[ -z "$_pcn_pool" ]] && continue
+                _POOL_CN_NAME["$_pcn_pool"]="$_pcn_cn_name"
+            done < <(jq -r '.data[]? | select(.["lifecycle-state"] != "TERMINATED") | . as $cn | ($cn["instance-pools"] // [])[] | "\(.id)\t\($cn["display-name"] // "N/A")"' "$CLUSTER_NETWORK_CACHE" 2>/dev/null)
+        fi
+
+        # Build IC → resource lists. Iterate _IC_NAME so orphan ICs get keys too.
+        declare -A _IC_POOLS=() _IC_GMCS=() _IC_CNS=()
+        for _ic in "${!_IC_NAME[@]}"; do _IC_POOLS["$_ic"]=""; _IC_GMCS["$_ic"]=""; _IC_CNS["$_ic"]=""; done
+        # Pools using each IC
+        for _p in "${!_POOL_META[@]}"; do
+            local _pm="${_POOL_META[$_p]}"
+            local _pm_name="${_pm%%|*}"; local _rest="${_pm#*|}"; local _pm_ic="${_rest%%|*}"
+            [[ -z "$_pm_ic" || "$_pm_ic" == "null" ]] && continue
+            _IC_POOLS["$_pm_ic"]+="${_pm_name}|"
+            # Transitive: pool's CN
+            local _cn="${_POOL_CN_NAME[$_p]:-}"
+            if [[ -n "$_cn" && "${_IC_CNS[$_pm_ic]}" != *"$_cn|"* ]]; then
+                _IC_CNS["$_pm_ic"]+="${_cn}|"
+            fi
+        done
+        # GMCs using each IC
+        for _g in "${!_GMC_META[@]}"; do
+            local _gm="${_GMC_META[$_g]}"
+            local _gm_name="${_gm%%|*}"; local _r="${_gm#*|}"; local _gm_ic="${_r%%|*}"
+            [[ -z "$_gm_ic" || "$_gm_ic" == "N/A" || "$_gm_ic" == "null" ]] && continue
+            _IC_GMCS["$_gm_ic"]+="${_gm_name}|"
+        done
+
+        # ────────────────────── Render ──────────────────────
+        if [[ "$_view" == "A" ]]; then
+            # ── A: IC-centric tree ──
+            echo -e "  ${BOLD}${WHITE}View A — IC-centric:${NC} ${GRAY}per-IC tree of resources using it${NC}"
+            echo ""
+            local _orphan_ct=0 _used_ct=0 _shared_ct=0
+            # Sort IC names alphabetically
+            local -a _sorted_ics
+            mapfile -t _sorted_ics < <(for _ic in "${!_IC_NAME[@]}"; do printf '%s\t%s\n' "${_IC_NAME[$_ic]}" "$_ic"; done | sort -f | cut -f2)
+            for _ic in "${_sorted_ics[@]}"; do
+                local _ic_name="${_IC_NAME[$_ic]}"
+                local _pools_str="${_IC_POOLS[$_ic]:-}"; _pools_str="${_pools_str%|}"
+                local _gmcs_str="${_IC_GMCS[$_ic]:-}";   _gmcs_str="${_gmcs_str%|}"
+                local _cns_str="${_IC_CNS[$_ic]:-}";     _cns_str="${_cns_str%|}"
+                local _p_n=0 _g_n=0 _c_n=0
+                [[ -n "$_pools_str" ]] && _p_n=$(awk -F'|' '{print NF}' <<< "$_pools_str")
+                [[ -n "$_gmcs_str"  ]] && _g_n=$(awk -F'|' '{print NF}' <<< "$_gmcs_str")
+                [[ -n "$_cns_str"   ]] && _c_n=$(awk -F'|' '{print NF}' <<< "$_cns_str")
+
+                if [[ "$_p_n" -eq 0 && "$_g_n" -eq 0 ]]; then
+                    ((_orphan_ct++)); continue
+                fi
+                ((_used_ct++))
+                [[ "$_p_n" -gt 1 || "$_g_n" -gt 1 ]] && ((_shared_ct++))
+
+                printf "  ${BOLD}${MAGENTA}\xe2\x97\x86${NC} ${WHITE}%s${NC}  ${GRAY}(..%s)${NC}\n" "$_ic_name" "${_ic: -6}"
+                # Direct usages (only lines that have content — user chose to hide empties)
+                local _printed=0 _will_print=0
+                [[ "$_p_n" -gt 0 ]] && ((_will_print++))
+                [[ "$_g_n" -gt 0 ]] && ((_will_print++))
+                [[ "$_c_n" -gt 0 ]] && ((_will_print++))
+                if [[ "$_p_n" -gt 0 ]]; then
+                    ((_printed++))
+                    local _tree="├─"; [[ "$_printed" -eq "$_will_print" ]] && _tree="└─"
+                    printf "       ${GRAY}%s${NC} ${WHITE}Instance Pools (%d):${NC}    ${CYAN}%s${NC}\n" \
+                        "$_tree" "$_p_n" "${_pools_str//|/, }"
+                fi
+                if [[ "$_g_n" -gt 0 ]]; then
+                    ((_printed++))
+                    local _tree="├─"; [[ "$_printed" -eq "$_will_print" ]] && _tree="└─"
+                    printf "       ${GRAY}%s${NC} ${WHITE}GPU Mem Clusters (%d):${NC}  ${CYAN}%s${NC}\n" \
+                        "$_tree" "$_g_n" "${_gmcs_str//|/, }"
+                fi
+                if [[ "$_c_n" -gt 0 ]]; then
+                    ((_printed++))
+                    local _tree="├─"; [[ "$_printed" -eq "$_will_print" ]] && _tree="└─"
+                    printf "       ${GRAY}%s${NC} ${WHITE}Cluster Networks (%d):${NC}  ${CYAN}%s${NC} ${GRAY}(via pools)${NC}\n" \
+                        "$_tree" "$_c_n" "${_cns_str//|/, }"
+                fi
+                echo ""
+            done
+
+            # Orphan ICs section
+            if [[ "$_orphan_ct" -gt 0 ]]; then
+                echo -e "  ${GRAY}Orphan ICs (used by no pool or GMC):${NC}"
+                for _ic in "${_sorted_ics[@]}"; do
+                    local _pools_str="${_IC_POOLS[$_ic]:-}"; _pools_str="${_pools_str%|}"
+                    local _gmcs_str="${_IC_GMCS[$_ic]:-}";   _gmcs_str="${_gmcs_str%|}"
+                    if [[ -z "$_pools_str" && -z "$_gmcs_str" ]]; then
+                        printf "    ${GRAY}\xe2\x97\x8b${NC} ${GRAY}%s  (..%s)${NC}\n" "${_IC_NAME[$_ic]}" "${_ic: -6}"
+                    fi
+                done
+                echo ""
+            fi
+
+            print_separator 88
+            echo -e "  ${BOLD}${WHITE}Aggregate:${NC}"
+            echo -e "    ${WHITE}Total instance configurations:${NC}      ${CYAN}${#_IC_NAME[@]}${NC}"
+            echo -e "    ${WHITE}ICs used by at least one resource:${NC}  ${CYAN}${_used_ct}${NC}"
+            echo -e "    ${WHITE}ICs used by multiple resources:${NC}     ${YELLOW}${_shared_ct}${NC}     ${GRAY}(potential ripple impact on IC update)${NC}"
+            echo -e "    ${WHITE}Orphan ICs:${NC}                         ${GRAY}${_orphan_ct}${NC}"
+            echo ""
+        else
+            # ── B: Resource-centric per-section ──
+            echo -e "  ${BOLD}${WHITE}View B — Resource-centric:${NC} ${GRAY}per-resource direct IC usage${NC}"
+            echo ""
+
+            # Instance Pools section
+            local _pool_total=${#_POOL_META[@]}
+            local -a _distinct_pool_ics=()
+            local -A _seen_p_ic=()
+            for _p in "${!_POOL_META[@]}"; do
+                local _pm="${_POOL_META[$_p]}"; local _r="${_pm#*|}"; local _ic="${_r%%|*}"
+                [[ -n "$_ic" && -z "${_seen_p_ic[$_ic]:-}" ]] && { _seen_p_ic[$_ic]=1; _distinct_pool_ics+=("$_ic"); }
+            done
+            echo -e "  ${BOLD}${YELLOW}\xe2\x94\x83 Instance Pools (${_pool_total} pools, ${#_distinct_pool_ics[@]} distinct ICs)${NC}"
+            if [[ "$_pool_total" -gt 0 ]]; then
+                printf "    ${GRAY}%-40s  %-30s  %-8s${NC}\n" "pool" "instance configuration" "size"
+                while IFS=$'\t' read -r _pn _pi _ps; do
+                    [[ -z "$_pn" ]] && continue
+                    local _ic_disp="${_IC_NAME[$_pi]:-..${_pi: -6}}"
+                    printf "    ${WHITE}%-40.40s${NC}  ${MAGENTA}%-30.30s${NC}  ${CYAN}%-8s${NC}\n" "$_pn" "$_ic_disp" "$_ps"
+                done < <(for _p in "${!_POOL_META[@]}"; do
+                    local _pm="${_POOL_META[$_p]}"
+                    local _pn="${_pm%%|*}"; local _r="${_pm#*|}"; local _pi="${_r%%|*}"; local _ps="${_r#*|}"; _ps="${_ps#*|}"
+                    printf '%s\t%s\t%s\n' "$_pn" "$_pi" "$_ps"
+                done | sort -f)
+            else
+                echo -e "    ${GRAY}(no instance pools)${NC}"
+            fi
+            echo ""
+
+            # GPU Memory Clusters section
+            local _gmc_total=${#_GMC_META[@]}
+            local -a _distinct_gmc_ics=()
+            local -A _seen_g_ic=()
+            for _g in "${!_GMC_META[@]}"; do
+                local _gm="${_GMC_META[$_g]}"; local _r="${_gm#*|}"; local _ic="${_r%%|*}"
+                [[ -n "$_ic" && "$_ic" != "N/A" && -z "${_seen_g_ic[$_ic]:-}" ]] && { _seen_g_ic[$_ic]=1; _distinct_gmc_ics+=("$_ic"); }
+            done
+            echo -e "  ${BOLD}${YELLOW}\xe2\x94\x83 GPU Memory Clusters (${_gmc_total} clusters, ${#_distinct_gmc_ics[@]} distinct ICs)${NC}"
+            if [[ "$_gmc_total" -gt 0 ]]; then
+                printf "    ${GRAY}%-40s  %-30s  %-8s${NC}\n" "cluster" "instance configuration" "size"
+                while IFS=$'\t' read -r _gn _gi _gs; do
+                    [[ -z "$_gn" ]] && continue
+                    local _ic_disp="${_IC_NAME[$_gi]:-..${_gi: -6}}"
+                    [[ -z "$_gi" || "$_gi" == "N/A" ]] && _ic_disp="(no IC reference)"
+                    printf "    ${WHITE}%-40.40s${NC}  ${MAGENTA}%-30.30s${NC}  ${CYAN}%-8s${NC}\n" "$_gn" "$_ic_disp" "$_gs"
+                done < <(for _g in "${!_GMC_META[@]}"; do
+                    local _gm="${_GMC_META[$_g]}"
+                    local _gn="${_gm%%|*}"; local _r="${_gm#*|}"; local _gi="${_r%%|*}"; local _rr="${_r#*|}"; local _gs="${_rr#*|}"
+                    printf '%s\t%s\t%s\n' "$_gn" "$_gi" "$_gs"
+                done | sort -f)
+            else
+                echo -e "    ${GRAY}(no GPU memory clusters)${NC}"
+            fi
+            echo ""
+
+            # Cluster Networks section — no direct IC link
+            local _cn_total=0
+            [[ -f "$CLUSTER_NETWORK_CACHE" ]] && _cn_total=$(jq '[.data[]? | select(.["lifecycle-state"] != "TERMINATED")] | length // 0' "$CLUSTER_NETWORK_CACHE" 2>/dev/null || echo 0)
+            echo -e "  ${BOLD}${YELLOW}\xe2\x94\x83 Cluster Networks (${_cn_total} CNs)${NC}"
+            echo -e "    ${GRAY}(CNs do not reference instance configurations directly — IC is on their pools)${NC}"
+            echo ""
+
+            # Compute Clusters section — no direct IC link
+            local _cc_total=${#_CC_NAME[@]}
+            echo -e "  ${BOLD}${YELLOW}\xe2\x94\x83 Compute Clusters (${_cc_total} CCs)${NC}"
+            echo -e "    ${GRAY}(CCs do not reference instance configurations)${NC}"
+            echo ""
+
+            # Orphan ICs
+            local _orphans=()
+            for _ic in "${!_IC_NAME[@]}"; do
+                local _pools_str="${_IC_POOLS[$_ic]:-}"
+                local _gmcs_str="${_IC_GMCS[$_ic]:-}"
+                [[ -z "$_pools_str" && -z "$_gmcs_str" ]] && _orphans+=("${_IC_NAME[$_ic]}  (..${_ic: -6})")
+            done
+            echo -e "  ${BOLD}${YELLOW}\xe2\x94\x83 Orphan ICs (used by no pool or GMC) — ${#_orphans[@]}${NC}"
+            if [[ ${#_orphans[@]} -gt 0 ]]; then
+                local _sorted; _sorted=$(printf '%s\n' "${_orphans[@]}" | sort -f)
+                while IFS= read -r _o; do
+                    printf "    ${GRAY}\xe2\x97\x8b %s${NC}\n" "$_o"
+                done <<< "$_sorted"
+            fi
+            echo ""
+
+            print_separator 88
+            echo -e "  ${BOLD}${WHITE}Aggregate:${NC}"
+            echo -e "    ${WHITE}Total instance configurations:${NC}     ${CYAN}${#_IC_NAME[@]}${NC}"
+            echo -e "    ${WHITE}ICs referenced by Pools:${NC}           ${CYAN}${#_distinct_pool_ics[@]}${NC}"
+            echo -e "    ${WHITE}ICs referenced by GMCs:${NC}            ${CYAN}${#_distinct_gmc_ics[@]}${NC}"
+            echo -e "    ${WHITE}Orphan ICs:${NC}                        ${GRAY}${#_orphans[@]}${NC}"
+            echo ""
+        fi
+
+        _ui_actions
+        echo -e "  ${YELLOW}v${NC}) ${WHITE}Toggle view${NC}  - Switch between IC-centric (A) and Resource-centric (B). Currently: ${CYAN}${_view}${NC}"
+        echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC}      - Re-fetch all caches"
+        echo -e "  ${CYAN}Enter${NC}) Return to Topology"
+        echo ""
+        _ui_prompt "IC Usage" "v, r, Enter"
+        local _ic_choice
+        read -r _ic_choice
+        [[ "${_ic_choice:-}" == :* ]] && _nav_try_jump "$_ic_choice" && return
+        case "$_ic_choice" in
+            v|V|view|VIEW)
+                [[ "$_view" == "A" ]] && _view="B" || _view="A"
+                continue
+                ;;
+            r|R|refresh|REFRESH)
+                rm -f "$INSTANCE_CONFIG_CACHE" "$CLUSTER_CACHE" "$COMPUTE_CLUSTER_CACHE" 2>/dev/null
+                continue
+                ;;
             *) return ;;
         esac
     done
