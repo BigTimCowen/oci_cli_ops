@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.47"
+readonly SCRIPT_VERSION="3.34.48"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -48125,10 +48125,11 @@ _cn_topology_summary() {
         echo ""
 
         _ui_actions
-        echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC} - Re-fetch all CN instances and impacted details"
+        echo -e "  ${YELLOW}s${NC}) ${WHITE}By HPC Island${NC} - Pivot: per-island view (which CNs use each island, availability, blast-radius overlap)"
+        echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC}       - Re-fetch all CN instances and impacted details"
         echo -e "  ${CYAN}Enter${NC}) Return"
         echo ""
-        _ui_prompt "Topology" "r, Enter"
+        _ui_prompt "Topology" "s, r, Enter"
         local _t_choice
         read -r _t_choice
         [[ "${_t_choice:-}" == :* ]] && _nav_try_jump "$_t_choice" && return
@@ -48137,6 +48138,9 @@ _cn_topology_summary() {
                 rm -f "$_topo_marker" "$_topo_dir"/*.json 2>/dev/null
                 rm -f "$COMPUTE_HOST_IMPACT_CACHE" 2>/dev/null
                 continue
+                ;;
+            s|S|island|ISLAND)
+                _cn_topology_by_hpc_island "$cn_json" "$compartment_id" "$region"
                 ;;
             *) return ;;
         esac
@@ -48150,6 +48154,165 @@ _topo_join_suffixes() {
         _out+="..${_k: -5}, "
     done
     echo "${_out%, }"
+}
+
+#--------------------------------------------------------------------------------
+# Cluster Network Topology — By HPC Island  (entered via 's' from topology page)
+# Inverse grouping of _cn_topology_summary: each HPC island gets a section
+# listing which cluster networks draw from it (with per-island node count and
+# pool name), sorted by available capacity descending. Aggregate footer
+# highlights islands shared by multiple CNs (blast-radius overlap).
+# Reuses caches the topology page already populated — no new API calls.
+#--------------------------------------------------------------------------------
+_cn_topology_by_hpc_island() {
+    local cn_json="$1"
+    local compartment_id="${2:-${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}}"
+    local region="${3:-${FOCUS_REGION:-$REGION}}"
+    local _topo_dir="${CACHE_DIR}/cn_topology"
+
+    while true; do
+        echo ""
+        _ui_menu_header "CLUSTER NETWORK TOPOLOGY — BY HPC ISLAND" \
+            --color "$YELLOW" \
+            --breadcrumb "Compute" "Cluster Networks" "Topology" "By HPC Island" \
+            --env
+        echo ""
+
+        # instance OCID → hpc-island-id (read from compute-host cache)
+        declare -A _ch_inst_hpc=()
+        if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+            while IFS='|' read -r _ch_name _ch_state _ch_health _ch_shape _ch_plat _ch_ad _ch_fd _ch_inst _ch_ocid _ch_hpc _ch_rest; do
+                [[ -z "$_ch_inst" || "$_ch_inst" == "N/A" || "$_ch_name" == "#"* ]] && continue
+                _ch_inst_hpc["$_ch_inst"]="${_ch_hpc:-N/A}"
+            done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
+        fi
+
+        # Available count per HPC island (lifecycle ACTIVE + no instance, global)
+        declare -A _hpc_avail=()
+        if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+            while IFS='|' read -r _ha_name _ha_state _ha_health _ha_shape _ha_plat _ha_ad _ha_fd _ha_inst _ha_ocid _ha_hpc _ha_rest; do
+                [[ -z "$_ha_name" || "$_ha_name" == "#"* ]] && continue
+                [[ "$_ha_state" != "ACTIVE" ]] && continue
+                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && continue
+                [[ -z "$_ha_hpc" || "$_ha_hpc" == "N/A" ]] && continue
+                _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+            done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
+        fi
+
+        # Per island → space-separated "cn_ocid:count" entries
+        # CN meta: cn_ocid → "display_name|pool_name"
+        declare -A _island_cns=()
+        declare -A _cn_meta=()
+        declare -A _all_islands=()
+        local _total_used=0
+
+        while IFS=$'\t' read -r cn_ocid cn_name cn_state; do
+            [[ -z "$cn_ocid" || "$cn_state" == "TERMINATED" ]] && continue
+            local _f_short="${cn_ocid: -16}"
+            local _inst_file="$_topo_dir/${_f_short}.json"
+
+            # Pool name (first pool) from cn_json
+            local _cs_pool
+            _cs_pool=$(jq -r --arg id "$cn_ocid" '.data[] | select(.id == $id) | .["instance-pools"][0]."display-name" // .["instance-pools"][0].id // "N/A"' <<< "$cn_json" 2>/dev/null | head -1)
+            [[ "$_cs_pool" == ocid1.* ]] && _cs_pool="..${_cs_pool: -8}"
+            _cn_meta["$cn_ocid"]="${cn_name}|${_cs_pool}"
+
+            # Per-CN per-island host counts
+            declare -A _ci_hpc_n=()
+            if [[ -s "$_inst_file" ]]; then
+                while read -r _ci; do
+                    [[ -z "$_ci" ]] && continue
+                    local _hpc="${_ch_inst_hpc[$_ci]:-}"
+                    [[ -z "$_hpc" || "$_hpc" == "N/A" ]] && continue
+                    _ci_hpc_n["$_hpc"]=$(( ${_ci_hpc_n[$_hpc]:-0} + 1 ))
+                done < <(jq -r '.data[] | .id' "$_inst_file" 2>/dev/null)
+            fi
+
+            for _hpc in "${!_ci_hpc_n[@]}"; do
+                _all_islands["$_hpc"]=1
+                local _existing="${_island_cns[$_hpc]:-}"
+                _island_cns["$_hpc"]="${_existing}${cn_ocid}:${_ci_hpc_n[$_hpc]} "
+                _total_used=$(( _total_used + ${_ci_hpc_n[$_hpc]} ))
+            done
+        done < <(jq -r '.data[] | select(.["lifecycle-state"] != "TERMINATED") | [.id, ."display-name", ."lifecycle-state"] | @tsv' <<< "$cn_json" 2>/dev/null)
+
+        if [[ ${#_all_islands[@]} -eq 0 ]]; then
+            echo -e "  ${YELLOW}No HPC island data available — cluster network instances may be empty or not yet provisioned to hosts.${NC}"
+            echo ""
+            _ui_pause "return"
+            return
+        fi
+
+        # Sort islands: available desc, then island ID asc
+        local _sorted_islands
+        _sorted_islands=$(for _hpc in "${!_all_islands[@]}"; do
+            printf '%d\t%s\n' "${_hpc_avail[$_hpc]:-0}" "$_hpc"
+        done | sort -k1,1nr -k2,2)
+
+        local _shared_ct=0 _total_avail=0
+        echo ""
+        while IFS=$'\t' read -r _avail _hpc; do
+            [[ -z "$_hpc" ]] && continue
+            _total_avail=$(( _total_avail + _avail ))
+            local _cn_list="${_island_cns[$_hpc]:-}"
+            local _used_in_island=0
+            local -a _cn_entries=()
+            for _entry in $_cn_list; do
+                [[ -z "$_entry" ]] && continue
+                local _e_n="${_entry##*:}"
+                _used_in_island=$(( _used_in_island + _e_n ))
+                _cn_entries+=("$_entry")
+            done
+            local _cn_n=${#_cn_entries[@]}
+            [[ "$_cn_n" -gt 1 ]] && ((_shared_ct++))
+
+            local _avail_c="$GRAY"
+            [[ "$_avail" -gt 0 ]] && _avail_c="$GREEN"
+            # Per-island header: pad island ID to col 56 then status counters
+            printf "  ${BOLD}${MAGENTA}\xe2\x97\x86${NC} ${WHITE}HPC Island ${YELLOW}%-40s${NC}    ${WHITE}Available: ${_avail_c}%3d${NC} ${GRAY}nodes${NC}   ${WHITE}Used: ${CYAN}%3d${NC} ${GRAY}nodes${NC}\n" \
+                "..${_hpc: -7}" "$_avail" "$_used_in_island"
+
+            local _idx=0
+            for _entry in "${_cn_entries[@]}"; do
+                ((_idx++))
+                local _e_cn="${_entry%:*}"
+                local _e_n="${_entry##*:}"
+                local _meta="${_cn_meta[$_e_cn]:-}"
+                local _e_name="${_meta%%|*}"
+                local _e_pool="${_meta#*|}"
+                local _tree="├─"
+                [[ $_idx -eq $_cn_n ]] && _tree="└─"
+                printf "       ${GRAY}%s${NC} ${WHITE}%-30s${NC}  ${GRAY}uses${NC}  ${CYAN}%3d${NC} ${GRAY}nodes${NC}  ${GRAY}(pool: ${NC}${CYAN}%s${GRAY})${NC}\n" \
+                    "$_tree" "${_e_name:0:30}" "$_e_n" "$_e_pool"
+            done
+            echo ""
+        done <<< "$_sorted_islands"
+
+        print_separator 88
+        echo -e "  ${BOLD}${WHITE}Aggregate:${NC}"
+        echo -e "    ${WHITE}Distinct HPC islands across CNs:${NC}   ${CYAN}${#_all_islands[@]}${NC}"
+        if [[ "$_shared_ct" -gt 0 ]]; then
+            echo -e "    ${WHITE}Islands shared by multiple CNs:${NC}    ${YELLOW}${_shared_ct}${NC}     ${GRAY}(potential blast-radius overlap)${NC}"
+        else
+            echo -e "    ${WHITE}Islands shared by multiple CNs:${NC}    ${GRAY}0${NC}"
+        fi
+        echo -e "    ${WHITE}Total available capacity:${NC}          ${GREEN}${_total_avail}${NC}     ${GRAY}(nodes ACTIVE + no instance, in CN-used islands)${NC}"
+        echo -e "    ${WHITE}Total instance-occupied nodes:${NC}     ${CYAN}${_total_used}${NC}"
+        echo ""
+
+        _ui_actions
+        echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC} - Re-read caches"
+        echo -e "  ${CYAN}Enter${NC}) Return to Topology"
+        echo ""
+        _ui_prompt "By HPC Island" "r, Enter"
+        local _s_choice
+        read -r _s_choice
+        [[ "${_s_choice:-}" == :* ]] && _nav_try_jump "$_s_choice" && return
+        case "$_s_choice" in
+            r|R|refresh|REFRESH) continue ;;
+            *) return ;;
+        esac
+    done
 }
 
 #--------------------------------------------------------------------------------
