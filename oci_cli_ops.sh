@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.49"
+readonly SCRIPT_VERSION="3.34.50"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -13589,10 +13589,11 @@ list_instances_by_gpu_cluster() {
 #===============================================================================
 
 # Toggle flags for c4 sub-line visibility (persist across redraws)
-declare -g _C4_SHOW_FW="${_C4_SHOW_FW:-true}"    # Firmware line
+declare -g _C4_SHOW_FW="${_C4_SHOW_FW:-true}"     # Firmware line
 declare -g _C4_SHOW_CQ="${_C4_SHOW_CQ:-true}"     # Clique sub-line
 declare -g _C4_SHOW_CC="${_C4_SHOW_CC:-true}"     # Compute Cluster sub-line
 declare -g _C4_SHOW_IC="${_C4_SHOW_IC:-true}"     # Instance Config sub-line
+declare -g _C4_SHOW_OCID="${_C4_SHOW_OCID:-false}"  # Fabric + GPU cluster OCID columns (off by default)
 
 # Display interactive management menu
 display_gpu_management_menu() {
@@ -13807,6 +13808,7 @@ display_gpu_management_menu() {
     [[ "$_C4_SHOW_CQ" != "true" ]] && _hidden_parts+="cliques "
     [[ "$_C4_SHOW_CC" != "true" ]] && _hidden_parts+="compute-cluster "
     [[ "$_C4_SHOW_IC" != "true" ]] && _hidden_parts+="instance-config "
+    [[ "$_C4_SHOW_OCID" != "true" ]] && _hidden_parts+="OCIDs "
     if [[ -n "$_hidden_parts" ]]; then
         echo -e "  ${GRAY}Hidden: ${_hidden_parts}— use ${NC}toggle${GRAY} to restore${NC}"
     fi
@@ -13966,9 +13968,12 @@ display_gpu_management_menu() {
             [[ "$_wo_count" -gt 0 ]] && _wo_color="$RED"
             (( summary_withoci += _wo_count ))
 
-            # Print fabric line: main info with Created/Age and OCID on same line
+            # Print fabric line: main info with Created/Age and OCID on same line.
+            # OCID column is gated by _C4_SHOW_OCID (default off).
+            local _f_ocid_disp=""
+            [[ "$_C4_SHOW_OCID" == "true" ]] && _f_ocid_disp="$fabric_ocid"
             printf "${YELLOW}%-3s${NC} ${CYAN}%-60s${NC}%15s${state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC} ${WHITE}%5s${NC} ${WHITE}%7s${NC} ${avail_color}%5s${NC} ${_wo_color}%8s${NC}  ${YELLOW}%s${NC}\n" \
-                "$fid" "$fabric_name" "" "$fabric_state" "$_fab_date" "$_fab_age" "$total_hosts" "$healthy_hosts" "$avail_hosts" "$_wo_count" "$fabric_ocid"
+                "$fid" "$fabric_name" "" "$fabric_state" "$_fab_date" "$_fab_age" "$total_hosts" "$healthy_hosts" "$avail_hosts" "$_wo_count" "$_f_ocid_disp"
 
             # ── Firmware line (toggleable via _C4_SHOW_FW) ──
             if [[ "$_C4_SHOW_FW" == "true" ]]; then
@@ -14121,14 +14126,19 @@ display_gpu_management_menu() {
                         printf "%${_cl_to_state}s" ""
                         # Trailing %8s placeholder + literal space aligns this row's
                         # OCID column with the fabric row's (which has the 'With OCI' %8s).
+                        # OCID column is gated by _C4_SHOW_OCID (default off).
+                        local _cl_ocid_disp=""
+                        [[ "$_C4_SHOW_OCID" == "true" ]] && _cl_ocid_disp="$cluster_ocid"
                         printf "${state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC} ${WHITE}%5s${NC} %7s %5s %8s  ${YELLOW}%s${NC}\n" \
-                            "$cluster_state" "$_cl_date" "$_cl_age" "$cluster_size" "" "" "" "$cluster_ocid"
+                            "$cluster_state" "$_cl_date" "$_cl_age" "$cluster_size" "" "" "" "$_cl_ocid_disp"
                     else
                         # Pre-state padding bumped %14s -> %15s so State lands at the
                         # same column (80) as the fabric row, keeping all downstream
                         # columns (Created, Age, sizes, OCID) aligned with the fabric.
+                        local _cl_ocid_disp=""
+                        [[ "$_C4_SHOW_OCID" == "true" ]] && _cl_ocid_disp="$cluster_ocid"
                         printf "   ${WHITE}${connector}${NC} ${YELLOW}%-4s${NC} ${MAGENTA}%-53s${NC}%15s${state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC} ${WHITE}%5s${NC} %7s %5s %8s  ${YELLOW}%s${NC}\n" \
-                            "$gid" "$cluster_name" "" "$cluster_state" "$_cl_date" "$_cl_age" "$cluster_size" "" "" "" "$cluster_ocid"
+                            "$gid" "$cluster_name" "" "$cluster_state" "$_cl_date" "$_cl_age" "$cluster_size" "" "" "" "$_cl_ocid_disp"
                     fi
 
                     # Get compute cluster state and created date from cache
@@ -42923,19 +42933,21 @@ interactive_gpu_management() {
                         _tsel="${BASH_REMATCH[1]}"
                     else
                         echo ""
-                        local _fw_icon _cq_icon _cc_icon _ic_icon
+                        local _fw_icon _cq_icon _cc_icon _ic_icon _oc_icon
                         [[ "$_C4_SHOW_FW" == "true" ]] && _fw_icon="${GREEN}ON${NC}" || _fw_icon="${RED}OFF${NC}"
                         [[ "$_C4_SHOW_CQ" == "true" ]] && _cq_icon="${GREEN}ON${NC}" || _cq_icon="${RED}OFF${NC}"
                         [[ "$_C4_SHOW_CC" == "true" ]] && _cc_icon="${GREEN}ON${NC}" || _cc_icon="${RED}OFF${NC}"
                         [[ "$_C4_SHOW_IC" == "true" ]] && _ic_icon="${GREEN}ON${NC}" || _ic_icon="${RED}OFF${NC}"
+                        [[ "$_C4_SHOW_OCID" == "true" ]] && _oc_icon="${GREEN}ON${NC}" || _oc_icon="${RED}OFF${NC}"
                         echo -e "  ${BOLD}${WHITE}Toggle sub-line visibility:${NC}"
                         echo -e "    ${YELLOW}1${NC}) Firmware           [${_fw_icon}]"
                         echo -e "    ${YELLOW}2${NC}) Cliques            [${_cq_icon}]"
                         echo -e "    ${YELLOW}3${NC}) Compute Cluster    [${_cc_icon}]"
                         echo -e "    ${YELLOW}4${NC}) Instance Config    [${_ic_icon}]"
+                        echo -e "    ${YELLOW}5${NC}) Fabric + Cluster OCIDs [${_oc_icon}]"
                         echo -e "    ${CYAN}Enter${NC}) Cancel"
                         echo ""
-                        echo -e "  ${GRAY}Select: 1, 2, 3, 4, 1,3, 1-4, all${NC}"
+                        echo -e "  ${GRAY}Select: 1, 2, 3, 4, 5, 1,3, 1-5, all${NC}"
                         echo -n -e "  ${CYAN}Toggle #: ${NC}"
                         read -r _tsel
                     fi
@@ -42943,7 +42955,7 @@ interactive_gpu_management() {
                     # Expand selection into individual numbers
                     local -a _tnums=()
                     if [[ "${_tsel,,}" == "all" ]]; then
-                        _tnums=(1 2 3 4)
+                        _tnums=(1 2 3 4 5)
                     else
                         # Split on commas, expand ranges
                         local _tpart
@@ -42967,6 +42979,7 @@ interactive_gpu_management() {
                             2) [[ "$_C4_SHOW_CQ" == "true" ]] && _C4_SHOW_CQ=false || _C4_SHOW_CQ=true ;;
                             3) [[ "$_C4_SHOW_CC" == "true" ]] && _C4_SHOW_CC=false || _C4_SHOW_CC=true ;;
                             4) [[ "$_C4_SHOW_IC" == "true" ]] && _C4_SHOW_IC=false || _C4_SHOW_IC=true ;;
+                            5) [[ "$_C4_SHOW_OCID" == "true" ]] && _C4_SHOW_OCID=false || _C4_SHOW_OCID=true ;;
                         esac
                     done
                     break  # Redraw display with new toggle state
