@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.54"
+readonly SCRIPT_VERSION="3.34.55"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -46627,6 +46627,20 @@ manage_instance_pools() {
         local pool_count=0
         declare -a POOL_LIST=()
 
+        # Ensure instance-configuration cache is fresh for the IC-name lookup
+        # in the new 'Instance Config' column.
+        if ! is_cache_fresh "$INSTANCE_CONFIG_CACHE"; then
+            fetch_instance_configurations 2>/dev/null || true
+        fi
+        # IC OCID → display-name map
+        declare -A _IC_NAME=()
+        if [[ -f "$INSTANCE_CONFIG_CACHE" ]]; then
+            while IFS='|' read -r _ic_ocid _ic_name _; do
+                [[ -z "$_ic_ocid" || "$_ic_ocid" == "#"* ]] && continue
+                _IC_NAME["$_ic_ocid"]="$_ic_name"
+            done < <(grep -v '^#' "$INSTANCE_CONFIG_CACHE" 2>/dev/null)
+        fi
+
         local pool_data
         pool_data=$(jq -r '.data[] | [
             .id,
@@ -46638,7 +46652,8 @@ manage_instance_pools() {
         ] | @tsv' <<< "$pools_json" 2>/dev/null)
 
         if [[ -n "$pool_data" ]]; then
-            printf "  ${BOLD}%-4s %-40s %-12s %-6s %-20s %s${NC}\n" "#" "Display Name" "State" "Size" "Created" "OCID"
+            printf "  ${BOLD}%-4s %-40s %-12s %-6s %-30s %-20s %s${NC}\n" \
+                "#" "Display Name" "State" "Size" "Instance Config" "Created" "OCID"
             echo -e "  ${GRAY}──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────${NC}"
 
             while IFS=$'\t' read -r p_ocid p_name p_state p_size p_ic_id p_created; do
@@ -46651,9 +46666,10 @@ manage_instance_pools() {
                 state_color=$(color_resource_state "$p_state")
                 local time_display="${p_created:0:16}"
                 time_display="${time_display/T/ }"
+                local _ic_disp="${_IC_NAME[$p_ic_id]:-..${p_ic_id: -6}}"
 
-                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${state_color}%-12s${NC} ${CYAN}%-6s${NC} ${GRAY}%-20s${NC} ${YELLOW}%s${NC}\n" \
-                    "$pool_count)" "${p_name:0:40}" "$p_state" "$p_size" "$time_display" "$p_ocid"
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${state_color}%-12s${NC} ${CYAN}%-6s${NC} ${MAGENTA}%-30.30s${NC} ${GRAY}%-20s${NC} ${YELLOW}%s${NC}\n" \
+                    "$pool_count)" "${p_name:0:40}" "$p_state" "$p_size" "$_ic_disp" "$time_display" "$p_ocid"
             done <<< "$pool_data"
         fi
 
@@ -48522,6 +48538,28 @@ _cn_topology_summary() {
             _step_complete "impacted details(built)"
         fi
 
+        # Instance pool + instance configuration caches — needed to extend
+        # the 'Pool:' line on each CN with the pool's instance configuration name.
+        if ! is_cache_fresh "$INSTANCE_POOL_CACHE"; then
+            _step_active "instance pools"
+            oci compute-management instance-pool list \
+                --compartment-id "$compartment_id" \
+                --region "$region" \
+                --all --output json > "$INSTANCE_POOL_CACHE" 2>/dev/null || true
+            local _ip_ct
+            _ip_ct=$(jq '.data | length // 0' "$INSTANCE_POOL_CACHE" 2>/dev/null || echo 0)
+            _step_complete "instance pools(${_ip_ct})"
+        else
+            _step_complete "instance pools(cached)"
+        fi
+        if ! is_cache_fresh "$INSTANCE_CONFIG_CACHE"; then
+            _step_active "instance configurations"
+            fetch_instance_configurations 2>/dev/null || true
+            _step_complete "instance configurations($(_clc "$INSTANCE_CONFIG_CACHE" 2>/dev/null || echo 0))"
+        else
+            _step_complete "instance configurations(cached)"
+        fi
+
         # Per-CN instances (parallel + throttled). Sentinel marker provides TTL caching.
         local _need_fetch=true
         is_cache_fresh "$_topo_marker" && _need_fetch=false
@@ -48665,10 +48703,26 @@ _cn_topology_summary() {
             [[ "$_maint_ct" -gt 0 ]] && { ((_cn_with_maint++)); _total_maint=$(( _total_maint + _maint_ct )); }
             [[ ${#_fault_counts[@]} -gt 0 ]] && ((_cn_with_faults++))
 
-            # Pool name (first pool) from cn_json
-            local _cs_pool
-            _cs_pool=$(jq -r --arg id "$cn_ocid" '.data[] | select(.id == $id) | .["instance-pools"][0]."display-name" // .["instance-pools"][0].id // "N/A"' <<< "$cn_json" 2>/dev/null | head -1)
+            # Pool name (first pool) + IC name lookup from cn_json + caches.
+            local _cs_pool_pair
+            _cs_pool_pair=$(jq -r --arg id "$cn_ocid" '.data[] | select(.id == $id) | .["instance-pools"][0] | "\(.["display-name"] // .id // "N/A")\t\(.id // "")"' <<< "$cn_json" 2>/dev/null | head -1)
+            local _cs_pool="${_cs_pool_pair%%$'\t'*}"
+            local _cs_pool_ocid="${_cs_pool_pair#*$'\t'}"
             [[ "$_cs_pool" == ocid1.* ]] && _cs_pool="..${_cs_pool: -8}"
+
+            # Look up pool's instance-configuration name (INSTANCE_POOL_CACHE → IC OCID,
+            # then INSTANCE_CONFIG_CACHE → IC display-name). Falls back silently.
+            local _cs_ic_disp=""
+            if [[ -n "$_cs_pool_ocid" && -f "$INSTANCE_POOL_CACHE" ]]; then
+                local _cs_ic_ocid
+                _cs_ic_ocid=$(jq -r --arg pid "$_cs_pool_ocid" '.data[]? | select(.id == $pid) | .["instance-configuration-id"] // ""' "$INSTANCE_POOL_CACHE" 2>/dev/null | head -1)
+                if [[ -n "$_cs_ic_ocid" && -f "$INSTANCE_CONFIG_CACHE" ]]; then
+                    local _cs_ic_name
+                    _cs_ic_name=$(grep -F "$_cs_ic_ocid" "$INSTANCE_CONFIG_CACHE" 2>/dev/null | head -1 | cut -d'|' -f2)
+                    [[ -z "$_cs_ic_name" ]] && _cs_ic_name="..${_cs_ic_ocid: -6}"
+                    _cs_ic_disp="  (IC: ${_cs_ic_name})"
+                fi
+            fi
 
             # State + badges
             local _sc; _sc=$(color_resource_state "$cn_state")
@@ -48702,7 +48756,7 @@ _cn_topology_summary() {
             local _tree_lb="├─"
             [[ ${#_fault_counts[@]} -eq 0 ]] && _tree_lb="└─"
 
-            printf "       ${GRAY}├─${NC} ${WHITE}Pool:${NC}     ${CYAN}%s${NC}\n" "$_cs_pool"
+            printf "       ${GRAY}├─${NC} ${WHITE}Pool:${NC}     ${CYAN}%s${NC}${GRAY}%s${NC}\n" "$_cs_pool" "$_cs_ic_disp"
             printf "       ${GRAY}├─${NC} ${WHITE}HPC:${NC}      ${CYAN}%d${NC} %s%s\n" \
                 "${#_hpc_set[@]}" "$_hpc_w" "$( [[ -n "$_hpc_l" ]] && printf ' (%s)' "$_hpc_l" )"
             printf "       ${GRAY}├─${NC} ${WHITE}NetBlks:${NC}  ${CYAN}%d${NC} %s%s\n" \
