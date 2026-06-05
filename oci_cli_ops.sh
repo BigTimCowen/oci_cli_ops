@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.57"
+readonly SCRIPT_VERSION="3.34.58"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -13901,7 +13901,7 @@ display_gpu_management_menu() {
             [[ -z "$_wo_fab" || "$_wo_fab" == "N/A" ]] && continue
             # Lifecycle bucket
             case "$_wo_state" in
-                UNAVAILABLE|INACTIVE|FAILED) ;;
+                UNAVAILABLE|INACTIVE|FAILED|PROVISIONING) ;;
                 *) continue ;;
             esac
             # No instance running
@@ -43378,9 +43378,9 @@ _c4_view_unprovisioned_hosts() {
         return
     fi
 
-    printf "  ${BOLD}%-4s %-28s %-7s %-20s %-11s %-9s %-40s %s${NC}\n" \
+    printf "  ${BOLD}%-4s %-28s %-7s %-20s %-13s %-9s %-40s %s${NC}\n" \
         "#" "Fabric" "Case" "Display Name" "State" "Health" "Instance OCID" "Host OCID"
-    print_separator 170
+    print_separator 172
 
     local _idx=0
     while IFS='|' read -r _r_fab _r_case _r_name _r_state _r_health _r_inst _r_ocid; do
@@ -43399,7 +43399,7 @@ _c4_view_unprovisioned_hosts() {
             DEGRADED|IMPAIRED) _h_c="$YELLOW" ;;
             *) _h_c="$RED" ;;
         esac
-        printf "  ${YELLOW}%-4s${NC} ${MAGENTA}%-28.28s${NC} ${_case_c}%-7s${NC} ${WHITE}%-20.20s${NC} ${_st_c}%-11s${NC} ${_h_c}%-9s${NC} ${GRAY}%-40s${NC} ${YELLOW}%s${NC}\n" \
+        printf "  ${YELLOW}%-4s${NC} ${MAGENTA}%-28.28s${NC} ${_case_c}%-7s${NC} ${WHITE}%-20.20s${NC} ${_st_c}%-13.13s${NC} ${_h_c}%-9s${NC} ${GRAY}%-40s${NC} ${YELLOW}%s${NC}\n" \
             "$_idx" "$_r_fab" "$_r_case" "$_r_name" "$_r_state" "$_r_health" "$_r_inst" "$_r_ocid"
     done < <(sort -t'|' -k1,1f -k2,2 "$_unprov_tmp")
     rm -f "$_unprov_tmp" 2>/dev/null
