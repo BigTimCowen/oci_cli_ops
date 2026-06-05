@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.44"
+readonly SCRIPT_VERSION="3.34.45"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -47840,6 +47840,15 @@ view_cluster_network_details() {
         local inst_ct
         inst_ct=$(jq -r '.data | length' <<< "$instances_json" 2>/dev/null || echo "0")
         _step_complete "instances(${inst_ct})"
+
+        # Compute hosts — needed to join per-instance network-block-id and
+        # local-block-id (same source as --manage c10). TTL-cached; reuses any
+        # warm cache from a recent c10/c4 visit.
+        if ! is_cache_fresh "$COMPUTE_HOST_CACHE"; then
+            _step_active "compute hosts"
+            fetch_compute_hosts
+            _step_complete "compute hosts($(_clc "$COMPUTE_HOST_CACHE"))"
+        fi
         _step_finish
 
         # Display details
@@ -47901,10 +47910,22 @@ view_cluster_network_details() {
 
         # Display instances
         if [[ "$inst_ct" -gt 0 ]]; then
+            # Build instance OCID → "NetworkBlockID|LocalBlockID" map from
+            # COMPUTE_HOST_CACHE (fields 8 = InstanceID, 11 = NetworkBlockID,
+            # 12 = LocalBlockID). Same source as --manage c10.
+            declare -A _cn_blocks=()
+            if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+                while IFS='|' read -r _ch_name _ch_state _ch_health _ch_shape _ch_plat _ch_ad _ch_fd _ch_inst _ch_ocid _ch_hpc _ch_netblk _ch_locblk _ch_rest; do
+                    [[ -z "$_ch_inst" || "$_ch_inst" == "N/A" || "$_ch_name" == "#"* ]] && continue
+                    _cn_blocks["$_ch_inst"]="${_ch_netblk:-N/A}|${_ch_locblk:-N/A}"
+                done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
+            fi
+
             echo ""
             echo -e "  ${BOLD}${CYAN}Cluster Network Instances (${inst_ct}):${NC}"
-            printf "    ${BOLD}%-4s %-40s %-12s %-18s %-15s %s${NC}\n" "#" "Display Name" "State" "Shape" "AD" "OCID"
-            echo -e "    ${GRAY}──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────${NC}"
+            printf "    ${BOLD}%-4s %-40s %-12s %-15s %-10s %-95s %-95s %s${NC}\n" \
+                "#" "Display Name" "State" "Shape" "AD" "Network Block ID" "Local Block ID" "OCID"
+            echo -e "    ${GRAY}$(printf '─%.0s' {1..360})${NC}"
 
             local iidx=0
             jq -r '.data[] | [.id, ."display-name", .state, .shape, ."availability-domain"] | @tsv' <<< "$instances_json" 2>/dev/null | \
@@ -47913,8 +47934,22 @@ view_cluster_network_details() {
                 local i_sc
                 i_sc=$(color_resource_state "$i_state")
                 local short_ad="${i_ad##*:}"
-                printf "    ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${i_sc}%-12s${NC} ${CYAN}%-18s${NC} ${WHITE}%-15s${NC} ${GRAY}%s${NC}\n" \
-                    "$iidx)" "${i_name:0:40}" "$i_state" "$i_shape" "$short_ad" "$i_ocid"
+
+                # Look up block IDs by instance OCID; "-" when no host record
+                local _ic_blocks="${_cn_blocks[$i_ocid]:-}"
+                local _i_netblk="-" _i_locblk="-"
+                if [[ -n "$_ic_blocks" ]]; then
+                    _i_netblk="${_ic_blocks%%|*}"
+                    _i_locblk="${_ic_blocks#*|}"
+                    [[ -z "$_i_netblk" || "$_i_netblk" == "N/A" ]] && _i_netblk="-"
+                    [[ -z "$_i_locblk" || "$_i_locblk" == "N/A" ]] && _i_locblk="-"
+                fi
+                local _nb_color="$GRAY" _lb_color="$GRAY"
+                [[ "$_i_netblk" != "-" ]] && _nb_color="$WHITE"
+                [[ "$_i_locblk" != "-" ]] && _lb_color="$WHITE"
+
+                printf "    ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${i_sc}%-12s${NC} ${CYAN}%-15s${NC} ${WHITE}%-10s${NC} ${_nb_color}%-95s${NC} ${_lb_color}%-95s${NC} ${GRAY}%s${NC}\n" \
+                    "$iidx)" "${i_name:0:40}" "$i_state" "$i_shape" "$short_ad" "$_i_netblk" "$_i_locblk" "$i_ocid"
             done
         fi
 
