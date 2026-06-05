@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.45"
+readonly SCRIPT_VERSION="3.34.46"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -47750,12 +47750,13 @@ manage_cluster_networks() {
         _ui_actions
         echo ""
         if [[ $cn_count -gt 0 ]]; then
-            echo -e "  ${CYAN}#${NC}) ${WHITE}View${NC}    - View cluster network details and instances (enter number)"
+            echo -e "  ${CYAN}#${NC}) ${WHITE}View${NC}     - View cluster network details and instances (enter number)"
+            echo -e "  ${YELLOW}d${NC}) ${WHITE}Topology${NC} - Per-CN HPC / NetBlk / LocBlk / Pool summary with [D]/[M]/Faults badges and aggregate"
         fi
-        echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC} - Refresh cluster network list"
-        echo -e "  ${CYAN}b${NC}) ${WHITE}Back${NC}    - Return to Compute menu"
+        echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC}  - Refresh cluster network list"
+        echo -e "  ${CYAN}b${NC}) ${WHITE}Back${NC}     - Return to Compute menu"
         echo ""
-        _ui_prompt "Cluster Networks" "#, r, b, show"
+        _ui_prompt "Cluster Networks" "#, d, r, b, show"
 
         local choice
         read -r choice
@@ -47766,6 +47767,14 @@ manage_cluster_networks() {
                 rm -f "$CLUSTER_NETWORK_CACHE"
                 echo -e "${GREEN}Cache cleared, refreshing...${NC}"
                 sleep 1
+                ;;
+            d|D|topology|TOPOLOGY)
+                if [[ $cn_count -gt 0 ]]; then
+                    _cn_topology_summary "$cn_json" "$compartment_id" "$region"
+                else
+                    echo -e "${YELLOW}No cluster networks to summarise.${NC}"
+                    sleep 1
+                fi
                 ;;
             b|B|back|BACK|"")
                 return
@@ -47792,6 +47801,330 @@ manage_cluster_networks() {
         esac
         [[ -n "${_NAV_JUMP:-}" ]] && return
     done
+}
+
+#--------------------------------------------------------------------------------
+# Cluster Network Topology Summary  (entered via 'd' from manage_cluster_networks)
+# Per-CN tree summarising HPC islands / network blocks / local blocks / pool,
+# plus [D:] (degraded compute-host count) and [M:] (active maintenance events)
+# badges and an optional Faults sub-line aggregated from impacted-component
+# details. Footer rolls up fleet-wide aggregates.
+# Sources (no new APIs beyond what c10/o3/c4 already use):
+#   - oci compute-management cluster-network list-instances   (per CN, parallel)
+#   - oci compute compute-host list                            (COMPUTE_HOST_CACHE)
+#   - oci compute compute-host get                             (impacted hosts only)
+#   - oci compute instance-maintenance-event list              (MAINT_EVENTS_CACHE)
+#--------------------------------------------------------------------------------
+_cn_topology_summary() {
+    local cn_json="$1"
+    local compartment_id="${2:-${FOCUS_COMPARTMENT_ID:-$COMPARTMENT_ID}}"
+    local region="${3:-${FOCUS_REGION:-$REGION}}"
+    local _topo_dir="${CACHE_DIR}/cn_topology"
+    local _topo_marker="$_topo_dir/.marker"
+    mkdir -p "$_topo_dir"
+
+    while true; do
+        echo ""
+        _ui_menu_header "CLUSTER NETWORK TOPOLOGY SUMMARY" \
+            --color "$YELLOW" \
+            --breadcrumb "Compute" "Cluster Networks" "Topology" \
+            --cmd "oci compute-management cluster-network list-instances (×N parallel) | oci compute compute-host list/get | oci compute instance-maintenance-event list" \
+            --env
+        echo ""
+
+        _step_init
+
+        # Compute hosts cache (needed for HPC/NetBlk/LocBlk + health joins)
+        if ! is_cache_fresh "$COMPUTE_HOST_CACHE"; then
+            _step_active "compute hosts"
+            fetch_compute_hosts 2>/dev/null || true
+            _step_complete "compute hosts($(_clc "$COMPUTE_HOST_CACHE" 2>/dev/null || echo 0))"
+        else
+            _step_complete "compute hosts(cached)"
+        fi
+
+        # Maintenance events cache (needed for [M:] badge)
+        if ! is_cache_fresh "$MAINT_EVENTS_CACHE"; then
+            _step_active "maintenance events"
+            oci compute instance-maintenance-event list \
+                --compartment-id "$compartment_id" \
+                --region "$region" \
+                --all --output json > "$MAINT_EVENTS_CACHE" 2>/dev/null || true
+            local _me_ct
+            _me_ct=$(jq '.data | length // 0' "$MAINT_EVENTS_CACHE" 2>/dev/null || echo 0)
+            _step_complete "maintenance events(${_me_ct})"
+        else
+            _step_complete "maintenance events(cached)"
+        fi
+
+        # Impacted-component details (per-host detail fetch; only impacted hosts)
+        if is_cache_fresh "$COMPUTE_HOST_IMPACT_CACHE"; then
+            _step_complete "impacted details(cached)"
+        else
+            _ch_fetch_impacted_details
+            local _imp_tmp=""
+            _imp_tmp=$(create_temp_file) || true
+            : > "$_imp_tmp"
+            if [[ -d "$COMPUTE_HOST_DETAIL_DIR" ]]; then
+                for _detail_file in "$COMPUTE_HOST_DETAIL_DIR"/*.json; do
+                    [[ -s "$_detail_file" ]] || continue
+                    jq -r '.data |
+                        select(.["impacted-component-details"] != null) |
+                        .id as $hid |
+                        (.["recycle-details"]["recycle-level"] // "N/A") as $rl |
+                        (.["impacted-component-details"]["impactedComponents"]["v1"] // {}) |
+                        (.maintenanceType // "N/A") as $mt |
+                        (.state // "N/A") as $ist |
+                        ([(.components // [])[] |
+                            "\(.componentType // "?"):\(.action // "?"):\(.faultId // "?"):\(.severity // "?")"]
+                        | join(";")) as $comps |
+                        "\($hid)|\($mt)|\($rl)|\($comps)|\($ist)"
+                    ' "$_detail_file" >> "$_imp_tmp" 2>/dev/null || true
+                done
+            fi
+            _cache_write "$COMPUTE_HOST_IMPACT_CACHE" < "$_imp_tmp"
+            rm -f "$_imp_tmp" 2>/dev/null
+            _step_complete "impacted details(built)"
+        fi
+
+        # Per-CN instances (parallel + throttled). Sentinel marker provides TTL caching.
+        local _need_fetch=true
+        is_cache_fresh "$_topo_marker" && _need_fetch=false
+        if [[ "$_need_fetch" == "true" ]]; then
+            rm -f "$_topo_dir"/*.json 2>/dev/null
+            local -a _topo_pids=()
+            local _topo_ct=0
+            while IFS=$'\t' read -r _f_ocid _ _; do
+                [[ -z "$_f_ocid" ]] && continue
+                local _f_short="${_f_ocid: -16}"
+                _oci_throttle
+                (oci compute-management cluster-network list-instances \
+                    --cluster-network-id "$_f_ocid" \
+                    --compartment-id "$compartment_id" \
+                    --region "$region" \
+                    --all --output json > "$_topo_dir/${_f_short}.json" 2>/dev/null) &
+                _topo_pids+=($!)
+                ((_topo_ct++))
+            done < <(jq -r '.data[] | select(.["lifecycle-state"] != "TERMINATED") | [.id] | @tsv' <<< "$cn_json" 2>/dev/null)
+            if [[ $_topo_ct -gt 0 ]]; then
+                _step_active "CN instances(${_topo_ct} parallel)"
+                _wait_with_timeout 120 "${_topo_pids[@]}" 2>/dev/null || true
+                : > "$_topo_marker"
+                _step_complete "CN instances(${_topo_ct})"
+            fi
+        else
+            _step_complete "CN instances(cached)"
+        fi
+        _step_finish
+
+        # Build instance OCID → "hpc|netblk|locblk|health|hostocid" map from COMPUTE_HOST_CACHE
+        declare -A _ch_inst_meta=()
+        if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+            while IFS='|' read -r _ch_name _ch_state _ch_health _ch_shape _ch_plat _ch_ad _ch_fd _ch_inst _ch_ocid _ch_hpc _ch_netblk _ch_locblk _ch_rest; do
+                [[ -z "$_ch_inst" || "$_ch_inst" == "N/A" || "$_ch_name" == "#"* ]] && continue
+                _ch_inst_meta["$_ch_inst"]="${_ch_hpc:-N/A}|${_ch_netblk:-N/A}|${_ch_locblk:-N/A}|${_ch_health:-N/A}|${_ch_ocid:-N/A}"
+            done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
+        fi
+
+        # Build instance → active-maint-event count from MAINT_EVENTS_CACHE
+        # Active = lifecycle not in {CANCELED, CANCELLED, SUCCEEDED, FAILED} (matches o3)
+        declare -A _me_active=()
+        if [[ -f "$MAINT_EVENTS_CACHE" && -s "$MAINT_EVENTS_CACHE" ]]; then
+            while IFS='|' read -r _me_inst _me_lc; do
+                [[ -z "$_me_inst" || "$_me_inst" == "null" ]] && continue
+                case "${_me_lc^^}" in
+                    CANCELED|CANCELLED|SUCCEEDED|FAILED) continue ;;
+                esac
+                _me_active["$_me_inst"]=$(( ${_me_active[$_me_inst]:-0} + 1 ))
+            done < <(jq -r '.data[]? | "\(.["instance-id"] // "")|\(.["lifecycle-state"] // "")"' "$MAINT_EVENTS_CACHE" 2>/dev/null)
+        fi
+
+        # Build host OCID → fault rows (semicolon-separated comp:action:faultId:sev)
+        declare -A _host_faults=()
+        declare -A _host_mt=()
+        if [[ -f "$COMPUTE_HOST_IMPACT_CACHE" ]]; then
+            while IFS='|' read -r _hf_host _hf_mt _hf_rl _hf_comps _hf_state; do
+                [[ -z "$_hf_host" || "$_hf_host" == "#"* ]] && continue
+                _host_faults["$_hf_host"]="$_hf_comps"
+                _host_mt["$_hf_host"]="$_hf_mt"
+            done < "$COMPUTE_HOST_IMPACT_CACHE"
+        fi
+
+        # Aggregate tracking across all CNs
+        declare -A _all_hpc=() _all_nb=() _all_lb=() _all_faults=()
+        local _total_inst=0 _total_cn=0
+        local _cn_with_degraded=0 _cn_with_maint=0 _cn_with_faults=0
+        local _total_degraded=0 _total_maint=0 _total_faultocc=0
+
+        echo ""
+        # Render each cluster network
+        while IFS=$'\t' read -r cn_ocid cn_name cn_state; do
+            [[ -z "$cn_ocid" || "$cn_state" == "TERMINATED" ]] && continue
+            ((_total_cn++))
+            local _f_short="${cn_ocid: -16}"
+            local _inst_file="$_topo_dir/${_f_short}.json"
+
+            # Per-CN sets
+            declare -A _hpc_set=() _nb_set=() _lb_set=()
+            declare -A _fault_counts=()    # "FAULTID:ACTION" → count
+            local _inst_ct=0 _degr_ct=0 _maint_ct=0
+
+            if [[ -s "$_inst_file" ]]; then
+                while read -r _ci; do
+                    [[ -z "$_ci" ]] && continue
+                    ((_inst_ct++))
+                    # Active maintenance events for this instance
+                    local _me_n="${_me_active[$_ci]:-0}"
+                    if [[ "$_me_n" -gt 0 ]]; then
+                        _maint_ct=$(( _maint_ct + _me_n ))
+                    fi
+                    # Host meta join
+                    local _ic_meta="${_ch_inst_meta[$_ci]:-}"
+                    [[ -z "$_ic_meta" ]] && continue
+                    local _ic_hpc _ic_nb _ic_lb _ic_health _ic_host
+                    IFS='|' read -r _ic_hpc _ic_nb _ic_lb _ic_health _ic_host <<< "$_ic_meta"
+                    [[ -n "$_ic_hpc" && "$_ic_hpc" != "N/A" ]] && { _hpc_set["$_ic_hpc"]=1; _all_hpc["$_ic_hpc"]=1; }
+                    [[ -n "$_ic_nb" && "$_ic_nb" != "N/A" ]] && { _nb_set["$_ic_nb"]=1; _all_nb["$_ic_nb"]=1; }
+                    [[ -n "$_ic_lb" && "$_ic_lb" != "N/A" ]] && { _lb_set["$_ic_lb"]=1; _all_lb["$_ic_lb"]=1; }
+                    # Degraded if health != HEALTHY
+                    [[ -n "$_ic_health" && "$_ic_health" != "HEALTHY" && "$_ic_health" != "N/A" ]] && ((_degr_ct++))
+                    # Fault rows joined via host OCID
+                    local _hf="${_host_faults[$_ic_host]:-}"
+                    if [[ -n "$_hf" ]]; then
+                        local _IFS_save="$IFS"; IFS=';'
+                        local -a _comp_arr=()
+                        # shellcheck disable=SC2206
+                        _comp_arr=( $_hf )
+                        IFS="$_IFS_save"
+                        for _comp in "${_comp_arr[@]}"; do
+                            [[ -z "$_comp" ]] && continue
+                            # _comp = componentType:action:faultId:severity
+                            local _f_action _f_fid
+                            _f_action=$(awk -F: '{print $2}' <<< "$_comp")
+                            _f_fid=$(awk -F: '{print $3}' <<< "$_comp")
+                            [[ -z "$_f_fid" || "$_f_fid" == "?" || "$_f_fid" == "-" ]] && continue
+                            local _key="${_f_fid}:${_f_action:-?}"
+                            _fault_counts["$_key"]=$(( ${_fault_counts[$_key]:-0} + 1 ))
+                            _all_faults["$_f_fid"]=$(( ${_all_faults[$_f_fid]:-0} + 1 ))
+                        done
+                    fi
+                done < <(jq -r '.data[] | .id' "$_inst_file" 2>/dev/null)
+            fi
+            _total_inst=$(( _total_inst + _inst_ct ))
+            [[ "$_degr_ct" -gt 0 ]] && { ((_cn_with_degraded++)); _total_degraded=$(( _total_degraded + _degr_ct )); }
+            [[ "$_maint_ct" -gt 0 ]] && { ((_cn_with_maint++)); _total_maint=$(( _total_maint + _maint_ct )); }
+            [[ ${#_fault_counts[@]} -gt 0 ]] && ((_cn_with_faults++))
+
+            # Pool name (first pool) from cn_json
+            local _cs_pool
+            _cs_pool=$(jq -r --arg id "$cn_ocid" '.data[] | select(.id == $id) | .["instance-pools"][0]."display-name" // .["instance-pools"][0].id // "N/A"' <<< "$cn_json" 2>/dev/null | head -1)
+            [[ "$_cs_pool" == ocid1.* ]] && _cs_pool="..${_cs_pool: -8}"
+
+            # State + badges
+            local _sc; _sc=$(color_resource_state "$cn_state")
+            local _badges=""
+            [[ "$_degr_ct" -gt 0 ]] && _badges+=" ${LIGHT_RED}[D: ${_degr_ct}]${NC}"
+            [[ "$_maint_ct" -gt 0 ]] && _badges+=" ${RED}[M: ${_maint_ct}]${NC}"
+
+            # Header: name, right-aligned state, instance count, badges
+            local _name_disp="${cn_name:0:60}"
+            printf "  ${BOLD}${MAGENTA}\xe2\x97\x86${NC} ${WHITE}%-60s${NC}    ${_sc}%-10s${NC}  ${CYAN}%3d${NC} ${GRAY}instances${NC}%b\n" \
+                "$_name_disp" "$cn_state" "$_inst_ct" "$_badges"
+
+            # Tree sub-block
+            local _hpc_w="islands"; [[ ${#_hpc_set[@]} -eq 1 ]] && _hpc_w="island"
+            local _nb_w="blocks";   [[ ${#_nb_set[@]} -eq 1 ]]  && _nb_w="block"
+            local _lb_w="blocks";   [[ ${#_lb_set[@]} -eq 1 ]]  && _lb_w="block"
+            local _hpc_l; _hpc_l=$(_topo_join_suffixes "${!_hpc_set[@]}")
+            local _nb_l;  _nb_l=$(_topo_join_suffixes "${!_nb_set[@]}")
+            local _lb_l;  _lb_l=$(_topo_join_suffixes "${!_lb_set[@]}")
+
+            # Faults line is the last entry when present, so swap tree connector
+            local _tree_lb="├─"
+            [[ ${#_fault_counts[@]} -eq 0 ]] && _tree_lb="└─"
+
+            printf "       ${GRAY}├─${NC} ${WHITE}Pool:${NC}     ${CYAN}%s${NC}\n" "$_cs_pool"
+            printf "       ${GRAY}├─${NC} ${WHITE}HPC:${NC}      ${CYAN}%d${NC} %s%s\n" \
+                "${#_hpc_set[@]}" "$_hpc_w" "$( [[ -n "$_hpc_l" ]] && printf ' (%s)' "$_hpc_l" )"
+            printf "       ${GRAY}├─${NC} ${WHITE}NetBlks:${NC}  ${CYAN}%d${NC} %s%s\n" \
+                "${#_nb_set[@]}" "$_nb_w" "$( [[ -n "$_nb_l" ]] && printf ' (%s)' "$_nb_l" )"
+            printf "       ${GRAY}${_tree_lb}${NC} ${WHITE}LocBlks:${NC}  ${CYAN}%d${NC} %s%s\n" \
+                "${#_lb_set[@]}" "$_lb_w" "$( [[ -n "$_lb_l" ]] && printf ' (%s)' "$_lb_l" )"
+
+            # Faults sub-line (only when CN has faults)
+            if [[ ${#_fault_counts[@]} -gt 0 ]]; then
+                local _fl_buf=""
+                for _fk in "${!_fault_counts[@]}"; do
+                    local _f_fid="${_fk%%:*}" _f_act="${_fk#*:}"
+                    _total_faultocc=$(( _total_faultocc + ${_fault_counts[$_fk]} ))
+                    _fl_buf+="${_f_fid}×${_fault_counts[$_fk]} (${_f_act})   "
+                done
+                printf "       ${GRAY}└─${NC} ${WHITE}Faults:${NC}   ${RED}%s${NC}\n" "${_fl_buf% *}"
+            fi
+            echo ""
+        done < <(jq -r '.data[] | select(.["lifecycle-state"] != "TERMINATED") | [.id, ."display-name", ."lifecycle-state"] | @tsv' <<< "$cn_json" 2>/dev/null)
+
+        # Aggregate footer
+        print_separator 88
+        echo -e "  ${BOLD}${WHITE}Aggregate across ${CYAN}${_total_cn}${WHITE} cluster networks${NC} ${GRAY}(${CYAN}${_total_inst}${GRAY} instances):${NC}"
+        echo -e "    ${WHITE}Distinct HPC islands:${NC}       ${CYAN}${#_all_hpc[@]}${NC}"
+        echo -e "    ${WHITE}Distinct Network Blocks:${NC}    ${CYAN}${#_all_nb[@]}${NC}"
+        echo -e "    ${WHITE}Distinct Local Blocks:${NC}      ${CYAN}${#_all_lb[@]}${NC}"
+        if [[ "$_cn_with_degraded" -gt 0 ]]; then
+            echo -e "    ${WHITE}CNs with degraded hosts:${NC}    ${LIGHT_RED}${_cn_with_degraded}${NC}     ${GRAY}(${_total_degraded} hosts total)${NC}"
+        else
+            echo -e "    ${WHITE}CNs with degraded hosts:${NC}    ${GRAY}0${NC}"
+        fi
+        if [[ "$_cn_with_maint" -gt 0 ]]; then
+            echo -e "    ${WHITE}CNs with active maint:${NC}      ${RED}${_cn_with_maint}${NC}     ${GRAY}(${_total_maint} events total)${NC}"
+        else
+            echo -e "    ${WHITE}CNs with active maint:${NC}      ${GRAY}0${NC}"
+        fi
+        if [[ "$_cn_with_faults" -gt 0 ]]; then
+            echo -e "    ${WHITE}CNs with faults:${NC}            ${RED}${_cn_with_faults}${NC}     ${GRAY}(${_total_faultocc} fault occurrences)${NC}"
+            # Top fault codes (top 3 by count)
+            local _top_fc=""
+            while IFS=$'\t' read -r _tf_cnt _tf_fid; do
+                [[ -z "$_tf_fid" ]] && continue
+                _top_fc+="${_tf_fid}×${_tf_cnt}   "
+            done < <(for _k in "${!_all_faults[@]}"; do printf '%d\t%s\n' "${_all_faults[$_k]}" "$_k"; done | sort -rn | head -3)
+            [[ -n "$_top_fc" ]] && echo -e "    ${WHITE}Top fault codes:${NC}            ${RED}${_top_fc% *}${NC}"
+        fi
+        echo ""
+
+        # Legend
+        echo -e "  ${GRAY}Legend:${NC}"
+        echo -e "    ${LIGHT_RED}[D: N]${NC}${GRAY}  = N compute hosts in CN with health != HEALTHY (source: ${NC}oci compute compute-host list${GRAY}, same as ${NC}--manage c10${GRAY})${NC}"
+        echo -e "    ${RED}[M: N]${NC}${GRAY}  = N active instance maintenance events for CN hosts (source: ${NC}oci compute instance-maintenance-event list${GRAY}, same as ${NC}--manage o3${GRAY})${NC}"
+        echo -e "    ${RED}Faults${NC}${GRAY}   = distinct fault codes from impacted-component-details with action and count (same source as ${NC}--manage c10${GRAY}'s [Impacted] badge)${NC}"
+        echo ""
+
+        _ui_actions
+        echo -e "  ${MAGENTA}r${NC}) ${WHITE}Refresh${NC} - Re-fetch all CN instances and impacted details"
+        echo -e "  ${CYAN}Enter${NC}) Return"
+        echo ""
+        _ui_prompt "Topology" "r, Enter"
+        local _t_choice
+        read -r _t_choice
+        [[ "${_t_choice:-}" == :* ]] && _nav_try_jump "$_t_choice" && return
+        case "$_t_choice" in
+            r|R|refresh|REFRESH)
+                rm -f "$_topo_marker" "$_topo_dir"/*.json 2>/dev/null
+                rm -f "$COMPUTE_HOST_IMPACT_CACHE" 2>/dev/null
+                continue
+                ;;
+            *) return ;;
+        esac
+    done
+}
+
+# Helper: comma-join associative-array keys (OCIDs) as a suffix list "..xxxxx, ..yyyyy"
+_topo_join_suffixes() {
+    local _out=""
+    for _k in "$@"; do
+        _out+="..${_k: -5}, "
+    done
+    echo "${_out%, }"
 }
 
 #--------------------------------------------------------------------------------
