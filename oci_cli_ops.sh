@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.58"
+readonly SCRIPT_VERSION="3.34.59"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -47592,13 +47592,25 @@ _pool_topology_summary() {
 
         # Per-HPC-island available count (lifecycle ACTIVE + no instance)
         declare -A _hpc_avail=()
+        declare -A _hpc_withoci=()
         if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
             while IFS='|' read -r _ha_name _ha_state _ha_health _ha_shape _ha_plat _ha_ad _ha_fd _ha_inst _ha_ocid _ha_hpc _ha_rest; do
                 [[ -z "$_ha_name" || "$_ha_name" == "#"* ]] && continue
-                [[ "$_ha_state" != "ACTIVE" ]] && continue
-                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && continue
                 [[ -z "$_ha_hpc" || "$_ha_hpc" == "N/A" ]] && continue
-                _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+                # Bucket the host by lifecycle: ACTIVE+no-instance = available;
+                # UNAVAILABLE/INACTIVE/FAILED/PROVISIONING+no-instance = with-OCI.
+                local _has_inst="false"
+                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && _has_inst="true"
+                if [[ "$_has_inst" == "false" ]]; then
+                    case "$_ha_state" in
+                        ACTIVE)
+                            _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+                            ;;
+                        UNAVAILABLE|INACTIVE|FAILED|PROVISIONING)
+                            _hpc_withoci["$_ha_hpc"]=$(( ${_hpc_withoci[$_ha_hpc]:-0} + 1 ))
+                            ;;
+                    esac
+                fi
             done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
         fi
 
@@ -47838,13 +47850,25 @@ _pool_topology_by_hpc_island() {
         fi
 
         declare -A _hpc_avail=()
+        declare -A _hpc_withoci=()
         if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
             while IFS='|' read -r _ha_name _ha_state _ha_health _ha_shape _ha_plat _ha_ad _ha_fd _ha_inst _ha_ocid _ha_hpc _ha_rest; do
                 [[ -z "$_ha_name" || "$_ha_name" == "#"* ]] && continue
-                [[ "$_ha_state" != "ACTIVE" ]] && continue
-                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && continue
                 [[ -z "$_ha_hpc" || "$_ha_hpc" == "N/A" ]] && continue
-                _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+                # Bucket the host by lifecycle: ACTIVE+no-instance = available;
+                # UNAVAILABLE/INACTIVE/FAILED/PROVISIONING+no-instance = with-OCI.
+                local _has_inst="false"
+                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && _has_inst="true"
+                if [[ "$_has_inst" == "false" ]]; then
+                    case "$_ha_state" in
+                        ACTIVE)
+                            _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+                            ;;
+                        UNAVAILABLE|INACTIVE|FAILED|PROVISIONING)
+                            _hpc_withoci["$_ha_hpc"]=$(( ${_hpc_withoci[$_ha_hpc]:-0} + 1 ))
+                            ;;
+                    esac
+                fi
             done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
         fi
 
@@ -47899,11 +47923,13 @@ _pool_topology_by_hpc_island() {
             printf '%d\t%s\n' "${_hpc_avail[$_hpc]:-0}" "$_hpc"
         done | sort -k1,1nr -k2,2)
 
-        local _shared_ct=0 _total_avail=0
+        local _shared_ct=0 _total_avail=0 _total_withoci=0
         echo ""
         while IFS=$'\t' read -r _avail _hpc; do
             [[ -z "$_hpc" ]] && continue
             _total_avail=$(( _total_avail + _avail ))
+            local _withoci="${_hpc_withoci[$_hpc]:-0}"
+            _total_withoci=$(( _total_withoci + _withoci ))
             local _pool_list="${_island_pools[$_hpc]:-}"
             local _used_in_island=0
             local -a _pool_entries=()
@@ -47918,8 +47944,10 @@ _pool_topology_by_hpc_island() {
 
             local _avail_c="$GRAY"
             [[ "$_avail" -gt 0 ]] && _avail_c="$GREEN"
-            printf "  ${BOLD}${MAGENTA}\xe2\x97\x86${NC} ${WHITE}HPC Island ${YELLOW}%-40s${NC}    ${WHITE}Available: ${_avail_c}%3d${NC} ${GRAY}nodes${NC}   ${WHITE}Used: ${CYAN}%3d${NC} ${GRAY}nodes${NC}\n" \
-                "..${_hpc: -7}" "$_avail" "$_used_in_island"
+            local _wo_c="$GRAY"
+            [[ "$_withoci" -gt 0 ]] && _wo_c="$RED"
+            printf "  ${BOLD}${MAGENTA}\xe2\x97\x86${NC} ${WHITE}HPC Island ${YELLOW}%-40s${NC}    ${WHITE}Available: ${_avail_c}%3d${NC} ${GRAY}nodes${NC}   ${WHITE}Used: ${CYAN}%3d${NC} ${GRAY}nodes${NC}   ${WHITE}With OCI: ${_wo_c}%3d${NC} ${GRAY}nodes${NC}\n" \
+                "..${_hpc: -7}" "$_avail" "$_used_in_island" "$_withoci"
 
             local _idx=0
             for _entry in "${_pool_entries[@]}"; do
@@ -47953,6 +47981,9 @@ _pool_topology_by_hpc_island() {
         fi
         echo -e "    ${WHITE}Total available capacity:${NC}         ${GREEN}${_total_avail}${NC}     ${GRAY}(nodes ACTIVE + no instance, in pool-used islands)${NC}"
         echo -e "    ${WHITE}Total instance-occupied nodes:${NC}    ${CYAN}${_total_used}${NC}"
+        local _wo_total_c="$GRAY"
+        [[ "$_total_withoci" -gt 0 ]] && _wo_total_c="$RED"
+        echo -e "    ${WHITE}Total With OCI:${NC}                   ${_wo_total_c}${_total_withoci}${NC}     ${GRAY}(UNAVAILABLE/INACTIVE/FAILED/PROVISIONING + no instance, across all islands)${NC}"
         echo ""
 
         _ui_actions
@@ -48942,13 +48973,25 @@ _cn_topology_summary() {
         # i.e. ready to receive a new instance). Count is global per island —
         # an island shared between CNs shows the same [N:] everywhere it appears.
         declare -A _hpc_avail=()
+        declare -A _hpc_withoci=()
         if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
             while IFS='|' read -r _ha_name _ha_state _ha_health _ha_shape _ha_plat _ha_ad _ha_fd _ha_inst _ha_ocid _ha_hpc _ha_rest; do
                 [[ -z "$_ha_name" || "$_ha_name" == "#"* ]] && continue
-                [[ "$_ha_state" != "ACTIVE" ]] && continue
-                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && continue
                 [[ -z "$_ha_hpc" || "$_ha_hpc" == "N/A" ]] && continue
-                _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+                # Bucket the host by lifecycle: ACTIVE+no-instance = available;
+                # UNAVAILABLE/INACTIVE/FAILED/PROVISIONING+no-instance = with-OCI.
+                local _has_inst="false"
+                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && _has_inst="true"
+                if [[ "$_has_inst" == "false" ]]; then
+                    case "$_ha_state" in
+                        ACTIVE)
+                            _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+                            ;;
+                        UNAVAILABLE|INACTIVE|FAILED|PROVISIONING)
+                            _hpc_withoci["$_ha_hpc"]=$(( ${_hpc_withoci[$_ha_hpc]:-0} + 1 ))
+                            ;;
+                    esac
+                fi
             done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
         fi
 
@@ -49216,13 +49259,25 @@ _cn_topology_by_hpc_island() {
 
         # Available count per HPC island (lifecycle ACTIVE + no instance, global)
         declare -A _hpc_avail=()
+        declare -A _hpc_withoci=()
         if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
             while IFS='|' read -r _ha_name _ha_state _ha_health _ha_shape _ha_plat _ha_ad _ha_fd _ha_inst _ha_ocid _ha_hpc _ha_rest; do
                 [[ -z "$_ha_name" || "$_ha_name" == "#"* ]] && continue
-                [[ "$_ha_state" != "ACTIVE" ]] && continue
-                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && continue
                 [[ -z "$_ha_hpc" || "$_ha_hpc" == "N/A" ]] && continue
-                _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+                # Bucket the host by lifecycle: ACTIVE+no-instance = available;
+                # UNAVAILABLE/INACTIVE/FAILED/PROVISIONING+no-instance = with-OCI.
+                local _has_inst="false"
+                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && _has_inst="true"
+                if [[ "$_has_inst" == "false" ]]; then
+                    case "$_ha_state" in
+                        ACTIVE)
+                            _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+                            ;;
+                        UNAVAILABLE|INACTIVE|FAILED|PROVISIONING)
+                            _hpc_withoci["$_ha_hpc"]=$(( ${_hpc_withoci[$_ha_hpc]:-0} + 1 ))
+                            ;;
+                    esac
+                fi
             done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
         fi
 
@@ -49276,11 +49331,13 @@ _cn_topology_by_hpc_island() {
             printf '%d\t%s\n' "${_hpc_avail[$_hpc]:-0}" "$_hpc"
         done | sort -k1,1nr -k2,2)
 
-        local _shared_ct=0 _total_avail=0
+        local _shared_ct=0 _total_avail=0 _total_withoci=0
         echo ""
         while IFS=$'\t' read -r _avail _hpc; do
             [[ -z "$_hpc" ]] && continue
             _total_avail=$(( _total_avail + _avail ))
+            local _withoci="${_hpc_withoci[$_hpc]:-0}"
+            _total_withoci=$(( _total_withoci + _withoci ))
             local _cn_list="${_island_cns[$_hpc]:-}"
             local _used_in_island=0
             local -a _cn_entries=()
@@ -49295,9 +49352,11 @@ _cn_topology_by_hpc_island() {
 
             local _avail_c="$GRAY"
             [[ "$_avail" -gt 0 ]] && _avail_c="$GREEN"
+            local _wo_c="$GRAY"
+            [[ "$_withoci" -gt 0 ]] && _wo_c="$RED"
             # Per-island header: pad island ID to col 56 then status counters
-            printf "  ${BOLD}${MAGENTA}\xe2\x97\x86${NC} ${WHITE}HPC Island ${YELLOW}%-40s${NC}    ${WHITE}Available: ${_avail_c}%3d${NC} ${GRAY}nodes${NC}   ${WHITE}Used: ${CYAN}%3d${NC} ${GRAY}nodes${NC}\n" \
-                "..${_hpc: -7}" "$_avail" "$_used_in_island"
+            printf "  ${BOLD}${MAGENTA}\xe2\x97\x86${NC} ${WHITE}HPC Island ${YELLOW}%-40s${NC}    ${WHITE}Available: ${_avail_c}%3d${NC} ${GRAY}nodes${NC}   ${WHITE}Used: ${CYAN}%3d${NC} ${GRAY}nodes${NC}   ${WHITE}With OCI: ${_wo_c}%3d${NC} ${GRAY}nodes${NC}\n" \
+                "..${_hpc: -7}" "$_avail" "$_used_in_island" "$_withoci"
 
             local _idx=0
             for _entry in "${_cn_entries[@]}"; do
@@ -49325,6 +49384,9 @@ _cn_topology_by_hpc_island() {
         fi
         echo -e "    ${WHITE}Total available capacity:${NC}          ${GREEN}${_total_avail}${NC}     ${GRAY}(nodes ACTIVE + no instance, in CN-used islands)${NC}"
         echo -e "    ${WHITE}Total instance-occupied nodes:${NC}     ${CYAN}${_total_used}${NC}"
+        local _wo_total_c="$GRAY"
+        [[ "$_total_withoci" -gt 0 ]] && _wo_total_c="$RED"
+        echo -e "    ${WHITE}Total With OCI:${NC}                    ${_wo_total_c}${_total_withoci}${NC}     ${GRAY}(UNAVAILABLE/INACTIVE/FAILED/PROVISIONING + no instance, across all islands)${NC}"
         echo ""
 
         _ui_actions
