@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.50"
+readonly SCRIPT_VERSION="3.34.51"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -13816,8 +13816,10 @@ display_gpu_management_menu() {
 
     # Header for fabrics — widened columns with Created/Age
     # Col positions: ID(0-2) Name(4-63) State(79-90) Created(92-101) Age(103-108) Total Healthy Avail With_OCI OCID
+    local _hdr_ocid="OCID"
+    [[ "$_C4_SHOW_OCID" != "true" ]] && _hdr_ocid=""
     printf "${BOLD}%-3s %-60s%15s%-12s %-10s %-6s %5s %7s %5s %8s  %s${NC}\n" \
-        "ID" "Display Name" "" "State" "Created" "(Age)" "Total" "Healthy" "Avail" "With OCI" "OCID"
+        "ID" "Display Name" "" "State" "Created" "(Age)" "Total" "Healthy" "Avail" "With OCI" "$_hdr_ocid"
     print_separator 169
     
     local fabric_idx=0
@@ -14119,9 +14121,10 @@ display_gpu_management_menu() {
                         printf "${_cl_badges_colored}"
                         local _cl_badge_len=${#_cl_badges_plain}
                         local _cl_badge_end=$(( 31 + _cl_badge_len ))
-                        # Target col 79 (was 78) so the subsequent %-12s State lands
-                        # at col 80, matching the fabric row's State column.
-                        local _cl_to_state=$(( 79 - _cl_badge_end ))
+                        # Target col 78 — the subsequent %-12s State lands at col 80,
+                        # matching the fabric row (the prefix '   ├── g#   ' is
+                        # 11 visible chars wide because the connector '├──' is 3 chars).
+                        local _cl_to_state=$(( 78 - _cl_badge_end ))
                         [[ $_cl_to_state -lt 1 ]] && _cl_to_state=1
                         printf "%${_cl_to_state}s" ""
                         # Trailing %8s placeholder + literal space aligns this row's
@@ -14132,12 +14135,12 @@ display_gpu_management_menu() {
                         printf "${state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC} ${WHITE}%5s${NC} %7s %5s %8s  ${YELLOW}%s${NC}\n" \
                             "$cluster_state" "$_cl_date" "$_cl_age" "$cluster_size" "" "" "" "$_cl_ocid_disp"
                     else
-                        # Pre-state padding bumped %14s -> %15s so State lands at the
-                        # same column (80) as the fabric row, keeping all downstream
-                        # columns (Created, Age, sizes, OCID) aligned with the fabric.
+                        # Pre-state padding %14s — combined with the 12-char prefix
+                        # ('   ├── g#  ') and the 53-char name field, this puts State at
+                        # col 80, matching the fabric row exactly.
                         local _cl_ocid_disp=""
                         [[ "$_C4_SHOW_OCID" == "true" ]] && _cl_ocid_disp="$cluster_ocid"
-                        printf "   ${WHITE}${connector}${NC} ${YELLOW}%-4s${NC} ${MAGENTA}%-53s${NC}%15s${state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC} ${WHITE}%5s${NC} %7s %5s %8s  ${YELLOW}%s${NC}\n" \
+                        printf "   ${WHITE}${connector}${NC} ${YELLOW}%-4s${NC} ${MAGENTA}%-53s${NC}%14s${state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC} ${WHITE}%5s${NC} %7s %5s %8s  ${YELLOW}%s${NC}\n" \
                             "$gid" "$cluster_name" "" "$cluster_state" "$_cl_date" "$_cl_age" "$cluster_size" "" "" "" "$_cl_ocid_disp"
                     fi
 
