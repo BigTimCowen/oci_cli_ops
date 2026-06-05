@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.46"
+readonly SCRIPT_VERSION="3.34.47"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -47926,6 +47926,21 @@ _cn_topology_summary() {
             done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
         fi
 
+        # Build per-HPC-island count of "available" nodes:
+        # lifecycle-state == ACTIVE AND instance-id == N/A (healthy + no instance,
+        # i.e. ready to receive a new instance). Count is global per island —
+        # an island shared between CNs shows the same [N:] everywhere it appears.
+        declare -A _hpc_avail=()
+        if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+            while IFS='|' read -r _ha_name _ha_state _ha_health _ha_shape _ha_plat _ha_ad _ha_fd _ha_inst _ha_ocid _ha_hpc _ha_rest; do
+                [[ -z "$_ha_name" || "$_ha_name" == "#"* ]] && continue
+                [[ "$_ha_state" != "ACTIVE" ]] && continue
+                [[ -n "$_ha_inst" && "$_ha_inst" != "N/A" ]] && continue
+                [[ -z "$_ha_hpc" || "$_ha_hpc" == "N/A" ]] && continue
+                _hpc_avail["$_ha_hpc"]=$(( ${_hpc_avail[$_ha_hpc]:-0} + 1 ))
+            done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
+        fi
+
         # Build instance → active-maint-event count from MAINT_EVENTS_CACHE
         # Active = lifecycle not in {CANCELED, CANCELLED, SUCCEEDED, FAILED} (matches o3)
         declare -A _me_active=()
@@ -48035,7 +48050,16 @@ _cn_topology_summary() {
             local _hpc_w="islands"; [[ ${#_hpc_set[@]} -eq 1 ]] && _hpc_w="island"
             local _nb_w="blocks";   [[ ${#_nb_set[@]} -eq 1 ]]  && _nb_w="block"
             local _lb_w="blocks";   [[ ${#_lb_set[@]} -eq 1 ]]  && _lb_w="block"
-            local _hpc_l; _hpc_l=$(_topo_join_suffixes "${!_hpc_set[@]}")
+            # HPC list: suffix per island plus an [N: N] badge showing how many
+            # nodes that island has available globally (ACTIVE + no instance).
+            local _hpc_l=""
+            for _hpc_id in "${!_hpc_set[@]}"; do
+                local _avail="${_hpc_avail[$_hpc_id]:-0}"
+                local _avail_c="$GRAY"
+                [[ "$_avail" -gt 0 ]] && _avail_c="$GREEN"
+                _hpc_l+="..${_hpc_id: -5} ${_avail_c}[N: ${_avail}]${NC}, "
+            done
+            _hpc_l="${_hpc_l%, }"
             local _nb_l;  _nb_l=$(_topo_join_suffixes "${!_nb_set[@]}")
             local _lb_l;  _lb_l=$(_topo_join_suffixes "${!_lb_set[@]}")
 
@@ -48096,6 +48120,7 @@ _cn_topology_summary() {
         echo -e "  ${GRAY}Legend:${NC}"
         echo -e "    ${LIGHT_RED}[D: N]${NC}${GRAY}  = N compute hosts in CN with health != HEALTHY (source: ${NC}oci compute compute-host list${GRAY}, same as ${NC}--manage c10${GRAY})${NC}"
         echo -e "    ${RED}[M: N]${NC}${GRAY}  = N active instance maintenance events for CN hosts (source: ${NC}oci compute instance-maintenance-event list${GRAY}, same as ${NC}--manage o3${GRAY})${NC}"
+        echo -e "    ${GREEN}[N: N]${NC}${GRAY}  = N nodes available in that HPC island (lifecycle ACTIVE + no instance, global per island)${NC}"
         echo -e "    ${RED}Faults${NC}${GRAY}   = distinct fault codes from impacted-component-details with action and count (same source as ${NC}--manage c10${GRAY}'s [Impacted] badge)${NC}"
         echo ""
 
