@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.43"
+readonly SCRIPT_VERSION="3.34.44"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -13813,14 +13813,14 @@ display_gpu_management_menu() {
     echo ""
 
     # Header for fabrics — widened columns with Created/Age
-    # Col positions: ID(0-2) Name(4-63) State(79-90) Created(92-101) Age(103-108) Total Healthy Avail OCID
-    printf "${BOLD}%-3s %-60s%15s%-12s %-10s %-6s %5s %7s %5s  %s${NC}\n" \
-        "ID" "Display Name" "" "State" "Created" "(Age)" "Total" "Healthy" "Avail" "OCID"
-    print_separator 160
+    # Col positions: ID(0-2) Name(4-63) State(79-90) Created(92-101) Age(103-108) Total Healthy Avail With_OCI OCID
+    printf "${BOLD}%-3s %-60s%15s%-12s %-10s %-6s %5s %7s %5s %8s  %s${NC}\n" \
+        "ID" "Display Name" "" "State" "Created" "(Age)" "Total" "Healthy" "Avail" "With OCI" "OCID"
+    print_separator 169
     
     local fabric_idx=0
     local cluster_idx=0
-    local summary_healthy=0 summary_avail=0 summary_total=0 summary_clusters=0 summary_cluster_nodes=0
+    local summary_healthy=0 summary_avail=0 summary_total=0 summary_clusters=0 summary_cluster_nodes=0 summary_withoci=0
 
     # Pre-compute firmware bundle upgrade data (used for per-fabric upgrade indicator)
     # Build map of bundle OCID → time-created so per-fabric checks avoid repeated jq calls
@@ -13871,6 +13871,30 @@ display_gpu_management_menu() {
                 _cl_maint_map["$_mc_cname"]=$(( ${_cl_maint_map["$_mc_cname"]:-0} + _mc_n ))
             fi
         done < "$INSTANCE_CLUSTER_MAP_CACHE"
+    fi
+
+    # Pre-compute per-fabric "With OCI" count: hosts attached to a fabric whose
+    # lifecycle-state is in the codebase's "not usable" bucket
+    # (UNAVAILABLE / INACTIVE / FAILED — same grouping the chost colour blocks
+    # use) AND which have no instance running on them. Sourced from the
+    # compute-host API (same as --manage c10), keyed by fabric OCID.
+    declare -A _fab_withoci=()
+    if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
+        while IFS='|' read -r _wo_name _wo_state _wo_health _wo_shape _wo_plat _wo_ad _wo_fd _wo_inst _wo_ocid _wo_rest; do
+            [[ -z "$_wo_name" || "$_wo_name" == "#"* ]] && continue
+            # _wo_rest = fields 10..20; GPUFabricID = field 15 = index 5
+            local -a _wor=(); IFS='|' read -ra _wor <<< "$_wo_rest"
+            local _wo_fab="${_wor[5]:-N/A}"
+            [[ -z "$_wo_fab" || "$_wo_fab" == "N/A" ]] && continue
+            # Lifecycle bucket
+            case "$_wo_state" in
+                UNAVAILABLE|INACTIVE|FAILED) ;;
+                *) continue ;;
+            esac
+            # No instance running
+            [[ -n "$_wo_inst" && "$_wo_inst" != "N/A" ]] && continue
+            _fab_withoci[$_wo_fab]=$(( ${_fab_withoci[$_wo_fab]:-0} + 1 ))
+        done < <(grep -v '^#' "$COMPUTE_HOST_CACHE" 2>/dev/null)
     fi
 
     # Pre-compute clique summary per cluster: cluster_name → "0,1,2" (sorted unique clique IDs)
@@ -13935,9 +13959,16 @@ display_gpu_management_menu() {
             _fab_date=$(_date_mmddyyyy "${fabric_created:-}")
             _fab_age=$(_days_since "${fabric_created:-}")
 
+            # "With OCI" count: hosts on this fabric whose lifecycle-state is
+            # UNAVAILABLE/INACTIVE/FAILED AND have no instance — stranded capacity.
+            local _wo_count="${_fab_withoci[$fabric_ocid]:-0}"
+            local _wo_color="$GRAY"
+            [[ "$_wo_count" -gt 0 ]] && _wo_color="$RED"
+            (( summary_withoci += _wo_count ))
+
             # Print fabric line: main info with Created/Age and OCID on same line
-            printf "${YELLOW}%-3s${NC} ${CYAN}%-60s${NC}%15s${state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC} ${WHITE}%5s${NC} ${WHITE}%7s${NC} ${avail_color}%5s${NC}  ${YELLOW}%s${NC}\n" \
-                "$fid" "$fabric_name" "" "$fabric_state" "$_fab_date" "$_fab_age" "$total_hosts" "$healthy_hosts" "$avail_hosts" "$fabric_ocid"
+            printf "${YELLOW}%-3s${NC} ${CYAN}%-60s${NC}%15s${state_color}%-12s${NC} ${WHITE}%-10s${NC} ${GRAY}%-6s${NC} ${WHITE}%5s${NC} ${WHITE}%7s${NC} ${avail_color}%5s${NC} ${_wo_color}%8s${NC}  ${YELLOW}%s${NC}\n" \
+                "$fid" "$fabric_name" "" "$fabric_state" "$_fab_date" "$_fab_age" "$total_hosts" "$healthy_hosts" "$avail_hosts" "$_wo_count" "$fabric_ocid"
 
             # ── Firmware line (toggleable via _C4_SHOW_FW) ──
             if [[ "$_C4_SHOW_FW" == "true" ]]; then
@@ -14182,16 +14213,19 @@ display_gpu_management_menu() {
     
     # ── Summary ──
     if [[ $fabric_idx -gt 0 ]]; then
-        print_separator 160
-        printf "${BOLD}%-3s %-60s%15s%-12s %-10s %-6s %5s %7s %5s${NC}\n" \
-            "" "Summary (${fabric_idx} fabrics)" "" "" "" "" "$summary_total" "$summary_healthy" "$summary_avail"
+        print_separator 169
+        local _sum_wo_color="$GRAY"
+        [[ "$summary_withoci" -gt 0 ]] && _sum_wo_color="$RED"
+        printf "${BOLD}%-3s %-60s%15s%-12s %-10s %-6s %5s %7s %5s${NC} ${_sum_wo_color}%8s${NC}\n" \
+            "" "Summary (${fabric_idx} fabrics)" "" "" "" "" "$summary_total" "$summary_healthy" "$summary_avail" "$summary_withoci"
         local prov_pct=0
         if [[ $summary_total -gt 0 ]]; then
             prov_pct=$(awk "BEGIN { printf \"%.1f\", ($summary_cluster_nodes / $summary_total) * 100 }")
         fi
         printf "%-3s ${GRAY}GPU Memory Clusters: ${WHITE}${summary_clusters}${GRAY}   Cluster Nodes Provisioned: ${WHITE}${summary_cluster_nodes}/${summary_total} (${prov_pct}%%)${NC}\n" ""
-        # Badge legend — describe what the per-cluster [D:] / [M:] indicators mean.
+        # Legend — describe per-fabric columns and per-cluster badges.
         echo ""
+        echo -e "  ${GRAY}Fabric columns:  ${RED}With OCI${NC}${GRAY} = N hosts attached to fabric in lifecycle UNAVAILABLE/INACTIVE/FAILED with no instance running (source: ${NC}oci compute compute-host list${GRAY}, same as ${NC}--manage c10${GRAY}) — stranded capacity${NC}"
         echo -e "  ${GRAY}Cluster badges:${NC}  ${LIGHT_RED}[D: N]${NC}${GRAY} = N compute hosts in cluster with health != HEALTHY (source: ${NC}oci compute compute-host list${GRAY}, same as ${NC}--manage c10${GRAY})${NC}"
         echo -e "                   ${RED}[M: N]${NC}${GRAY} = N active instance maintenance events for cluster hosts (source: ${NC}oci compute instance-maintenance-event list${GRAY}, same as ${NC}--manage o3${GRAY}; excludes CANCELED/SUCCEEDED/FAILED)${NC}"
     fi
