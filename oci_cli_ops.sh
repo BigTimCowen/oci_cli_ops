@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.51"
+readonly SCRIPT_VERSION="3.34.52"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -13828,16 +13828,25 @@ display_gpu_management_menu() {
 
     # Pre-compute firmware bundle upgrade data (used for per-fabric upgrade indicator)
     # Build map of bundle OCID → time-created so per-fabric checks avoid repeated jq calls
+    # Also build bundle OCID → version, extracted from the description's
+    # "update to X.Y.Z[...]" token (matches --manage c4, fw view of the same bundle).
     declare -A _fw_bundle_created_map=()
+    declare -A _fw_bundle_version_map=()
     local _fw_newest_created=""
     if [[ -f "$FW_BUNDLE_CACHE" ]]; then
         local _fw_bundle_json=""
         _fw_bundle_json=$(_fw_bundle_cache_read 2>/dev/null || true)
         if [[ -n "$_fw_bundle_json" ]]; then
             _fw_newest_created=$(jq -r '[.data.items[] | select(.["lifecycle-state"] == "ACTIVE")] | sort_by(.["time-created"]) | last | .["time-created"] // ""' <<< "$_fw_bundle_json" 2>/dev/null)
-            while IFS='|' read -r _bid _btc; do
-                [[ -n "$_bid" ]] && _fw_bundle_created_map["$_bid"]="$_btc"
-            done < <(jq -r '.data.items[] | "\(.id)|\(.["time-created"] // "")"' <<< "$_fw_bundle_json" 2>/dev/null)
+            # Use tab as field separator: descriptions may contain '|' but tabs are
+            # extremely unlikely in OCI display text.
+            while IFS=$'\t' read -r _bid _btc _bdesc; do
+                [[ -z "$_bid" ]] && continue
+                _fw_bundle_created_map["$_bid"]="$_btc"
+                if [[ "$_bdesc" =~ update\ to\ ([0-9][^[:space:]\;]+) ]]; then
+                    _fw_bundle_version_map["$_bid"]="${BASH_REMATCH[1]}"
+                fi
+            done < <(jq -r '.data.items[] | "\(.id)\t\(.["time-created"] // "")\t\(.description // "")"' <<< "$_fw_bundle_json" 2>/dev/null)
         fi
     fi
 
@@ -13979,12 +13988,15 @@ display_gpu_management_menu() {
 
             # ── Firmware line (toggleable via _C4_SHOW_FW) ──
             if [[ "$_C4_SHOW_FW" == "true" ]]; then
+                # Prefer human-readable version parsed from the bundle's description
+                # (same source as --manage c4, fw 'Description' column). Fall back to
+                # the OCID suffix when no version token was extractable.
                 local _fw_cur_short="N/A" _fw_tar_short="N/A"
                 if [[ "$current_fw" != "N/A" && -n "$current_fw" ]]; then
-                    _fw_cur_short="..${current_fw: -4}"
+                    _fw_cur_short="${_fw_bundle_version_map[$current_fw]:-..${current_fw: -4}}"
                 fi
                 if [[ "$target_fw" != "N/A" && -n "$target_fw" ]]; then
-                    _fw_tar_short="..${target_fw: -4}"
+                    _fw_tar_short="${_fw_bundle_version_map[$target_fw]:-..${target_fw: -4}}"
                 fi
                 # Badge color: green for no update, red for needs update
                 local _fw_badge_text="[${fw_state:-N/A}]"
