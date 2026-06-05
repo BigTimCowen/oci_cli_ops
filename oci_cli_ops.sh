@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.52"
+readonly SCRIPT_VERSION="3.34.53"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -14012,11 +14012,20 @@ display_gpu_management_menu() {
                 fi
                 # Check for firmware upgrade available — only show if a newer bundle exists
                 local _fw_upgrade=""
+                local _fw_avail_list=""
                 if [[ -n "$_fw_newest_created" && "$current_fw" != "N/A" && -n "$current_fw" ]]; then
                     local _fw_cur_created="${_fw_bundle_created_map[$current_fw]:-}"
                     # Only show if current bundle found AND a newer ACTIVE bundle was created after it
                     if [[ -n "$_fw_cur_created" && "$_fw_newest_created" > "$_fw_cur_created" ]]; then
                         _fw_upgrade=" ${CYAN}↑${NC}"
+                        # Build comma-joined list of versions newer than current
+                        # (sorted by time-created ascending, unique versions, OCID-suffix fallback).
+                        _fw_avail_list=$(for _avb in "${!_fw_bundle_created_map[@]}"; do
+                            local _avtc="${_fw_bundle_created_map[$_avb]}"
+                            [[ -z "$_avtc" || ! "$_avtc" > "$_fw_cur_created" ]] && continue
+                            local _avver="${_fw_bundle_version_map[$_avb]:-..${_avb: -4}}"
+                            printf '%s\t%s\n' "$_avtc" "$_avver"
+                        done | sort -k1,1 | awk -F'\t' '!seen[$2]++ {print $2}' | paste -sd ',' - | sed 's/,/, /g')
                     fi
                 fi
                 # Firmware: [STATUS_BADGE]  badge at col 31 (aligns with CC/IC name)  cur:/tgt: at col 79/92
@@ -14025,8 +14034,20 @@ display_gpu_management_menu() {
                 if [[ -n "$_fw_upgrade" ]]; then
                     local _fw_to_badge=$(( 31 - _fw_content_len ))
                     [[ $_fw_to_badge -lt 1 ]] && _fw_to_badge=1
-                    _fw_upgrade="${WHITE}[↑ FW Update Avail]${NC}"
-                    local _fw_after_upgrade=$(( 79 - 31 - 19 ))  # 19 = visible len of [↑ FW Update Avail]
+                    # Badge text: include the parsed list when available; otherwise
+                    # fall back to today's plain text (e.g. tenancy can't read FW bundles).
+                    local _fw_badge2 _fw_badge2_vlen
+                    if [[ -n "$_fw_avail_list" ]]; then
+                        _fw_badge2="[↑ Update Avail: ${_fw_avail_list}]"
+                        # Visible length = byte length of the ASCII portion ("[ Update Avail: <list>]" = 18 + #list)
+                        # + 1 for the '↑' glyph (which is 3 bytes UTF-8 but 1 visible column).
+                        _fw_badge2_vlen=$(( 18 + ${#_fw_avail_list} ))
+                    else
+                        _fw_badge2="[↑ FW Update Avail]"
+                        _fw_badge2_vlen=19
+                    fi
+                    _fw_upgrade="${WHITE}${_fw_badge2}${NC}"
+                    local _fw_after_upgrade=$(( 79 - 31 - _fw_badge2_vlen ))
                     [[ $_fw_after_upgrade -lt 1 ]] && _fw_after_upgrade=1
                     printf "   ${WHITE}${_fw_tree}${NC} ${BOLD}${ORANGE}Firmware:${NC} ${_fw_badge_color}${_fw_badge_text}${NC}%${_fw_to_badge}s${_fw_upgrade}%${_fw_after_upgrade}s${YELLOW}%-13s${NC}${_fw_tar_color}%s${NC}\n" \
                         "" "" "cur:$_fw_cur_short" "tgt:$_fw_tar_short"
