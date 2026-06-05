@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.42"
+readonly SCRIPT_VERSION="3.34.43"
 readonly SCRIPT_VERSION_DATE="2026-06-05"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -14193,7 +14193,7 @@ display_gpu_management_menu() {
         # Badge legend — describe what the per-cluster [D:] / [M:] indicators mean.
         echo ""
         echo -e "  ${GRAY}Cluster badges:${NC}  ${LIGHT_RED}[D: N]${NC}${GRAY} = N compute hosts in cluster with health != HEALTHY (source: ${NC}oci compute compute-host list${GRAY}, same as ${NC}--manage c10${GRAY})${NC}"
-        echo -e "                  ${RED}[M: N]${NC}${GRAY} = N active instance maintenance events for cluster hosts (source: ${NC}oci compute instance-maintenance-event list${GRAY}, same as ${NC}--manage o3${GRAY}; excludes CANCELED/SUCCEEDED/FAILED)${NC}"
+        echo -e "                   ${RED}[M: N]${NC}${GRAY} = N active instance maintenance events for cluster hosts (source: ${NC}oci compute instance-maintenance-event list${GRAY}, same as ${NC}--manage o3${GRAY}; excludes CANCELED/SUCCEEDED/FAILED)${NC}"
     fi
     echo ""
     
