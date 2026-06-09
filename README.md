@@ -134,14 +134,14 @@ Global nav: type `:c`, `:k1`, `:n2`, etc. from any prompt to jump.
 | Option | Function | Description |
 |--------|----------|-------------|
 | `c1` | Compute Instances | Instance list with K8s status, cordon/drain/taint, BVR, bulk run-command. Node Pool/OKE Cluster columns (`col` to enable). BVR blocked for nodepool-managed instances. OKE Node Pool detail in `i#` view |
-| `c2` | Instance Configurations | Create, view, compare, delete. `cci` creates cloud-init YAML (auto-detects API server + CA from kubeconfig) |
+| `c2` | Instance Configurations | Create, view, compare, delete. `cci` creates cloud-init YAML (auto-detects API server + CA from kubeconfig). **`u`** Usage view — togglable A (IC-centric) / B (resource-centric) pivot showing which Instance Pools / GPU Mem Clusters / Cluster Networks reference each IC, plus orphan IC callout |
 | `c3` | Compute Clusters | Create, view, and delete compute clusters |
-| `c4` | GPU Memory Fabrics & Clusters | Manage GPU fabrics, clusters, firmware bundles (region-aware cache) |
+| `c4` | GPU Memory Fabrics & Clusters | Manage GPU fabrics, clusters, firmware bundles (region-aware cache). **`np`** Unprovisioned Hosts (EMPTY / OCI / ORPHAN). **`With OCI`** fabric column counts UNAVAILABLE/INACTIVE/FAILED/PROVISIONING hosts with no instance. Per-cluster **`[D: N]`** / **`[M: N]`** badges (degraded health, active maintenance), per-HPC-island **`[N: N]`** available-nodes badge. Firmware sub-line parses bundle description → `cur:1.3.4 tgt:1.3.6` with **`[↑ Update Avail: 1.3.4, 1.3.6]`** inline upgrade list. **`toggle 5`** hides/shows fabric+cluster OCID columns (off by default) |
 | `c5` | Capacity Topology | Host lifecycle states, RDMA topology tree (AD-aware filtering) |
 | `c6` | Custom Images | Import, create from instance, export, shape compatibility |
 | `c7` | GPU Instance Tagging | ComputeInstanceHostActions namespace and tags |
-| `c8` | Instance Pools | Create, view, and manage instance pools |
-| `c9` | Cluster Networks | View cluster networks and instance details |
+| `c8` | Instance Pools | Create, view, and manage instance pools. **`Instance Config`** column on list. **`t`** Topology page — per-pool tree (Cluster Network / HPC / NetBlks / LocBlks / Faults) with `[D: N]` / `[M: N]` / per-island `[N: N]` badges and aggregate footer (pools with degraded/maint/faults + top fault codes). **`t → s`** By-HPC-Island pivot — per-island view of which pools use it, sorted by available capacity, with `With OCI: N` stranded count |
+| `c9` | Cluster Networks | View cluster networks and instance details. Detail view adds **`Network Block ID`** + **`Local Block ID`** columns (joined from compute-host cache). **`d`** Topology page — per-CN tree showing `Pool: <name> (IC: <name>)`, HPC / NetBlks / LocBlks with `[N: N]` available-nodes badge, plus `[D: N]` / `[M: N]` / Faults badges and aggregate footer. **`d → s`** By-HPC-Island pivot — per-island view (which CNs draw from each), `With OCI: N` stranded count, blast-radius overlap callout |
 | `c10` | Compute Hosts | Bare-metal host health, state, topology, SN column, impacted component details (`h#` drill-down), recycle status, `f` fault code filter, `notify` for event rules |
 | `c11` | Host Groups | Create, view, delete host groups; attach/detach BM hosts; capacity topology pre-flight; host count per group |
 | `c12` | Notifications | ONS topics, subscriptions (email/Slack/PagerDuty/webhook), event rules list/detail/delete |
@@ -226,7 +226,7 @@ Actions: `#` (resource detail), `/` (search port in NSG/SL rules), `drg` (DRG co
 |--------|----------|-------------|
 | `o1` | Resource Manager Stacks | Stacks, jobs, logs, outputs, state files |
 | `o2` | Work Requests | Status, errors, and logs for async operations |
-| `o3` | Maintenance | Instance maintenance events, reschedule windows, filter by reason/lifecycle, parallel data fetch |
+| `o3` | Maintenance | Instance maintenance events, reschedule windows, filter by reason/lifecycle, parallel data fetch. `i` shortcut from event-detail jumps to instance details (matches `c1, i#`). `!` past-due / imminent marker on Window Start column. `FD` column (default off) toggleable via `col` |
 | `o4` | Announcements | Announcements with affected resource details |
 | `o5` | Service Limits & Quotas | Limits, usage, availability, GPU capacity reports |
 | `o6` | Audit Logs | OCI audit events (API calls, changes, access) |
@@ -314,13 +314,21 @@ All caches stored in `./cache/` relative to the script. Key caches:
 | Cache | File | TTL |
 |-------|------|-----|
 | Instances | `instance_list.json` | 5m |
+| Instance Configurations | `instance_configurations.txt` | 5m |
+| Instance Pools | `instance_pools.json` | 5m |
+| Cluster Networks | `cluster_networks.json` | 5m |
 | GPU Fabrics | `gpu_fabrics.json` | 5m |
 | GPU Clusters | `gpu_clusters.json` | 5m |
+| Compute Clusters | `compute_clusters.txt` | 5m |
+| Firmware Bundles | `fw_bundles.json` | 30m |
 | Maintenance Events | `maintenance_events.json` | 5m |
 | Compute Hosts | `compute_hosts.json` | 5m |
 | Compute Host Details | `compute_host_detail/*.json` | 5m |
+| Compute Host Impact | `compute_host_impact.txt` | 5m |
 | Host Groups | `compute_host_groups.json` | 5m |
 | Capacity Topology | `capacity_topology_hosts.json` | 5m |
+| CN Topology (per-CN instances) | `cn_topology/*.json` | 5m |
+| Pool Topology (per-pool instances) | `pool_topology/*.json` | 5m |
 | OKE Environment | `oke_environment.txt` | 5m |
 | Network Resources | `network_resources.txt` | 5m |
 | Policies | `policies_all.json` | 5m |
@@ -338,6 +346,8 @@ All create, update, and delete operations:
 ---
 
 ## Script Layout (by line range)
+
+> **Note:** Line ranges below are approximate, captured at v3.34.1 (~71K lines). The current script is ~78K lines (v3.34.59); section boundaries have drifted by a few thousand lines but the relative ordering is unchanged. Use `grep -n '^manage_'` or similar to find current entry points.
 
 | Lines | Section | Description |
 |-------|---------|-------------|
@@ -409,6 +419,7 @@ Focus can be saved to `variables.sh` via `env` → `s` (save). The current focus
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 3.34.59 | 2026-06-09 | **v3.34.x series highlights (Apr–Jun 2026):** **c2** new `u` Instance Configuration Usage pivot with togglable A (IC-centric) / B (resource-centric) views — surfaces orphan ICs and which Pools/GMCs/CNs reference each IC. **c4** `np` Unprovisioned-Hosts view (EMPTY / OCI / ORPHAN tagging), `With OCI` column on fabric rows (UNAVAILABLE/INACTIVE/FAILED/PROVISIONING + no instance), per-cluster `[D: N]` / `[M: N]` badges + legend, per-HPC-island `[N: N]` available-nodes badge, firmware versions parsed from bundle description, `[↑ Update Avail: 1.3.4, 1.3.6]` inline version list, fabric+cluster OCID column toggle (off by default), GPU memory fabric summary fix when no resolved hosts, cluster-OCID column alignment + 1-col State drift fix, FD column on `o3` detail map. **c8** new `t` Topology page (per-pool tree with Cluster Network / HPC / NetBlks / LocBlks / `[D:]` / `[M:]` / Faults badges and aggregate footer), `t → s` By HPC Island pivot, `Instance Config` column on list view. **c9** Network Block ID + Local Block ID columns on detail instance table, new `d` Topology page mirroring c8 with `Pool: <name>  (IC: <name>)` line and `[D:]` / `[M:]` / `[N: N]` / Faults indicators, `d → s` By HPC Island pivot, per-CN topology aggregate (CNs with degraded/maint/faults, top fault codes). **c8 + c9** By-HPC-Island pivots gain `With OCI: N` per-island column and footer total. **c1** `i` jump-to-instance from `o3` event detail, skip kubectl when no kubeconfig configured (no more network-timeout stalls), FD column. **o3** `[Type - <name>]` prompt style on detail views, `!` past-due/imminent marker (ASCII for column-width safety), `⚠` legacy fix. **Reliability fixes:** add `--all` to 4 paginated list calls (DRG IPsec, route rules), kubectl `--request-timeout=5s` in `c1`, `_oci_throttle` on per-host detail fetch loops. |
 | 3.34.1 | 2026-04-14 | c1: Node Pool/OKE Cluster columns, BVR guard for nodepool instances, OKE Node Pool section in instance detail. c2: `cci` cloud-init YAML creator. c10: SN column, fault code filter (`f`), optimized impacted detail fetch. c11: host count per group. c12: event rule list/detail/delete. o3: parallel data fetch, filter by maintenance reason (`re`), wider instance name column. k3: option 12 debug DaemonSet. `env profile` for multi-profile OCI configs. macOS `grep -oP` → portable `grep -oE`/`sed`. Spinner wrap fix. Dynamic group matching rule fix. Policy hints for firmware bundles, compute clusters, GPU clusters. `k8s_run_command.sh` standalone script |
 | 3.33.1 | 2026-04-10 | c11 Host Groups (CRUD, attach/detach BM hosts, capacity pre-flight, BM.GPU shape picker). c12 Notifications (ONS topics, subscriptions, event rule list/detail/delete). c10 `notify` for event rules. macOS support (Bash 4 guard, `~/.oci/config` setup, IMDS skip on Darwin). OKE focus fix, BVR `--region`, env r persistence in menus, capacity topology AD filtering |
 | 3.27.2 | 2026-03-11 | o3 summary: monthly fault code/fabric tables with lifecycle columns, fault code reference with component/description/impact. c10 summary: per-fabric GPU memory table, per-row impacted inline, skip k8s without context |
@@ -824,31 +835,54 @@ On macOS / laptop (no IMDS), setup falls back to `~/.oci/config`:
 ```
   [GPU Memory Fabrics & Clusters]
     f# = GPU Memory Fabric    g# = GPU Memory Cluster
-  ──────────────────────────────────────────────────────────────────────────────────────────────────────
-  ID    Display Name                                  State         Healthy  Avail  Total  OCID
-  ──────────────────────────────────────────────────────────────────────────────────────────────────────
-  f1    gpu-fabric-prod-phx-01                        ACTIVE             48     48     48  ocid1.gpumemfabric...a1b2c3
-       │  Fw  Firmware: HEALTHY                       cur:25.02.10     tgt:25.02.10  [up-to-date]
-       ├── g1  gpu-cluster-prod-01                    ACTIVE                          8  ocid1.gpucluster...d4e5f6
-       │         Compute Cluster: cc-gpu-prod-01
-       │         Instance Config:  ic-bm-gpu-h100
-       ├── g2  gpu-cluster-prod-02                    ACTIVE                          8  ocid1.gpucluster...g7h8i9
-       │         Compute Cluster: cc-gpu-prod-02
-       │         Instance Config:  ic-bm-gpu-h100
-       └── g3  gpu-cluster-dev-01                     PROVISIONING                    8  ocid1.gpucluster...j0k1l2
-                 Compute Cluster: cc-gpu-dev-01
-                 Instance Config:  ic-bm-gpu-h100-dev
-  f2    gpu-fabric-prod-phx-02                        ACTIVE             32     32     32  ocid1.gpumemfabric...m3n4o5
-       │  Fw  Firmware: UPDATING                      cur:25.01.08     tgt:25.02.10
-       └── g4  gpu-cluster-prod-03                    ACTIVE                          8  ocid1.gpucluster...p6q7r8
-                 Compute Cluster: cc-gpu-prod-03
-                 Instance Config:  ic-bm-gpu-h100
-  ──────────────────────────────────────────────────────────────────────────────────────────────────────
-         Summary (2 fabrics)                                80     80     80
-         GPU Memory Clusters: 4   Cluster Nodes Provisioned: 32
+  Hidden: OCIDs — use toggle to restore
 
-  f# fabric detail  g# cluster detail  r refresh  q back
-  [GPU Memory Fabrics] f#, g#, r, q >
+  ID  Display Name                                          State        Created    (Age)  Total Healthy Avail With OCI
+  -------------------------------------------------------------------------------------------------------------------------
+  f1  gpu-fabric-prod-phx-01                                OCCUPIED     04-12-2026  58d      48      46     0        2
+       ├── Firmware: [NEEDS_UPDATE]                  [↑ Update Avail: 1.3.4, 1.3.6]                  cur:1.3.1    tgt:1.3.6
+       ├── g1   gpu-cluster-prod-01      [D: 1] [M: 2]      ACTIVE       04-12-2026  58d       8
+       │       └─ Compute Cluster: cc-gpu-prod-01
+       │       └─ Instance Config:  ic-bm-gpu-h100
+       │       └─ Cliques:           0, 1, 2  (3 cliques, 8 nodes)
+       └── g2   gpu-cluster-prod-02                         ACTIVE       04-12-2026  58d       8
+               └─ Compute Cluster: cc-gpu-prod-02
+               └─ Instance Config:  ic-bm-gpu-h100
+  f2  gpu-fabric-prod-phx-02                                OCCUPIED     04-12-2026  58d      32      32     0        0
+       ├── Firmware: [UP_TO_DATE]                                                                    cur:1.3.6    tgt:1.3.6
+       └── g3   gpu-cluster-prod-03                         ACTIVE       04-12-2026  58d       8
+               └─ Compute Cluster: cc-gpu-prod-03
+               └─ Instance Config:  ic-bm-gpu-h100
+  -------------------------------------------------------------------------------------------------------------------------
+      Summary (2 fabrics)                                                                    80      78     0        2
+      GPU Memory Clusters: 3   Cluster Nodes Provisioned: 24/80 (30.0%)
+
+  Fabric columns:  With OCI = N hosts attached to fabric in lifecycle UNAVAILABLE/INACTIVE/FAILED/PROVISIONING with no instance — stranded capacity
+  Cluster badges:  [D: N] = N compute hosts in cluster with health != HEALTHY (source: oci compute compute-host list, same as --manage c10)
+                   [M: N] = N active instance maintenance events for cluster hosts (source: oci compute instance-maintenance-event list, same as --manage o3)
+
+  Actions:  f#/g#/i#/c# detail   h f# hosts   np unprovisioned   create   update   d g# delete   fw firmware   toggle   j JSON   r refresh   back
+  [GPU Fabrics] >
+```
+
+#### Unprovisioned Hosts (`--manage c,4 → np`)
+
+Fabric-attached compute hosts not in any GPU memory cluster — three case tags identify why each host is unattached:
+
+```
+◆ Unprovisioned / Missing-from-Cluster Hosts (5)
+  Fabric-attached hosts not in any GPU memory cluster.
+  EMPTY = no instance, lifecycle ACTIVE/AVAILABLE (free capacity)   OCI = no instance, lifecycle UNAVAILABLE/INACTIVE/FAILED/PROVISIONING (held by OCI)   ORPHAN = instance exists but not in a cluster
+
+  #    Fabric                       Case    Display Name         State         Health    Instance OCID                            Host OCID
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  1    gpu-fabric-prod-phx-01       EMPTY   computebaremetalhost AVAILABLE     HEALTHY   N/A                                      ocid1.computebaremetalhost...zb
+  2    gpu-fabric-prod-phx-01       OCI     computebaremetalhost PROVISIONING  UNHEALTHY N/A                                      ocid1.computebaremetalhost...xy
+  3    gpu-fabric-prod-phx-01       OCI     computebaremetalhost UNAVAILABLE   UNHEALTHY N/A                                      ocid1.computebaremetalhost...wv
+  4    gpu-fabric-prod-phx-02       ORPHAN  computebaremetalhost OCCUPIED      HEALTHY   ocid1.instance...ab                      ocid1.computebaremetalhost...uv
+  5    gpu-fabric-prod-phx-02       EMPTY   computebaremetalhost AVAILABLE     HEALTHY   N/A                                      ocid1.computebaremetalhost...st
+
+  Total: 5   Empty: 2   OCI: 2   Orphan: 1
 ```
 
 ---
@@ -1089,4 +1123,184 @@ On macOS / laptop (no IMDS), setup falls back to `~/.oci/config`:
 
   ✓ = capacity available    ✗ = no capacity / no limit
   [Service Limits] q >
+```
+
+---
+
+### Instance Configuration Usage (`--manage c,2 → u`)
+
+Togglable A/B pivot showing which resources use each Instance Configuration. Useful for IC governance — spot ICs shared across multiple pools, find orphan ICs that can be cleaned up, and trace blast radius before updating a template.
+
+**View A — IC-centric** (default; press `v` to toggle to B):
+
+```
+                          INSTANCE CONFIGURATION USAGE
+  Main > Compute > Instance Configs > Usage
+
+  View A — IC-centric: per-IC tree of resources using it
+
+  ◆ gpu-h100-bm-config  (..7da)
+       ├─ Instance Pools (2):    prod-gpu-pool, dev-gpu-pool
+       ├─ GPU Mem Clusters (2):  gmc-prod-h100, gmc-dev-h100
+       └─ Cluster Networks (2):  prod-gpu-cn-east, dev-gpu-cn  (via pools)
+
+  ◆ ml-train-config-v2  (..a2c)
+       ├─ Instance Pools (1):    ml-training-pool
+       └─ GPU Mem Clusters (1):  gmc-ml-train
+
+  Orphan ICs (used by no pool or GMC):
+    ○ legacy-test-config  (..b91)
+    ○ deprecated-config   (..c45)
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Aggregate:
+    Total instance configurations:      4
+    ICs used by at least one resource:  2
+    ICs used by multiple resources:     1     (potential ripple impact on IC update)
+    Orphan ICs:                         2
+
+  v) Toggle view (currently: A)    r) Refresh    Enter) Return
+```
+
+**View B — Resource-centric** lists each resource type in its own section, showing every Pool / GMC with its direct IC and flagging that Cluster Networks and Compute Clusters don't reference ICs at all.
+
+---
+
+### Instance Pool Topology (`--manage c,8 → t`)
+
+Per-pool tree summarising Cluster Network membership, HPC island spread, network/local block placement, with `[D:]` / `[M:]` / Faults badges and aggregate roll-up:
+
+```
+                            INSTANCE POOL TOPOLOGY SUMMARY
+  Main > Compute > Instance Pools > Topology
+
+  ✓ instance pools(cached)  ✓ compute hosts(cached)  ✓ maintenance events(cached)
+  ✓ impacted details(cached)  ✓ cluster networks(cached)  ✓ pool instances(3 parallel), 1.4s
+
+  ◆ prod-gpu-pool                                   RUNNING   16 instances   [D: 1] [M: 2]
+       ├─ Cluster Network: prod-gpu-cn-east  (..zb1)
+       ├─ HPC:      2 islands (..ab12 [N: 3], ..cd34 [N: 0])
+       ├─ NetBlks:  4 blocks  (..ef56, ..78ab, ..xy12, ..345d)
+       ├─ LocBlks:  6 blocks  (..91a, ..82b, ..73c, ..64d, ..55e, ..46f)
+       └─ Faults:   GPU_ECC_ERROR×2 (REBOOT)
+
+  ◆ dev-gpu-pool                                    RUNNING    8 instances
+       ├─ Cluster Network: dev-gpu-cn  (..q7z)
+       ├─ HPC:      1 island  (..k7p9 [N: 5])
+       ├─ NetBlks:  2 blocks  (..tt45, ..uu56)
+       └─ LocBlks:  2 blocks  (..vv1, ..ww2)
+
+  ◆ standalone-pool                                 RUNNING    4 instances
+       ├─ Cluster Network: (none — standalone)
+       ├─ HPC:      1 island  (..xyz45 [N: 1])
+       ├─ NetBlks:  1 block   (..ab12)
+       └─ LocBlks:  1 block   (..cd34)
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Aggregate across 3 instance pools (28 instances):
+    Distinct HPC islands:        4
+    Distinct Network Blocks:     7
+    Distinct Local Blocks:       9
+    Pools in cluster networks:   2     (1 standalone)
+    Pools with degraded hosts:   1     (1 host total)
+    Pools with active maint:     1     (2 events total)
+    Pools with faults:           1     (2 fault occurrences)
+    Top fault codes:             GPU_ECC_ERROR×2
+
+  Legend:
+    [D: N] = N compute hosts in pool with health != HEALTHY (source: c10)
+    [M: N] = N active instance maintenance events for pool hosts (source: o3)
+    [N: N] = N nodes available in that HPC island (lifecycle ACTIVE + no instance, global per island)
+    Faults = distinct fault codes from impacted-component-details with action and count
+    Cluster Network = the CN this pool belongs to (a pool is either standalone or part of one CN)
+
+  s) By HPC Island    r) Refresh    Enter) Return
+```
+
+#### By HPC Island (`--manage c,8 → t → s`)
+
+Inverse pivot — each island lists which pools draw from it, sorted by available capacity descending. Highlights islands shared across multiple pools (blast-radius overlap) and stranded "With OCI" capacity:
+
+```
+                       INSTANCE POOL TOPOLOGY — BY HPC ISLAND
+
+  ◆ HPC Island ..ab12c3                          Available: 3 nodes   Used: 12 nodes   With OCI: 2 nodes
+       ├─ prod-gpu-pool        uses  8 nodes  (CN: prod-gpu-cn-east)
+       └─ ml-training-pool     uses  4 nodes  (CN: ml-training-cn)
+
+  ◆ HPC Island ..k7p9aa                          Available: 5 nodes   Used:  8 nodes   With OCI: 0 nodes
+       └─ dev-gpu-pool         uses  8 nodes  (CN: dev-gpu-cn)
+
+  ◆ HPC Island ..xyz45                           Available: 1 node    Used:  4 nodes   With OCI: 1 node
+       └─ standalone-pool      uses  4 nodes  (standalone)
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Aggregate:
+    Distinct HPC islands across pools:   4
+    Islands shared by multiple pools:    1     (potential blast-radius overlap)
+    Total available capacity:           12     (nodes ACTIVE + no instance, in pool-used islands)
+    Total instance-occupied nodes:      28
+    Total With OCI:                      3     (UNAVAILABLE/INACTIVE/FAILED/PROVISIONING + no instance, across all islands)
+```
+
+---
+
+### Cluster Network Topology (`--manage c,9 → d`)
+
+Mirrors the c8 Pool topology but pivots on Cluster Networks. Shows the first pool's IC inline on the `Pool:` line and rolls up GPU memory cluster topology under each CN:
+
+```
+                            CLUSTER NETWORK TOPOLOGY SUMMARY
+  Main > Compute > Cluster Networks > Topology
+
+  ✓ compute hosts(cached)  ✓ maintenance events(cached)  ✓ impacted details(cached)
+  ✓ instance pools(cached)  ✓ instance configurations(cached)  ✓ CN instances(3 parallel), 1.2s
+
+  ◆ prod-gpu-cn-east                                ACTIVE   16 instances   [D: 1] [M: 2]
+       ├─ Pool:     prod-gpu-pool  (IC: gpu-h100-bm-config)
+       ├─ HPC:      2 islands (..ab12 [N: 3], ..cd34 [N: 0])
+       ├─ NetBlks:  4 blocks  (..ef56, ..78ab, ..xy12, ..345d)
+       ├─ LocBlks:  6 blocks  (..91a, ..82b, ..73c, ..64d, ..55e, ..46f)
+       └─ Faults:   GPU_ECC_ERROR×2 (REBOOT)
+
+  ◆ dev-gpu-cn                                      ACTIVE    8 instances
+       ├─ Pool:     dev-gpu-pool  (IC: gpu-h100-bm-config)
+       ├─ HPC:      1 island  (..k7p9 [N: 5])
+       ├─ NetBlks:  2 blocks  (..tt45, ..uu56)
+       └─ LocBlks:  2 blocks  (..vv1, ..ww2)
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Aggregate across 2 cluster networks (24 instances):
+    Distinct HPC islands:        3
+    Distinct Network Blocks:     6
+    Distinct Local Blocks:       8
+    CNs with degraded hosts:     1     (1 host total)
+    CNs with active maint:       1     (2 events total)
+    CNs with faults:             1     (2 fault occurrences)
+    Top fault codes:             GPU_ECC_ERROR×2
+
+  s) By HPC Island    r) Refresh    Enter) Return
+```
+
+#### By HPC Island (`--manage c,9 → d → s`)
+
+Same pivot pattern as `c,8 → t → s`, but lists Cluster Networks (with their pool name) per island instead of pools:
+
+```
+                       CLUSTER NETWORK TOPOLOGY — BY HPC ISLAND
+
+  ◆ HPC Island ..ab12c3                          Available: 3 nodes   Used: 12 nodes   With OCI: 2 nodes
+       ├─ prod-gpu-cn-east     uses  8 nodes  (pool: prod-gpu-pool)
+       └─ ml-training-cn       uses  4 nodes  (pool: ml-training-pool)
+
+  ◆ HPC Island ..k7p9aa                          Available: 5 nodes   Used:  8 nodes   With OCI: 0 nodes
+       └─ dev-gpu-cn           uses  8 nodes  (pool: dev-gpu-pool)
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Aggregate:
+    Distinct HPC islands across CNs:    3
+    Islands shared by multiple CNs:     1     (potential blast-radius overlap)
+    Total available capacity:           8     (nodes ACTIVE + no instance, in CN-used islands)
+    Total instance-occupied nodes:     20
+    Total With OCI:                     2     (UNAVAILABLE/INACTIVE/FAILED/PROVISIONING + no instance, across all islands)
 ```
