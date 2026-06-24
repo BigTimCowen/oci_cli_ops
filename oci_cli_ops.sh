@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.62"
+readonly SCRIPT_VERSION="3.34.63"
 readonly SCRIPT_VERSION_DATE="2026-06-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -10461,37 +10461,87 @@ list_maintenance_events() {
     echo ""
 
     # ── Last 8 Concluded Events ───────────────────────────────────────────────
-    # Filter by time-finished != null — catches all terminal states (SUCCEEDED,
-    # COMPLETED, FAILED, CANCELED) without enumerating them explicitly.
+    # Filter by time-finished != null — catches all terminal states without
+    # enumerating state names. Uses same ME column system as the main table.
+    # Pods/announce/fault_code omitted (no live data for concluded events).
     _ui_subheader "Last 8 Concluded Events" 0
     echo ""
-    local _lc_row=0 _lc_found=0
-    while IFS='|' read -r _lc_tf_s _lc_inst_id _lc_r _lc_w _lc_s; do
-        _lc_found=1
+    local _lc_row=0
+    while IFS='|' read -r _lc_tf _lc_id _lc_iid _lc_reason _lc_cat _lc_lcs _lc_win _lc_resched _lc_dname _lc_action; do
         _lc_row=$(( _lc_row + 1 ))
         [[ $_lc_row -gt 8 ]] && break
-        local _lc_inst_info="${_ME_INST[$_lc_inst_id]:-}"
-        local _lc_n="N/A"
-        [[ -n "$_lc_inst_info" ]] && _lc_n="${_lc_inst_info%%|*}"
-        local _lc_win_d="${_lc_w:0:19}"; [[ "$_lc_w" == "null" || -z "$_lc_w" ]] && _lc_win_d="-"
-        local _lc_tf_d="${_lc_tf_s:0:19}"; [[ "$_lc_tf_s" == "null" || -z "$_lc_tf_s" ]] && _lc_tf_d="-"
-        local _lc_sc
-        case "${_lc_s^^}" in
-            SUCCEEDED|COMPLETED)         _lc_sc="$GREEN" ;;
-            FAILED)                      _lc_sc="$RED"   ;;
-            CANCELED|CANCELLED)          _lc_sc="$GRAY"  ;;
-            *)                           _lc_sc="$WHITE" ;;
-        esac
+
+        # Print column header once before the first row
         if [[ $_lc_row -eq 1 ]]; then
-            printf "  ${GRAY}%-3s  %-30s  %-24s  %-19s  %-19s  %-9s${NC}\n" \
-                "#" "Instance Name" "Reason" "Window Start" "Finished" "State"
-            printf "  ${GRAY}%-3s  %-30s  %-24s  %-19s  %-19s  %-9s${NC}\n" \
-                "---" "------------------------------" "------------------------" "-------------------" "-------------------" "---------"
+            printf "  ${BOLD}${_ME_HDR_FMT}${NC}\n" "${_ME_HDR_ARGS[@]}"
+            print_separator $((_ME_SEP_WIDTH + 2))
         fi
-        printf "  ${CYAN}%-3s${NC}  ${WHITE}%-30.30s${NC}  ${YELLOW}%-24.24s${NC}  ${GRAY}%-19s${NC}  ${GRAY}%-19s${NC}  ${_lc_sc}%-9s${NC}\n" \
-            "$_lc_row" "$_lc_n" "$_lc_r" "$_lc_win_d" "$_lc_tf_d" "$_lc_s"
-    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["time-window-start"] // "null")|\(.["lifecycle-state"] // "N/A")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
-    [[ $_lc_found -eq 0 ]] && echo -e "  ${GRAY}(none)${NC}"
+
+        # Instance info
+        local _lc_iinfo="${_ME_INST[$_lc_iid]:-}"
+        local _lc_iname="N/A" _lc_ishape="N/A" _lc_istate="N/A" _lc_iad="N/A" _lc_ifd="N/A" _lc_igpu="N/A"
+        [[ -n "$_lc_iinfo" ]] && IFS='|' read -r _lc_iname _lc_ishape _lc_istate _lc_iad _lc_ifd _lc_igpu <<< "$_lc_iinfo"
+        local _lc_ifd_short="$_lc_ifd"
+        [[ "$_lc_ifd" == *FAULT-DOMAIN-* ]] && _lc_ifd_short="FD-${_lc_ifd##*FAULT-DOMAIN-}"
+
+        # K8s info
+        local _lc_knode="N/A" _lc_kready="N/A" _lc_kunsched="false" _lc_ktaints="0" _lc_kserial="N/A"
+        local _lc_kmatch="${_ME_K8S[$_lc_iid]:-}"
+        [[ -n "$_lc_kmatch" ]] && IFS='|' read -r _lc_knode _lc_kready _lc_kunsched _lc_ktaints _ _lc_kserial <<< "$_lc_kmatch"
+
+        # GPU cluster + compute host health
+        local _lc_gpu_cluster="${_ME_GPU_CLUSTER[$_lc_iid]:-N/A}"
+        local _lc_cap_topo="${_ME_HOST_HEALTH[$_lc_iid]:-N/A}"
+
+        # Display values — mirrors main render loop logic
+        local _lc_state_color; _lc_state_color=$(color_oci_state "$_lc_istate")
+        local _lc_cap_color;   _lc_cap_color=$(color_host_health "$_lc_cap_topo")
+
+        local _lc_kdisp="$_lc_kready" _lc_kcol="$GRAY"
+        if   [[ "$_lc_kready" == "True"  ]]; then _lc_kdisp="Ready";  _lc_kcol="$GREEN"
+        elif [[ "$_lc_kready" != "N/A"   ]]; then _lc_kdisp="NotRdy"; _lc_kcol="$RED"; fi
+
+        local _lc_cordon="-" _lc_cordon_col="$GRAY"
+        [[ "$_lc_knode" != "N/A" && "$_lc_kunsched" == "true" ]] && { _lc_cordon="Yes"; _lc_cordon_col="$YELLOW"; }
+
+        local _lc_taint="-" _lc_taint_col="$GRAY"
+        if [[ "$_lc_knode" != "N/A" ]]; then
+            if [[ "$_lc_ktaints" -gt 0 ]]; then _lc_taint="$_lc_ktaints"; _lc_taint_col="$YELLOW"
+            else _lc_taint="0"; fi
+        fi
+
+        local _lc_knode_col="$GRAY"; [[ "$_lc_knode" != "N/A" ]] && _lc_knode_col="$CYAN"
+        local _lc_kser_col="$GRAY";  [[ "$_lc_kserial" != "N/A" && -n "$_lc_kserial" ]] && _lc_kser_col="$CYAN"
+
+        local _lc_reason_col="$YELLOW"; [[ "$_lc_reason" == "HARDWARE_REPLACEMENT" ]] && _lc_reason_col="$RED"
+
+        local _lc_lcs_col
+        case "${_lc_lcs^^}" in
+            SUCCEEDED|COMPLETED) _lc_lcs_col="$GREEN" ;;
+            FAILED)              _lc_lcs_col="$RED"   ;;
+            CANCELED|CANCELLED)  _lc_lcs_col="$GRAY"  ;;
+            *)                   _lc_lcs_col="$WHITE" ;;
+        esac
+
+        local _lc_win_d="${_lc_win:0:19}"; [[ "$_lc_win" == "null" || -z "$_lc_win" ]] && _lc_win_d="-"
+        local _lc_tf_d="${_lc_tf:0:19}";   [[ "$_lc_tf"  == "null" || -z "$_lc_tf"  ]] && _lc_tf_d="-"
+
+        local _lc_resched_d="No" _lc_resched_col="$RED"
+        [[ "$_lc_resched" == "true" ]] && { _lc_resched_d="Yes"; _lc_resched_col="$GREEN"; }
+
+        printf "  "
+        _col_print_row "ME" \
+            "$_lc_row" "$_lc_iname" "${_lc_knode:0:20}" "${_lc_kserial:0:14}" \
+            "$_lc_istate" "$_lc_kdisp" "$_lc_cordon" "${_lc_taint:0:8}" "-" \
+            "${_lc_reason:0:22}" "${_lc_cat:0:12}" "$_lc_lcs" "${_lc_dname:0:28}" \
+            "${_lc_win_d:0:28}" "${_lc_tf_d:0:22}" "$_lc_resched_d" "-" "-" \
+            "$_lc_cap_topo" "$_lc_id" "$_lc_iid" "${_lc_gpu_cluster:0:30}" "$_lc_ifd_short" \
+            "$_lc_knode_col" "$_lc_kser_col" "$_lc_state_color" "$_lc_kcol" \
+            "$_lc_cordon_col" "$_lc_taint_col" "$GRAY" "$_lc_reason_col" \
+            "$_lc_lcs_col" "$GRAY" "$GREEN" "$_lc_resched_col" \
+            "$GRAY" "$GRAY" "$_lc_cap_color" "$GRAY" "$GRAY" "$MAGENTA"
+    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
+    [[ $_lc_row -eq 0 ]] && echo -e "  ${GRAY}(none)${NC}"
     echo ""
 
     _ui_subheader "Summary" 0
