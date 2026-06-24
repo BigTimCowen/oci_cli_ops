@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.63"
+readonly SCRIPT_VERSION="3.34.64"
 readonly SCRIPT_VERSION_DATE="2026-06-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -10797,9 +10797,13 @@ list_maintenance_events() {
         if [[ "$me_link_announcements" == "true" ]]; then
             echo -e "    ${YELLOW}a#${NC}                     - View announcement details (e.g., 'a1')"
         fi
-        echo -e "    ${CYAN}p m1,m2${NC}                - View pods on nodes (or 'p all')"
+        echo -e "    ${CYAN}p m1,m2${NC}                - View pods on instance nodes (e.g., 'p m1' or 'p mall')"
         [[ $_me_tainted_count -gt 0 ]] && echo -e "    ${CYAN}taints${NC}                 - Show taint details (${_me_tainted_count} tainted nodes)"
-        echo -e "    ${ORANGE}c m1,m2${NC}                - Cordon multiple nodes (or 'd m1,m2' / 'cd m1,m2' / 'uncordon m1,m2' / 'terminate m1,m2')"
+        echo -e "    ${ORANGE}c m1,m2${NC}                - Cordon instance node(s) (e.g., 'c m1' or 'c m1,m2' or 'c mall')"
+        echo -e "    ${ORANGE}d m1,m2${NC}                - Drain instance node(s) (e.g., 'd m1' or 'd mall')"
+        echo -e "    ${ORANGE}cd m1,m2${NC}               - Cordon then drain instance node(s) (e.g., 'cd m1' or 'cd mall')"
+        echo -e "    ${ORANGE}uncordon m1,m2${NC}         - Uncordon instance node(s) (e.g., 'uncordon m1' or 'uncordon mall')"
+        echo -e "    ${RED}terminate m1,m2${NC}        - Terminate instance(s) — irreversible (e.g., 'terminate m1' or 'terminate mall')"
         _ui_action_group "General"
         if [[ "$me_view_mode" == "compact" ]]; then
             echo -e "    ${CYAN}view${NC}                   - Switch to detail view (fault sub-lines)"
