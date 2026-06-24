@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.61"
+readonly SCRIPT_VERSION="3.34.62"
 readonly SCRIPT_VERSION_DATE="2026-06-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -10460,10 +10460,10 @@ list_maintenance_events() {
     
     echo ""
 
-    # ── Last 8 Completed Events ───────────────────────────────────────────────
-    # Query cache_file directly — ME_EVENT_MAP excludes SUCCEEDED/COMPLETED
-    # because the default "active" filter omits them from the main display loop.
-    _ui_subheader "Last 8 Completed Events" 0
+    # ── Last 8 Concluded Events ───────────────────────────────────────────────
+    # Filter by time-finished != null — catches all terminal states (SUCCEEDED,
+    # COMPLETED, FAILED, CANCELED) without enumerating them explicitly.
+    _ui_subheader "Last 8 Concluded Events" 0
     echo ""
     local _lc_row=0 _lc_found=0
     while IFS='|' read -r _lc_tf_s _lc_inst_id _lc_r _lc_w _lc_s; do
@@ -10475,16 +10475,22 @@ list_maintenance_events() {
         [[ -n "$_lc_inst_info" ]] && _lc_n="${_lc_inst_info%%|*}"
         local _lc_win_d="${_lc_w:0:19}"; [[ "$_lc_w" == "null" || -z "$_lc_w" ]] && _lc_win_d="-"
         local _lc_tf_d="${_lc_tf_s:0:19}"; [[ "$_lc_tf_s" == "null" || -z "$_lc_tf_s" ]] && _lc_tf_d="-"
-        local _lc_sc="$GREEN"; [[ "$_lc_s" == "SUCCEEDED" ]] && _lc_sc="$CYAN"
+        local _lc_sc
+        case "${_lc_s^^}" in
+            SUCCEEDED|COMPLETED)         _lc_sc="$GREEN" ;;
+            FAILED)                      _lc_sc="$RED"   ;;
+            CANCELED|CANCELLED)          _lc_sc="$GRAY"  ;;
+            *)                           _lc_sc="$WHITE" ;;
+        esac
         if [[ $_lc_row -eq 1 ]]; then
             printf "  ${GRAY}%-3s  %-30s  %-24s  %-19s  %-19s  %-9s${NC}\n" \
                 "#" "Instance Name" "Reason" "Window Start" "Finished" "State"
             printf "  ${GRAY}%-3s  %-30s  %-24s  %-19s  %-19s  %-9s${NC}\n" \
                 "---" "------------------------------" "------------------------" "-------------------" "-------------------" "---------"
         fi
-        printf "  ${CYAN}%-3s${NC}  ${WHITE}%-30.30s${NC}  ${YELLOW}%-24.24s${NC}  ${GRAY}%-19s${NC}  ${GREEN}%-19s${NC}  ${_lc_sc}%-9s${NC}\n" \
+        printf "  ${CYAN}%-3s${NC}  ${WHITE}%-30.30s${NC}  ${YELLOW}%-24.24s${NC}  ${GRAY}%-19s${NC}  ${GRAY}%-19s${NC}  ${_lc_sc}%-9s${NC}\n" \
             "$_lc_row" "$_lc_n" "$_lc_r" "$_lc_win_d" "$_lc_tf_d" "$_lc_s"
-    done < <(jq -r '.data[] | select(.["lifecycle-state"] == "SUCCEEDED" or .["lifecycle-state"] == "COMPLETED") | "\(.["time-finished"] // "null")|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["time-window-start"] // "null")|\(.["lifecycle-state"])"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
+    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["time-window-start"] // "null")|\(.["lifecycle-state"] // "N/A")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
     [[ $_lc_found -eq 0 ]] && echo -e "  ${GRAY}(none)${NC}"
     echo ""
 
