@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.64"
+readonly SCRIPT_VERSION="3.34.65"
 readonly SCRIPT_VERSION_DATE="2026-06-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -10526,20 +10526,28 @@ list_maintenance_events() {
         local _lc_win_d="${_lc_win:0:19}"; [[ "$_lc_win" == "null" || -z "$_lc_win" ]] && _lc_win_d="-"
         local _lc_tf_d="${_lc_tf:0:19}";   [[ "$_lc_tf"  == "null" || -z "$_lc_tf"  ]] && _lc_tf_d="-"
 
-        local _lc_resched_d="No" _lc_resched_col="$RED"
-        [[ "$_lc_resched" == "true" ]] && { _lc_resched_d="Yes"; _lc_resched_col="$GREEN"; }
+        # Fault code — look up from ME_FAULT_MAP (populated for events seen while active)
+        local _lc_fault_code="-" _lc_fault_col="$GRAY"
+        local _lc_fault_raw="${ME_FAULT_MAP[$_lc_id]:-}"
+        if [[ -n "$_lc_fault_raw" && "$_lc_fault_raw" != "-~-~-~-~-~-" ]]; then
+            local _lc_fid; IFS='~' read -r _lc_fid _ <<< "$_lc_fault_raw"
+            [[ "$_lc_fid" != "-" && -n "$_lc_fid" ]] && { _lc_fault_code="$_lc_fid"; _lc_fault_col="$CYAN"; }
+        fi
+
+        # Store in ME_EVENT_MAP under lc# key for drill-down navigation
+        ME_EVENT_MAP["lc${_lc_row}"]="${_lc_id}|${_lc_iid}|${_lc_reason}|${_lc_cat}|${_lc_lcs}|${_lc_win}||${_lc_resched}|${_lc_dname}|${_lc_iname}|${_lc_knode:-N/A}|${_lc_ishape:-N/A}|${_lc_istate:-N/A}|${_lc_action}|${_lc_tf}|"
 
         printf "  "
         _col_print_row "ME" \
-            "$_lc_row" "$_lc_iname" "${_lc_knode:0:20}" "${_lc_kserial:0:14}" \
+            "lc${_lc_row}" "$_lc_iname" "${_lc_knode:0:20}" "${_lc_kserial:0:14}" \
             "$_lc_istate" "$_lc_kdisp" "$_lc_cordon" "${_lc_taint:0:8}" "-" \
             "${_lc_reason:0:22}" "${_lc_cat:0:12}" "$_lc_lcs" "${_lc_dname:0:28}" \
-            "${_lc_win_d:0:28}" "${_lc_tf_d:0:22}" "$_lc_resched_d" "-" "-" \
+            "${_lc_win_d:0:28}" "${_lc_tf_d:0:22}" "-" "-" "${_lc_fault_code:0:22}" \
             "$_lc_cap_topo" "$_lc_id" "$_lc_iid" "${_lc_gpu_cluster:0:30}" "$_lc_ifd_short" \
             "$_lc_knode_col" "$_lc_kser_col" "$_lc_state_color" "$_lc_kcol" \
             "$_lc_cordon_col" "$_lc_taint_col" "$GRAY" "$_lc_reason_col" \
-            "$_lc_lcs_col" "$GRAY" "$GREEN" "$_lc_resched_col" \
-            "$GRAY" "$GRAY" "$_lc_cap_color" "$GRAY" "$GRAY" "$MAGENTA"
+            "$_lc_lcs_col" "$GRAY" "$GREEN" "$GRAY" \
+            "$GRAY" "$_lc_fault_col" "$_lc_cap_color" "$GRAY" "$GRAY" "$MAGENTA"
     done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
     [[ $_lc_row -eq 0 ]] && echo -e "  ${GRAY}(none)${NC}"
     echo ""
@@ -10804,6 +10812,8 @@ list_maintenance_events() {
         echo -e "    ${ORANGE}cd m1,m2${NC}               - Cordon then drain instance node(s) (e.g., 'cd m1' or 'cd mall')"
         echo -e "    ${ORANGE}uncordon m1,m2${NC}         - Uncordon instance node(s) (e.g., 'uncordon m1' or 'uncordon mall')"
         echo -e "    ${RED}terminate m1,m2${NC}        - Terminate instance(s) — irreversible (e.g., 'terminate m1' or 'terminate mall')"
+        _ui_action_group "Concluded Events"
+        echo -e "    ${YELLOW}lc#${NC}                    - View concluded event details (e.g., 'lc1', 'lc3')"
         _ui_action_group "General"
         if [[ "$me_view_mode" == "compact" ]]; then
             echo -e "    ${CYAN}view${NC}                   - Switch to detail view (fault sub-lines)"
@@ -11701,10 +11711,25 @@ list_maintenance_events() {
             continue
         fi
         
+        # Concluded event drill-down: lc1 … lc8
+        # Translates to a high-numbered ME_EVENT_MAP slot so the detail handler below
+        # can process it without duplicating any display code.
+        if [[ "$me_selection" =~ ^lc([0-9]+)$ ]]; then
+            local _lc_dnum="${BASH_REMATCH[1]}"
+            local _lc_ddata="${ME_EVENT_MAP["lc${_lc_dnum}"]:-}"
+            if [[ -z "$_lc_ddata" ]]; then
+                echo -e "${RED}No concluded event lc${_lc_dnum} — try refreshing with 'r'${NC}"
+                continue
+            fi
+            local _lc_dslot=$(( 10000 + _lc_dnum ))
+            ME_EVENT_MAP[$_lc_dslot]="$_lc_ddata"
+            me_selection="$_lc_dslot"
+        fi
+
         # View event details: just a number
         if [[ "$me_selection" =~ ^[0-9]+$ ]]; then
             local detail_info="${ME_EVENT_MAP[$me_selection]:-}"
-            
+
             if [[ -z "$detail_info" ]]; then
                 echo -e "${RED}Invalid event number: $me_selection${NC}"
                 continue
