@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.59"
-readonly SCRIPT_VERSION_DATE="2026-06-05"
+readonly SCRIPT_VERSION="3.34.60"
+readonly SCRIPT_VERSION_DATE="2026-06-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -10459,6 +10459,40 @@ list_maintenance_events() {
     done < <(jq -r '.data[] | "\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["time-hard-due-date"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")|\(.["time-finished"] // "null")|\(.["time-created"] // "null")|\(.["additional-details"] // "{}" | @json)"' "$cache_file" 2>/dev/null | sort -t'|' -k6,6)
     
     echo ""
+
+    # ── Last 8 Completed Events ───────────────────────────────────────────────
+    local -a _lc_entries=()
+    local _lc_idx _lc_info _lc_reason _lc_lifecycle _lc_window _lc_name _lc_tf
+    for _lc_idx in "${!ME_EVENT_MAP[@]}"; do
+        _lc_info="${ME_EVENT_MAP[$_lc_idx]}"
+        IFS='|' read -r _ _ _lc_reason _ _lc_lifecycle _lc_window _ _ _ _lc_name _ _ _ _ _lc_tf _ <<< "$_lc_info"
+        [[ "$_lc_lifecycle" == "SUCCEEDED" || "$_lc_lifecycle" == "COMPLETED" ]] || continue
+        [[ "$_lc_tf" == "null" || -z "$_lc_tf" ]] && _lc_tf="0000-00-00T00:00:00"
+        _lc_entries+=("${_lc_tf}|${_lc_idx}|${_lc_name}|${_lc_reason}|${_lc_window}|${_lc_lifecycle}")
+    done
+
+    _ui_subheader "Last 8 Completed Events" 0
+    echo ""
+    if [[ ${#_lc_entries[@]} -eq 0 ]]; then
+        echo -e "  ${GRAY}(none)${NC}"
+    else
+        printf "  ${GRAY}%-3s  %-30s  %-24s  %-19s  %-19s  %-9s${NC}\n" \
+            "#" "Instance Name" "Reason" "Window Start" "Finished" "State"
+        printf "  ${GRAY}%-3s  %-30s  %-24s  %-19s  %-19s  %-9s${NC}\n" \
+            "---" "------------------------------" "------------------------" "-------------------" "-------------------" "---------"
+        local _lc_row=0
+        while IFS='|' read -r _lc_tf_s _lc_i _lc_n _lc_r _lc_w _lc_s; do
+            _lc_row=$(( _lc_row + 1 ))
+            [[ $_lc_row -gt 8 ]] && break
+            local _lc_win_d="${_lc_w:0:19}"; [[ "$_lc_w" == "null" || -z "$_lc_w" ]] && _lc_win_d="-"
+            local _lc_tf_d="${_lc_tf_s:0:19}"; [[ "$_lc_tf_s" == "0000-00-00T00:00:00" || -z "$_lc_tf_s" ]] && _lc_tf_d="-"
+            local _lc_sc="$GREEN"; [[ "$_lc_s" == "SUCCEEDED" ]] && _lc_sc="$CYAN"
+            printf "  ${CYAN}%-3s${NC}  ${WHITE}%-30.30s${NC}  ${YELLOW}%-24.24s${NC}  ${GRAY}%-19s${NC}  ${GREEN}%-19s${NC}  ${_lc_sc}%-9s${NC}\n" \
+                "$_lc_row" "$_lc_n" "$_lc_r" "$_lc_win_d" "$_lc_tf_d" "$_lc_s"
+        done < <(printf '%s\n' "${_lc_entries[@]}" | sort -t'|' -k1,1 -r)
+    fi
+    echo ""
+
     _ui_subheader "Summary" 0
     echo ""
     echo -e "  ${WHITE}Total:${NC} ${GREEN}${me_idx}${NC} ${GRAY}maintenance event(s)${NC}"
