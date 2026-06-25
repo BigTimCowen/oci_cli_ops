@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.72"
+readonly SCRIPT_VERSION="3.34.73"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -10240,11 +10240,25 @@ list_maintenance_events() {
             *) lifecycle_color="$WHITE" ;;
         esac
         
-        local resched_display="No"
-        local resched_color="$RED"
-        if [[ "$evt_can_resched" == "true" ]]; then
-            resched_display="Yes"
-            resched_color="$GREEN"
+        # Duration (idx 15): window_start → time_finished for SUCCEEDED/COMPLETED; "-" otherwise
+        local resched_display="-"
+        local resched_color="$GRAY"
+        if [[ ( "$evt_lifecycle" == "SUCCEEDED" || "$evt_lifecycle" == "COMPLETED" ) && \
+              "$evt_window_start" != "null" && -n "$evt_window_start" && \
+              "$evt_time_finished" != "null" && -n "$evt_time_finished" ]]; then
+            local _dur_ws_ep="" _dur_tf_ep=""
+            _dur_ws_ep=$(date -d "${evt_window_start:0:19}" +%s 2>/dev/null) || _dur_ws_ep=""
+            _dur_tf_ep=$(date -d "${evt_time_finished:0:19}" +%s 2>/dev/null) || _dur_tf_ep=""
+            if [[ -n "$_dur_ws_ep" && -n "$_dur_tf_ep" && $_dur_tf_ep -gt $_dur_ws_ep ]]; then
+                local _dur_s=$(( _dur_tf_ep - _dur_ws_ep ))
+                local _dur_d=$(( _dur_s / 86400 ))
+                local _dur_h=$(( (_dur_s % 86400) / 3600 ))
+                local _dur_m=$(( (_dur_s % 3600) / 60 ))
+                if   [[ $_dur_d -gt 0 ]]; then resched_display="${_dur_d}d ${_dur_h}h"
+                elif [[ $_dur_h -gt 0 ]]; then resched_display="${_dur_h}h ${_dur_m}m"
+                else resched_display="${_dur_m}m"; fi
+                resched_color="$CYAN"
+            fi
         fi
         
         local reason_color="$YELLOW"
@@ -10259,29 +10273,11 @@ list_maintenance_events() {
         local ann_color="$GRAY"
         [[ "$inst_announcement" != "-" && -n "$inst_announcement" ]] && ann_color="$YELLOW"
 
-        # Announce slot overloading (priority: announcement > duration/age):
-        #   SUCCEEDED/COMPLETED + no announcement → show duration (window→finished)
-        #   all other states    + no announcement → show "Xd old" (created age)
+        # Cr.Age (idx 16): announcement if present, otherwise created → now for ALL events
         local me_announce_display="$inst_announcement"
         local me_announce_color="$ann_color"
         if [[ "$inst_announcement" == "-" ]]; then
-            if [[ ( "$evt_lifecycle" == "SUCCEEDED" || "$evt_lifecycle" == "COMPLETED" ) && \
-                  "$evt_window_start" != "null" && -n "$evt_window_start" && \
-                  "$evt_time_finished" != "null" && -n "$evt_time_finished" ]]; then
-                local _me_ws_ep="" _me_tf_ep=""
-                _me_ws_ep=$(date -d "${evt_window_start:0:19}" +%s 2>/dev/null) || _me_ws_ep=""
-                _me_tf_ep=$(date -d "${evt_time_finished:0:19}" +%s 2>/dev/null) || _me_tf_ep=""
-                if [[ -n "$_me_ws_ep" && -n "$_me_tf_ep" && $_me_tf_ep -gt $_me_ws_ep ]]; then
-                    local _me_dur_s=$(( _me_tf_ep - _me_ws_ep ))
-                    local _me_dur_d=$(( _me_dur_s / 86400 ))
-                    local _me_dur_h=$(( (_me_dur_s % 86400) / 3600 ))
-                    local _me_dur_m=$(( (_me_dur_s % 3600) / 60 ))
-                    if   [[ $_me_dur_d -gt 0 ]]; then me_announce_display="${_me_dur_d}d ${_me_dur_h}h"
-                    elif [[ $_me_dur_h -gt 0 ]]; then me_announce_display="${_me_dur_h}h ${_me_dur_m}m"
-                    else me_announce_display="${_me_dur_m}m"; fi
-                    me_announce_color="$CYAN"
-                fi
-            elif [[ "$evt_time_created" != "null" && -n "$evt_time_created" ]]; then
+            if [[ "$evt_time_created" != "null" && -n "$evt_time_created" ]]; then
                 local _me_cr_ep=""
                 _me_cr_ep=$(date -d "${evt_time_created:0:19}" +%s 2>/dev/null) || _me_cr_ep=""
                 if [[ -n "$_me_cr_ep" ]]; then
@@ -10524,7 +10520,7 @@ list_maintenance_events() {
     # ── Last N Concluded Events ───────────────────────────────────────────────
     # Filter by time-finished != null — catches all terminal states without
     # enumerating state names. Uses same ME column system as the main table.
-    # Column override: always show "finished" (14), never show "resched" (15).
+    # Column override: always show "finished" (14), "duration" (15), "cr_age" (16).
     _ui_subheader "Last ${me_concluded_limit} Concluded Events" 0
     echo ""
 
@@ -10535,38 +10531,49 @@ list_maintenance_events() {
     local _me_sv_sep_width=$_ME_SEP_WIDTH
 
     # Build concluded-events column set:
-    #   always include: inst_name (1), finished (14), duration (16=announce slot)
-    #   always exclude: resched (15), evt_ocid (19), inst_ocid (20)
-    local _lc_new_indices=() _lc_has_1=false _lc_has_14=false _lc_has_16=false
+    #   always include: inst_name (1), finished (14), duration (15), cr_age (16)
+    #   always exclude: evt_ocid (19), inst_ocid (20)
+    local _lc_new_indices=() _lc_has_1=false _lc_has_14=false _lc_has_15=false _lc_has_16=false
     for _idx in "${_ME_ENABLED_INDICES[@]}"; do
         [[ $_idx -eq 1  ]] && _lc_has_1=true
         [[ $_idx -eq 14 ]] && _lc_has_14=true
+        [[ $_idx -eq 15 ]] && _lc_has_15=true
         [[ $_idx -eq 16 ]] && _lc_has_16=true
     done
     # Force inst_name (1) first — prepend before the rest if absent
     if [[ "$_lc_has_1" == "false" ]]; then
         _lc_new_indices+=(0 1)   # id + inst_name
     fi
-    local _lc_added_14=false _lc_added_16=false
+    local _lc_added_14=false _lc_added_15=false _lc_added_16=false
     for _idx in "${_ME_ENABLED_INDICES[@]}"; do
-        [[ $_idx -eq 15 || $_idx -eq 19 || $_idx -eq 20 ]] && continue
+        [[ $_idx -eq 19 || $_idx -eq 20 ]] && continue
         # Skip id/inst_name if we pre-injected them above
         [[ "$_lc_has_1" == "false" && ( $_idx -eq 0 || $_idx -eq 1 ) ]] && continue
         _lc_new_indices+=("$_idx")
-        # Inject finished (14) immediately after window (13) if absent
+        # Inject finished (14) + duration (15) + cr_age (16) after window (13) if all absent
         if [[ $_idx -eq 13 && "$_lc_has_14" == "false" && "$_lc_added_14" == "false" ]]; then
             _lc_new_indices+=(14); _lc_added_14=true
+            if [[ "$_lc_has_15" == "false" && "$_lc_added_15" == "false" ]]; then
+                _lc_new_indices+=(15); _lc_added_15=true
+            fi
             if [[ "$_lc_has_16" == "false" && "$_lc_added_16" == "false" ]]; then
                 _lc_new_indices+=(16); _lc_added_16=true
             fi
         fi
-        # Inject duration (16) immediately after finished (14) if absent
-        if [[ $_idx -eq 14 && "$_lc_has_16" == "false" && "$_lc_added_16" == "false" ]]; then
+        # Inject duration (15) immediately after finished (14) if absent
+        if [[ $_idx -eq 14 && "$_lc_has_15" == "false" && "$_lc_added_15" == "false" ]]; then
+            _lc_new_indices+=(15); _lc_added_15=true
+        fi
+        # Inject cr_age (16) immediately after duration (15) if absent
+        if [[ $_idx -eq 15 && "$_lc_has_16" == "false" && "$_lc_added_16" == "false" ]]; then
             _lc_new_indices+=(16); _lc_added_16=true
         fi
+        [[ $_idx -eq 14 ]] && _lc_added_14=true
+        [[ $_idx -eq 15 ]] && _lc_added_15=true
         [[ $_idx -eq 16 ]] && _lc_added_16=true
     done
     [[ "$_lc_has_14" == "false" && "$_lc_added_14" == "false" ]] && _lc_new_indices+=(14)
+    [[ "$_lc_has_15" == "false" && "$_lc_added_15" == "false" ]] && _lc_new_indices+=(15)
     [[ "$_lc_added_16" == "false" ]] && _lc_new_indices+=(16)
 
     local _lc_hdr_fmt="" _lc_sep_w=0 _lc_first_col=true
@@ -10575,7 +10582,6 @@ list_maintenance_events() {
         [[ "$_lc_first_col" == "true" ]] && _lc_first_col=false || { _lc_hdr_fmt+=" "; ((_lc_sep_w++)); }
         _lc_hdr_fmt+="${_ME_COL_FMTS[$_idx]}"
         local _lc_col_lbl="${_ME_COL_LABELS[$_idx]}"
-        [[ $_idx -eq 16 ]] && _lc_col_lbl="Duration"
         [[ $_idx -eq 18 ]] && _lc_col_lbl="Age"
         _lc_hdr_args_arr+=("$_lc_col_lbl")
         ((_lc_sep_w += _ME_COL_WIDTHS[$_idx]))
@@ -10586,7 +10592,7 @@ list_maintenance_events() {
     _ME_SEP_WIDTH=$_lc_sep_w
 
     local _lc_row=0
-    while IFS='|' read -r _lc_tf _lc_id _lc_iid _lc_reason _lc_cat _lc_lcs _lc_win _lc_resched _lc_dname _lc_action; do
+    while IFS='|' read -r _lc_tf _lc_id _lc_iid _lc_reason _lc_cat _lc_lcs _lc_win _lc_resched _lc_dname _lc_action _lc_created; do
         _lc_row=$(( _lc_row + 1 ))
         [[ $_lc_row -gt $me_concluded_limit ]] && break
 
@@ -10671,6 +10677,22 @@ list_maintenance_events() {
             fi
         fi
 
+        # Creation Age: created → now (shown in Cr.Age column, idx 16)
+        local _lc_cr_age="-" _lc_cr_age_col="$GRAY"
+        if [[ "${_lc_created:-null}" != "null" && -n "${_lc_created:-}" ]]; then
+            local _lc_cr_ep
+            _lc_cr_ep=$(date -d "${_lc_created:0:19}" +%s 2>/dev/null) || _lc_cr_ep=""
+            if [[ -n "$_lc_cr_ep" ]]; then
+                local _lc_cr_age_s=$(( me_now_epoch - _lc_cr_ep ))
+                if [[ $_lc_cr_age_s -ge 0 ]]; then
+                    local _lc_cr_d=$(( _lc_cr_age_s / 86400 ))
+                    local _lc_cr_h=$(( (_lc_cr_age_s % 86400) / 3600 ))
+                    if   [[ $_lc_cr_d -gt 0 ]]; then _lc_cr_age="${_lc_cr_d}d old"; _lc_cr_age_col="$GRAY"
+                    else _lc_cr_age="${_lc_cr_h}h old"; _lc_cr_age_col="$YELLOW"; fi
+                fi
+            fi
+        fi
+
         # Age since completion: now − time-finished (shown in Age column, idx 18)
         local _lc_age="-" _lc_age_col="$GRAY"
         if [[ -n "$_lc_tf_ep" ]]; then
@@ -10710,13 +10732,13 @@ list_maintenance_events() {
             "lc${_lc_row}" "$_lc_iname" "${_lc_knode:0:20}" "${_lc_kserial:0:14}" \
             "$_lc_istate" "$_lc_kdisp" "$_lc_cordon" "${_lc_taint:0:8}" "$_lc_pods" \
             "${_lc_reason:0:22}" "${_lc_cat:0:12}" "$_lc_lcs" "${_lc_dname:0:28}" \
-            "${_lc_win_d:0:28}" "${_lc_tf_d:0:22}" "-" "${_lc_duration:0:10}" "${_lc_fault_code:0:22}" \
+            "${_lc_win_d:0:28}" "${_lc_tf_d:0:22}" "${_lc_duration:0:10}" "${_lc_cr_age:0:10}" "${_lc_fault_code:0:22}" \
             "${_lc_age:0:10}" "$_lc_id" "$_lc_iid" "${_lc_gpu_cluster:0:30}" "$_lc_ifd_short" \
             "$_lc_knode_col" "$_lc_kser_col" "$_lc_state_color" "$_lc_kcol" \
             "$_lc_cordon_col" "$_lc_taint_col" "$_lc_pods_col" "$_lc_reason_col" \
-            "$_lc_lcs_col" "$GRAY" "$GREEN" "$GRAY" \
-            "$_lc_dur_col" "$_lc_fault_col" "$_lc_age_col" "$GRAY" "$GRAY" "$MAGENTA"
-    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
+            "$_lc_lcs_col" "$GRAY" "$GREEN" \
+            "$_lc_dur_col" "$_lc_cr_age_col" "$_lc_fault_col" "$_lc_age_col" "$GRAY" "$GRAY" "$MAGENTA"
+    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")|\(.["time-created"] // "null")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
     [[ $_lc_row -eq 0 ]] && echo -e "  ${GRAY}(none)${NC}"
 
     # Restore ME format globals to user's column configuration
@@ -33450,11 +33472,11 @@ _ANN_ENABLED_INDICES=()
 # ── Column config — ME (Maintenance Events, --manage o,3) ──
 _ME_COL_CONF="$ME_COLUMNS_CONF"
 _ME_COL_KEYS=(           "id"     "inst_name"  "k8s_node"   "serial"     "state"    "k8s"    "cordon"  "taints"  "pods"   "reason"     "category"   "lifecycle"  "event_name"  "window"     "finished"     "resched" "announce"  "fault_code"  "comp_host"  "evt_ocid"     "inst_ocid"    "gpu_cluster"  "fd"     )
-_ME_COL_LABELS=(         "#"      "Instance Name" "K8s Node" "Serial"   "State"    "K8s"    "Crdn"    "Taints"  "Pods"   "Maint Reason" "Category" "Lifecycle"  "Event Name"  "Window Start" "Time Finished" "Re"   "Age"       "Fault Code"  "CompHost"   "Event OCID"   "Instance OCID" "GPU Cluster"  "FD"     )
-_ME_COL_DEFAULT_WIDTHS=( 4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             4        )
-_ME_COL_WIDTHS=(         4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             4        )
+_ME_COL_LABELS=(         "#"      "Instance Name" "K8s Node" "Serial"   "State"    "K8s"    "Crdn"    "Taints"  "Pods"   "Maint Reason" "Category" "Lifecycle"  "Event Name"  "Window Start" "Time Finished" "Duration" "Cr.Age"    "Fault Code"  "CompHost"   "Event OCID"   "Instance OCID" "GPU Cluster"  "FD"     )
+_ME_COL_DEFAULT_WIDTHS=( 4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             10        10          17            10           100            100            13             4        )
+_ME_COL_WIDTHS=(         4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             10        10          17            10           100            100            13             4        )
 _ME_COL_ALIGN=(          "-"      "-"          "-"          "-"          "-"        "-"      "-"       "-"       "-"      "-"          "-"          "-"          "-"           "-"          "-"            "-"       "-"         "-"           "-"          "-"            "-"            "-"            "-"      )
-_ME_COL_FMTS=(           "%-4.4s" "%-45.45s"   "%-13.13s"   "%-12.12s"   "%-4.4s"   "%-4.4s" "%-6.6s"  "%-6.6s"  "%-4.4s" "%-22.22s"   "%-12.12s"   "%-11.11s"   "%-28.28s"    "%-20.20s"   "%-20.20s"     "%-4.4s"  "%-10.10s"  "%-17.17s"    "%-10.10s"   "%-100s"       "%-100s"       "%-13.13s"     "%-4.4s" )
+_ME_COL_FMTS=(           "%-4.4s" "%-45.45s"   "%-13.13s"   "%-12.12s"   "%-4.4s"   "%-4.4s" "%-6.6s"  "%-6.6s"  "%-4.4s" "%-22.22s"   "%-12.12s"   "%-11.11s"   "%-28.28s"    "%-20.20s"   "%-20.20s"     "%-10.10s" "%-10.10s" "%-17.17s"    "%-10.10s"   "%-100s"       "%-100s"       "%-13.13s"     "%-4.4s" )
 _ME_COL_COLORS=(         "YELLOW" ""           "@1"         "@2"         "@3"       "@4"     "@5"      "@6"      "@7"     "@8"         ""           "@9"         ""            "@10"        "@11"          "@12"     "@13"       "@14"         "@15"        "@16"          "@17"          "@18"          "CYAN"   )
 _ME_COL_LOCKED=( "id" )
 _ME_COL_DEFAULTS=( "id" "inst_name" "k8s_node" "serial" "state" "k8s" "cordon" "taints" "pods" "reason" "lifecycle" "event_name" "window" "finished" "resched" "announce" "fault_code" "comp_host" "gpu_cluster" )
