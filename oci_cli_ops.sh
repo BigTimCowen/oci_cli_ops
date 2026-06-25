@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.70"
+readonly SCRIPT_VERSION="3.34.71"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -572,6 +572,7 @@ declare -gA DRG_TOPO_FLAGS=(
 readonly MAINT_EVENTS_CACHE="${CACHE_DIR}/maintenance_events.json"
 readonly MAINT_EVENTS_CACHE_TTL=300  # 5 minutes TTL for maintenance events
 readonly FAULT_DETAILS_CACHE="${CACHE_DIR}/fault_details.txt"
+readonly ME_CONCLUDED_LIMIT_CONF="${CACHE_DIR}/me_concluded_limit.conf"
 readonly OS_PE_CACHE="${CACHE_DIR}/os_private_endpoints.txt"
 
 # FSS (File Storage Service) cache files
@@ -9430,7 +9431,16 @@ list_maintenance_events() {
     local filter_type="${4:-active}"
     local me_view_mode="${5:-compact}"
     local me_link_announcements="${6:-false}"
-    
+
+    # Load configurable concluded-events limit (default 8)
+    local me_concluded_limit=8
+    if [[ -f "$ME_CONCLUDED_LIMIT_CONF" ]]; then
+        local _stored_limit
+        _stored_limit=$(cat "$ME_CONCLUDED_LIMIT_CONF" 2>/dev/null | tr -d '[:space:]')
+        [[ "$_stored_limit" =~ ^[0-9]+$ && $_stored_limit -ge 1 && $_stored_limit -le 50 ]] && \
+            me_concluded_limit=$_stored_limit
+    fi
+
     echo ""
     local _me_cmd="oci compute instance-maintenance-event list --compartment-id \$COMPARTMENT_ID | kubectl get nodes -o json | kubectl get pods --all-namespaces | oci compute instance list | oci compute compute-host list | oci compute compute-gpu-memory-cluster list | oci compute compute-gpu-memory-fabric list | oci compute instance-maintenance-event get --instance-maintenance-event-id \$EVENT_ID (×N filtered)"
     [[ "$me_link_announcements" == "true" ]] && _me_cmd="oci compute instance-maintenance-event list --compartment-id \$COMPARTMENT_ID | kubectl get nodes -o json | kubectl get pods --all-namespaces | oci compute instance list | oci announce announcements list --lifecycle-state ACTIVE | oci announce announcements get (×N) | oci compute compute-host list | oci compute compute-gpu-memory-cluster list | oci compute compute-gpu-memory-fabric list | oci compute instance-maintenance-event get --instance-maintenance-event-id \$EVENT_ID (×N filtered)"
@@ -9738,7 +9748,7 @@ list_maintenance_events() {
     _filt_existing_ids=$(cat "$filtered_evt_ids_file" 2>/dev/null || true)
     local _conc_need=0
     while IFS='|' read -r _conc_eid _; do
-        [[ $_conc_need -ge 8 ]] && break
+        [[ $_conc_need -ge $me_concluded_limit ]] && break
         grep -qxF "$_conc_eid" <<< "$_filt_existing_ids" 2>/dev/null && continue
         [[ -n "${ME_FAULT_MAP[$_conc_eid]:-}" ]] && continue
         echo "$_conc_eid" >> "$filtered_evt_ids_file"
@@ -10511,12 +10521,11 @@ list_maintenance_events() {
     
     echo ""
 
-    # ── Last 8 Concluded Events ───────────────────────────────────────────────
+    # ── Last N Concluded Events ───────────────────────────────────────────────
     # Filter by time-finished != null — catches all terminal states without
     # enumerating state names. Uses same ME column system as the main table.
-    # Column override: always show "finished" (14), never show "resched" (15)
-    # or "announce" (16) — these have no meaning for concluded events.
-    _ui_subheader "Last 8 Concluded Events" 0
+    # Column override: always show "finished" (14), never show "resched" (15).
+    _ui_subheader "Last ${me_concluded_limit} Concluded Events" 0
     echo ""
 
     # Save ME format globals and rebuild for concluded section
@@ -10572,7 +10581,7 @@ list_maintenance_events() {
     local _lc_row=0
     while IFS='|' read -r _lc_tf _lc_id _lc_iid _lc_reason _lc_cat _lc_lcs _lc_win _lc_resched _lc_dname _lc_action; do
         _lc_row=$(( _lc_row + 1 ))
-        [[ $_lc_row -gt 8 ]] && break
+        [[ $_lc_row -gt $me_concluded_limit ]] && break
 
         # Print column header once before the first row
         if [[ $_lc_row -eq 1 ]]; then
@@ -10979,8 +10988,8 @@ list_maintenance_events() {
         if [[ "$me_link_announcements" == "true" ]]; then
             echo -e "    ${CYAN}list${NC}                   - Show announcement details again"
         fi
-        echo -e "    ${CYAN}ann${NC}                    - Toggle announcement linking (currently: $(  [[ "$me_link_announcements" == "true" ]] && echo -e "${GREEN}ON${NC}" || echo -e "${GRAY}OFF${NC}"))"
         echo -e "    ${CYAN}col${NC}                    - Toggle column visibility"
+        echo -e "    ${CYAN}config${NC}                 - Settings (ann, ev)"
         echo -e "    ${MAGENTA}r${NC}                      - Force refresh from OCI (invalidate cache)"
         echo -e "    ${CYAN}q${NC}                      - Back"
         echo ""
@@ -11149,13 +11158,52 @@ list_maintenance_events() {
             return
         fi
 
-        # Toggle announcement linking
+        # Toggle announcement linking (legacy direct command kept for muscle memory)
         if [[ "${me_selection,,}" == "ann" ]]; then
             local _new_ann="true"
             [[ "$me_link_announcements" == "true" ]] && _new_ann="false"
             rm -f "$me_inst_temp"
             list_maintenance_events "$compartment_id" "$region" "false" "$filter_type" "$me_view_mode" "$_new_ann"
             return
+        fi
+
+        # Config submenu: ann + ev (concluded event count)
+        if [[ "${me_selection,,}" == "config" ]]; then
+            echo ""
+            _ui_subheader "Configuration" 0
+            echo ""
+            echo -e "  ${CYAN}ann${NC}   - Toggle announcement linking (currently: $( [[ "$me_link_announcements" == "true" ]] && echo -e "${GREEN}ON${NC}" || echo -e "${GRAY}OFF${NC}"))"
+            echo -e "  ${CYAN}ev N${NC}  - Set number of concluded events to show (currently: ${WHITE}${me_concluded_limit}${NC}, default 8, max 50)"
+            echo -e "  ${CYAN}b${NC}     - Back"
+            echo ""
+            _ui_prompt "Config" "ann, ev N, b"
+            local _cfg_sel
+            read -r _cfg_sel
+            case "${_cfg_sel,,}" in
+                ann)
+                    local _new_ann="true"
+                    [[ "$me_link_announcements" == "true" ]] && _new_ann="false"
+                    rm -f "$me_inst_temp"
+                    list_maintenance_events "$compartment_id" "$region" "false" "$filter_type" "$me_view_mode" "$_new_ann"
+                    return
+                    ;;
+                ev\ *|ev)
+                    local _ev_val="${_cfg_sel#ev}"
+                    _ev_val="${_ev_val// /}"
+                    if [[ "$_ev_val" =~ ^[0-9]+$ && $_ev_val -ge 1 && $_ev_val -le 50 ]]; then
+                        echo "$_ev_val" > "$ME_CONCLUDED_LIMIT_CONF"
+                        echo -e "  ${GREEN}✓ Concluded events limit set to ${WHITE}${_ev_val}${NC}"
+                        rm -f "$me_inst_temp"
+                        list_maintenance_events "$compartment_id" "$region" "false" "$filter_type" "$me_view_mode" "$me_link_announcements"
+                        return
+                    else
+                        echo -e "  ${RED}Invalid value — enter a number between 1 and 50${NC}"
+                    fi
+                    ;;
+                b|back|"") ;;
+                *) echo -e "  ${GRAY}Unknown config option${NC}" ;;
+            esac
+            continue
         fi
 
         # Show taint details on demand
@@ -33392,14 +33440,14 @@ _ANN_ENABLED_INDICES=()
 # ── Column config — ME (Maintenance Events, --manage o,3) ──
 _ME_COL_CONF="$ME_COLUMNS_CONF"
 _ME_COL_KEYS=(           "id"     "inst_name"  "k8s_node"   "serial"     "state"    "k8s"    "cordon"  "taints"  "pods"   "reason"     "category"   "lifecycle"  "event_name"  "window"     "finished"     "resched" "announce"  "fault_code"  "comp_host"  "evt_ocid"     "inst_ocid"    "gpu_cluster"  "fd"     )
-_ME_COL_LABELS=(         "#"      "Instance Name" "K8s Node" "Serial"   "State"    "K8s"    "Crdn"    "Taints"  "Pods"   "Maint Reason" "Category" "Lifecycle"  "Event Name"  "Window Start" "Time Finished" "Re"   "Announce"  "Fault Code"  "CompHost"   "Event OCID"   "Instance OCID" "GPU Cluster"  "FD"     )
+_ME_COL_LABELS=(         "#"      "Instance Name" "K8s Node" "Serial"   "State"    "K8s"    "Crdn"    "Taints"  "Pods"   "Maint Reason" "Category" "Lifecycle"  "Event Name"  "Window Start" "Time Finished" "Re"   "Age"       "Fault Code"  "CompHost"   "Event OCID"   "Instance OCID" "GPU Cluster"  "FD"     )
 _ME_COL_DEFAULT_WIDTHS=( 4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             4        )
 _ME_COL_WIDTHS=(         4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             4         10          17            10           100            100            13             4        )
 _ME_COL_ALIGN=(          "-"      "-"          "-"          "-"          "-"        "-"      "-"       "-"       "-"      "-"          "-"          "-"          "-"           "-"          "-"            "-"       "-"         "-"           "-"          "-"            "-"            "-"            "-"      )
 _ME_COL_FMTS=(           "%-4.4s" "%-45.45s"   "%-13.13s"   "%-12.12s"   "%-4.4s"   "%-4.4s" "%-6.6s"  "%-6.6s"  "%-4.4s" "%-22.22s"   "%-12.12s"   "%-11.11s"   "%-28.28s"    "%-20.20s"   "%-20.20s"     "%-4.4s"  "%-10.10s"  "%-17.17s"    "%-10.10s"   "%-100s"       "%-100s"       "%-13.13s"     "%-4.4s" )
 _ME_COL_COLORS=(         "YELLOW" ""           "@1"         "@2"         "@3"       "@4"     "@5"      "@6"      "@7"     "@8"         ""           "@9"         ""            "@10"        "@11"          "@12"     "@13"       "@14"         "@15"        "@16"          "@17"          "@18"          "CYAN"   )
 _ME_COL_LOCKED=( "id" )
-_ME_COL_DEFAULTS=( "id" "inst_name" "k8s_node" "serial" "state" "k8s" "cordon" "taints" "pods" "reason" "lifecycle" "event_name" "window" "finished" "resched" "fault_code" "comp_host" "gpu_cluster" )
+_ME_COL_DEFAULTS=( "id" "inst_name" "k8s_node" "serial" "state" "k8s" "cordon" "taints" "pods" "reason" "lifecycle" "event_name" "window" "finished" "resched" "announce" "fault_code" "comp_host" "gpu_cluster" )
 
 # Format globals — ME (Maintenance Events)
 _ME_ENABLED_COLS=()
