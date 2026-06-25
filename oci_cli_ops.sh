@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.71"
+readonly SCRIPT_VERSION="3.34.72"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -10535,16 +10535,23 @@ list_maintenance_events() {
     local _me_sv_sep_width=$_ME_SEP_WIDTH
 
     # Build concluded-events column set:
-    #   always include: finished (14), duration (16=announce slot)
+    #   always include: inst_name (1), finished (14), duration (16=announce slot)
     #   always exclude: resched (15), evt_ocid (19), inst_ocid (20)
-    local _lc_new_indices=() _lc_has_14=false _lc_has_16=false
+    local _lc_new_indices=() _lc_has_1=false _lc_has_14=false _lc_has_16=false
     for _idx in "${_ME_ENABLED_INDICES[@]}"; do
+        [[ $_idx -eq 1  ]] && _lc_has_1=true
         [[ $_idx -eq 14 ]] && _lc_has_14=true
         [[ $_idx -eq 16 ]] && _lc_has_16=true
     done
+    # Force inst_name (1) first — prepend before the rest if absent
+    if [[ "$_lc_has_1" == "false" ]]; then
+        _lc_new_indices+=(0 1)   # id + inst_name
+    fi
     local _lc_added_14=false _lc_added_16=false
     for _idx in "${_ME_ENABLED_INDICES[@]}"; do
         [[ $_idx -eq 15 || $_idx -eq 19 || $_idx -eq 20 ]] && continue
+        # Skip id/inst_name if we pre-injected them above
+        [[ "$_lc_has_1" == "false" && ( $_idx -eq 0 || $_idx -eq 1 ) ]] && continue
         _lc_new_indices+=("$_idx")
         # Inject finished (14) immediately after window (13) if absent
         if [[ $_idx -eq 13 && "$_lc_has_14" == "false" && "$_lc_added_14" == "false" ]]; then
@@ -10593,6 +10600,9 @@ list_maintenance_events() {
         local _lc_iinfo="${_ME_INST[$_lc_iid]:-}"
         local _lc_iname="N/A" _lc_ishape="N/A" _lc_istate="N/A" _lc_iad="N/A" _lc_ifd="N/A" _lc_igpu="N/A"
         [[ -n "$_lc_iinfo" ]] && IFS='|' read -r _lc_iname _lc_ishape _lc_istate _lc_iad _lc_ifd _lc_igpu <<< "$_lc_iinfo"
+        # Concluded instances may be terminated — fall back to the event display-name
+        # which OCI sets to the instance display-name at event creation time.
+        [[ "$_lc_iname" == "N/A" && -n "$_lc_dname" && "$_lc_dname" != "N/A" ]] && _lc_iname="$_lc_dname"
         local _lc_ifd_short="$_lc_ifd"
         [[ "$_lc_ifd" == *FAULT-DOMAIN-* ]] && _lc_ifd_short="FD-${_lc_ifd##*FAULT-DOMAIN-}"
 
