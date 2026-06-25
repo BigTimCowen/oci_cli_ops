@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.65"
+readonly SCRIPT_VERSION="3.34.67"
 readonly SCRIPT_VERSION_DATE="2026-06-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -10463,11 +10463,111 @@ list_maintenance_events() {
     # ── Last 8 Concluded Events ───────────────────────────────────────────────
     # Filter by time-finished != null — catches all terminal states without
     # enumerating state names. Uses same ME column system as the main table.
-    # Pods/announce/fault_code omitted (no live data for concluded events).
+    # Column override: always show "finished" (14), never show "resched" (15)
+    # or "announce" (16) — these have no meaning for concluded events.
     _ui_subheader "Last 8 Concluded Events" 0
     echo ""
+
+    # Save ME format globals and rebuild for concluded section
+    local _me_sv_indices=("${_ME_ENABLED_INDICES[@]}")
+    local _me_sv_hdr_fmt="$_ME_HDR_FMT"
+    local _me_sv_hdr_args=("${_ME_HDR_ARGS[@]}")
+    local _me_sv_sep_width=$_ME_SEP_WIDTH
+
+    local _lc_new_indices=() _lc_has_14=false
+    for _idx in "${_ME_ENABLED_INDICES[@]}"; do
+        [[ $_idx -eq 14 ]] && { _lc_has_14=true; break; }
+    done
+    local _lc_added_14=false
+    for _idx in "${_ME_ENABLED_INDICES[@]}"; do
+        [[ $_idx -eq 15 || $_idx -eq 16 ]] && continue
+        _lc_new_indices+=("$_idx")
+        if [[ $_idx -eq 13 && "$_lc_has_14" == "false" && "$_lc_added_14" == "false" ]]; then
+            _lc_new_indices+=(14)
+            _lc_added_14=true
+        fi
+    done
+    if [[ "$_lc_has_14" == "false" && "$_lc_added_14" == "false" ]]; then
+        _lc_new_indices+=(14)
+    fi
+
+    local _lc_hdr_fmt="" _lc_sep_w=0 _lc_first_col=true
+    local -a _lc_hdr_args_arr=()
+    for _idx in "${_lc_new_indices[@]}"; do
+        [[ "$_lc_first_col" == "true" ]] && _lc_first_col=false || { _lc_hdr_fmt+=" "; ((_lc_sep_w++)); }
+        _lc_hdr_fmt+="${_ME_COL_FMTS[$_idx]}"
+        local _lc_col_lbl="${_ME_COL_LABELS[$_idx]}"
+        [[ $_idx -eq 13 ]] && _lc_col_lbl="Hard Due Date"
+        _lc_hdr_args_arr+=("$_lc_col_lbl")
+        ((_lc_sep_w += _ME_COL_WIDTHS[$_idx]))
+    done
+    _ME_ENABLED_INDICES=("${_lc_new_indices[@]}")
+    _ME_HDR_FMT="$_lc_hdr_fmt"
+    _ME_HDR_ARGS=("${_lc_hdr_args_arr[@]}")
+    _ME_SEP_WIDTH=$_lc_sep_w
+
+    # Pre-fetch fault details for concluded events not already in ME_FAULT_MAP.
+    # Runs up to 8 parallel GET calls so fault codes appear on the first view.
+    local -a _lc_ids_to_fetch=()
+    while IFS='|' read -r _lcpf_tf _lcpf_id _; do
+        [[ ${#_lc_ids_to_fetch[@]} -ge 8 ]] && break
+        [[ -n "${ME_FAULT_MAP[$_lcpf_id]:-}" ]] && continue
+        _lc_ids_to_fetch+=("$_lcpf_id")
+    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)"' \
+        "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
+
+    if [[ ${#_lc_ids_to_fetch[@]} -gt 0 ]]; then
+        local _lcf_tmpdir="${TEMP_DIR}/lcf_$$"
+        mkdir -p "$_lcf_tmpdir"
+        local -a _lcf_pids=()
+        local _lcf_n=0
+        for _lcf_eid in "${_lc_ids_to_fetch[@]}"; do
+            _lcf_n=$(( _lcf_n + 1 ))
+            (
+                local _lcf_json _lcf_fd _lcf_obj
+                _lcf_json=$(oci compute instance-maintenance-event get \
+                    --instance-maintenance-event-id "$_lcf_eid" \
+                    --region "$region" --output json 2>/dev/null) || exit 0
+                [[ -z "$_lcf_json" ]] && exit 0
+                _lcf_fd=$(jq -r '(.data["additional-details"]["faultDetails"] //
+                    .data["additional-details"]["fault-details"] // "null")' \
+                    <<< "$_lcf_json" 2>/dev/null)
+                [[ "$_lcf_fd" == "null" || -z "$_lcf_fd" || "$_lcf_fd" == "[]" ]] && exit 0
+                _lcf_obj=$(jq -c \
+                    'if type == "string" then (try fromjson catch null) else . end |
+                     if type == "array" and length > 0 then .[0]
+                     elif type == "object" then . else null end' \
+                    <<< "$_lcf_fd" 2>/dev/null)
+                [[ -z "$_lcf_obj" || "$_lcf_obj" == "null" ]] && exit 0
+                local _lcf_fid
+                _lcf_fid=$(jq -r '.faultId // empty' <<< "$_lcf_obj" 2>/dev/null)
+                [[ -z "$_lcf_fid" ]] && exit 0
+                printf '%s=%s~%s~%s~%s~%s~%s\n' \
+                    "$_lcf_eid" "$_lcf_fid" \
+                    "$(jq -r '.faultComponent // "N/A"'         <<< "$_lcf_obj" 2>/dev/null)" \
+                    "$(jq -r '.severity // "N/A"'               <<< "$_lcf_obj" 2>/dev/null)" \
+                    "$(jq -r '.customerDescription // "N/A"'    <<< "$_lcf_obj" 2>/dev/null)" \
+                    "$(jq -r '.impactDescription // "N/A"'      <<< "$_lcf_obj" 2>/dev/null)" \
+                    "$(jq -r '.recommendedAction // "N/A"'      <<< "$_lcf_obj" 2>/dev/null)" \
+                    > "${_lcf_tmpdir}/${_lcf_n}.dat"
+            ) &
+            _lcf_pids+=($!)
+        done
+        for _lcf_pid in "${_lcf_pids[@]}"; do wait "$_lcf_pid" 2>/dev/null || true; done
+        local _lcf_dat _lcf_line _lcf_eid_r _lcf_data_r
+        for _lcf_dat in "${_lcf_tmpdir}"/*.dat; do
+            [[ -f "$_lcf_dat" ]] || continue
+            IFS= read -r _lcf_line < "$_lcf_dat"
+            IFS='=' read -r _lcf_eid_r _lcf_data_r <<< "$_lcf_line"
+            [[ -z "$_lcf_eid_r" || -z "$_lcf_data_r" ]] && continue
+            ME_FAULT_MAP[$_lcf_eid_r]="$_lcf_data_r"
+            echo "${_lcf_eid_r}=${_lcf_data_r}" >> "$FAULT_DETAILS_CACHE"
+        done
+        rm -rf "$_lcf_tmpdir"
+    fi
+
     local _lc_row=0
-    while IFS='|' read -r _lc_tf _lc_id _lc_iid _lc_reason _lc_cat _lc_lcs _lc_win _lc_resched _lc_dname _lc_action; do
+    while IFS='|' read -r _lc_tf _lc_id _lc_iid _lc_reason _lc_cat _lc_lcs _lc_win _lc_resched _lc_dname _lc_action _lc_hard_due; do
         _lc_row=$(( _lc_row + 1 ))
         [[ $_lc_row -gt 8 ]] && break
 
@@ -10523,8 +10623,9 @@ list_maintenance_events() {
             *)                   _lc_lcs_col="$WHITE" ;;
         esac
 
-        local _lc_win_d="${_lc_win:0:19}"; [[ "$_lc_win" == "null" || -z "$_lc_win" ]] && _lc_win_d="-"
-        local _lc_tf_d="${_lc_tf:0:19}";   [[ "$_lc_tf"  == "null" || -z "$_lc_tf"  ]] && _lc_tf_d="-"
+        local _lc_win_d="${_lc_win:0:19}";       [[ "$_lc_win"      == "null" || -z "$_lc_win"      ]] && _lc_win_d="-"
+        local _lc_tf_d="${_lc_tf:0:19}";         [[ "$_lc_tf"       == "null" || -z "$_lc_tf"       ]] && _lc_tf_d="-"
+        local _lc_hard_due_d="${_lc_hard_due:0:19}"; [[ "$_lc_hard_due" == "null" || -z "$_lc_hard_due" ]] && _lc_hard_due_d="-"
 
         # Fault code — look up from ME_FAULT_MAP (populated for events seen while active)
         local _lc_fault_code="-" _lc_fault_col="$GRAY"
@@ -10534,22 +10635,37 @@ list_maintenance_events() {
             [[ "$_lc_fid" != "-" && -n "$_lc_fid" ]] && { _lc_fault_code="$_lc_fid"; _lc_fault_col="$CYAN"; }
         fi
 
-        # Store in ME_EVENT_MAP under lc# key for drill-down navigation
-        ME_EVENT_MAP["lc${_lc_row}"]="${_lc_id}|${_lc_iid}|${_lc_reason}|${_lc_cat}|${_lc_lcs}|${_lc_win}||${_lc_resched}|${_lc_dname}|${_lc_iname}|${_lc_knode:-N/A}|${_lc_ishape:-N/A}|${_lc_istate:-N/A}|${_lc_action}|${_lc_tf}|"
+        # Store in ME_EVENT_MAP under lc# key for drill-down navigation.
+        # Force can-reschedule=false — concluded events cannot be rescheduled,
+        # but the API field may still read "true" from when they were active.
+        ME_EVENT_MAP["lc${_lc_row}"]="${_lc_id}|${_lc_iid}|${_lc_reason}|${_lc_cat}|${_lc_lcs}|${_lc_win}||false|${_lc_dname}|${_lc_iname}|${_lc_knode:-N/A}|${_lc_ishape:-N/A}|${_lc_istate:-N/A}|${_lc_action}|${_lc_tf}|"
+
+        # Pods lookup — mirrors main render loop: use _ME_PODS map keyed by node name
+        local _lc_pods="-" _lc_pods_col="$GRAY"
+        if [[ "$_lc_knode" != "N/A" && -n "$_lc_knode" ]]; then
+            _lc_pods="${_ME_PODS[$_lc_knode]:-0}"
+            [[ "$_lc_pods" != "0" ]] && _lc_pods_col="$GREEN"
+        fi
 
         printf "  "
         _col_print_row "ME" \
             "lc${_lc_row}" "$_lc_iname" "${_lc_knode:0:20}" "${_lc_kserial:0:14}" \
-            "$_lc_istate" "$_lc_kdisp" "$_lc_cordon" "${_lc_taint:0:8}" "-" \
+            "$_lc_istate" "$_lc_kdisp" "$_lc_cordon" "${_lc_taint:0:8}" "$_lc_pods" \
             "${_lc_reason:0:22}" "${_lc_cat:0:12}" "$_lc_lcs" "${_lc_dname:0:28}" \
-            "${_lc_win_d:0:28}" "${_lc_tf_d:0:22}" "-" "-" "${_lc_fault_code:0:22}" \
+            "${_lc_hard_due_d:0:28}" "${_lc_tf_d:0:22}" "-" "-" "${_lc_fault_code:0:22}" \
             "$_lc_cap_topo" "$_lc_id" "$_lc_iid" "${_lc_gpu_cluster:0:30}" "$_lc_ifd_short" \
             "$_lc_knode_col" "$_lc_kser_col" "$_lc_state_color" "$_lc_kcol" \
-            "$_lc_cordon_col" "$_lc_taint_col" "$GRAY" "$_lc_reason_col" \
+            "$_lc_cordon_col" "$_lc_taint_col" "$_lc_pods_col" "$_lc_reason_col" \
             "$_lc_lcs_col" "$GRAY" "$GREEN" "$GRAY" \
             "$GRAY" "$_lc_fault_col" "$_lc_cap_color" "$GRAY" "$GRAY" "$MAGENTA"
-    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
+    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")|\(.["time-hard-due-date"] // "null")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
     [[ $_lc_row -eq 0 ]] && echo -e "  ${GRAY}(none)${NC}"
+
+    # Restore ME format globals to user's column configuration
+    _ME_ENABLED_INDICES=("${_me_sv_indices[@]}")
+    _ME_HDR_FMT="$_me_sv_hdr_fmt"
+    _ME_HDR_ARGS=("${_me_sv_hdr_args[@]}")
+    _ME_SEP_WIDTH=$_me_sv_sep_width
     echo ""
 
     _ui_subheader "Summary" 0
@@ -11854,6 +11970,7 @@ list_maintenance_events() {
                     local fault_parsed
                     fault_parsed=$(jq -c 'if type == "string" then (try fromjson catch []) else . end | if type == "array" then unique_by(.faultId // .componentIdentifier // .) else [.] end | .[]' <<< "$fault_details_raw" 2>/dev/null)
                     
+                    local _fd_first=true
                     while IFS= read -r fault_obj; do
                         [[ -z "$fault_obj" ]] && continue
                         local f_fid f_comp f_sev f_desc f_impact f_itype f_rec
@@ -11872,6 +11989,14 @@ list_maintenance_events() {
                         echo -e "  ${CYAN}Impact Type:${NC}     $f_itype"
                         echo -e "  ${YELLOW}Recommended:${NC}     $f_rec"
                         echo ""
+                        # Cache the first fault entry so the concluded-events table can
+                        # display the fault code without a separate OCI API call next time.
+                        if [[ "$_fd_first" == "true" && "$f_fid" != "N/A" ]]; then
+                            _fd_first=false
+                            local _fd_entry="${f_fid}~${f_comp}~${f_sev}~${f_desc}~${f_impact}~${f_rec}"
+                            ME_FAULT_MAP[$d_evt_id]="$_fd_entry"
+                            echo "${d_evt_id}=${_fd_entry}" >> "$FAULT_DETAILS_CACHE"
+                        fi
                     done <<< "$fault_parsed"
                 fi
                 
