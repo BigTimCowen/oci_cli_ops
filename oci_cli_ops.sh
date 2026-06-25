@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.68"
-readonly SCRIPT_VERSION_DATE="2026-06-24"
+readonly SCRIPT_VERSION="3.34.69"
+readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -9725,6 +9725,20 @@ list_maintenance_events() {
         echo "$_filt_id" >> "$filtered_evt_ids_file"
     done < <(jq -r '.data[] | "\(.id)|\(.["instance-id"] // "")|\(.["lifecycle-state"] // "")|\(.["time-finished"] // "null")"' "$cache_file" 2>/dev/null)
 
+    # Always include top 8 concluded event IDs so fault fetch covers them even when
+    # filter_type excludes SUCCEEDED/FAILED/CANCELED events (e.g. filter_type="active").
+    local _filt_existing_ids
+    _filt_existing_ids=$(cat "$filtered_evt_ids_file" 2>/dev/null || true)
+    local _conc_need=0
+    while IFS='|' read -r _conc_eid _; do
+        [[ $_conc_need -ge 8 ]] && break
+        grep -qxF "$_conc_eid" <<< "$_filt_existing_ids" 2>/dev/null && continue
+        [[ -n "${ME_FAULT_MAP[$_conc_eid]:-}" ]] && continue
+        echo "$_conc_eid" >> "$filtered_evt_ids_file"
+        ((_conc_need++))
+    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.id)|\(.["time-finished"])"' \
+        "$cache_file" 2>/dev/null | sort -t'|' -k2,2 -r)
+
     local filtered_evt_count
     filtered_evt_count=$(wc -l < "$filtered_evt_ids_file" 2>/dev/null | tr -d ' ')
     [[ -z "$filtered_evt_count" ]] && filtered_evt_count=0
@@ -10234,7 +10248,44 @@ list_maintenance_events() {
         # Announcement color
         local ann_color="$GRAY"
         [[ "$inst_announcement" != "-" && -n "$inst_announcement" ]] && ann_color="$YELLOW"
-        
+
+        # Announce slot overloading (priority: announcement > duration/age):
+        #   SUCCEEDED/COMPLETED + no announcement → show duration (window→finished)
+        #   all other states    + no announcement → show "Xd old" (created age)
+        local me_announce_display="$inst_announcement"
+        local me_announce_color="$ann_color"
+        if [[ "$inst_announcement" == "-" ]]; then
+            if [[ ( "$evt_lifecycle" == "SUCCEEDED" || "$evt_lifecycle" == "COMPLETED" ) && \
+                  "$evt_window_start" != "null" && -n "$evt_window_start" && \
+                  "$evt_time_finished" != "null" && -n "$evt_time_finished" ]]; then
+                local _me_ws_ep="" _me_tf_ep=""
+                _me_ws_ep=$(date -d "${evt_window_start:0:19}" +%s 2>/dev/null) || _me_ws_ep=""
+                _me_tf_ep=$(date -d "${evt_time_finished:0:19}" +%s 2>/dev/null) || _me_tf_ep=""
+                if [[ -n "$_me_ws_ep" && -n "$_me_tf_ep" && $_me_tf_ep -gt $_me_ws_ep ]]; then
+                    local _me_dur_s=$(( _me_tf_ep - _me_ws_ep ))
+                    local _me_dur_d=$(( _me_dur_s / 86400 ))
+                    local _me_dur_h=$(( (_me_dur_s % 86400) / 3600 ))
+                    local _me_dur_m=$(( (_me_dur_s % 3600) / 60 ))
+                    if   [[ $_me_dur_d -gt 0 ]]; then me_announce_display="${_me_dur_d}d ${_me_dur_h}h"
+                    elif [[ $_me_dur_h -gt 0 ]]; then me_announce_display="${_me_dur_h}h ${_me_dur_m}m"
+                    else me_announce_display="${_me_dur_m}m"; fi
+                    me_announce_color="$CYAN"
+                fi
+            elif [[ "$evt_time_created" != "null" && -n "$evt_time_created" ]]; then
+                local _me_cr_ep=""
+                _me_cr_ep=$(date -d "${evt_time_created:0:19}" +%s 2>/dev/null) || _me_cr_ep=""
+                if [[ -n "$_me_cr_ep" ]]; then
+                    local _cr_age_s=$(( me_now_epoch - _me_cr_ep ))
+                    if [[ $_cr_age_s -ge 0 ]]; then
+                        local _cr_d=$(( _cr_age_s / 86400 ))
+                        local _cr_h=$(( (_cr_age_s % 86400) / 3600 ))
+                        if   [[ $_cr_d -gt 0 ]]; then me_announce_display="${_cr_d}d old"; me_announce_color="$GRAY"
+                        else me_announce_display="${_cr_h}h old"; me_announce_color="$YELLOW"; fi
+                    fi
+                fi
+            fi
+        fi
+
         # Format times - show date + time
         local window_display="${evt_window_start:0:19}"
         local hard_due_display="${evt_hard_due:0:19}"
@@ -10388,7 +10439,7 @@ list_maintenance_events() {
             
             # ── Detail view: full row + fault sub-line + blank line ──
             printf "  "
-            _col_print_row "ME" "$me_idx" "$inst_name" "${k8s_node:0:20}" "${k8s_serial:0:14}" "$inst_state" "$k8s_display" "$cordon_display" "${taint_display:0:8}" "$k8s_pods" "${evt_reason:0:22}" "${evt_category:0:12}" "$evt_lifecycle" "${evt_display_name:0:28}" "${window_display:0:28}" "${time_finished_display:0:22}" "$resched_display" "${inst_announcement:0:10}" "-" "$evt_cap_topo" "$evt_id" "$evt_instance_id" "${inst_gpu_cluster_name:0:30}" "$inst_fd_short" "$k8s_node_color" "$serial_color" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pods_color" "$reason_color" "$lifecycle_color" "$window_color" "$time_finished_color" "$resched_color" "$ann_color" "$GRAY" "$cap_topo_color" "$GRAY" "$GRAY" "$MAGENTA"
+            _col_print_row "ME" "$me_idx" "$inst_name" "${k8s_node:0:20}" "${k8s_serial:0:14}" "$inst_state" "$k8s_display" "$cordon_display" "${taint_display:0:8}" "$k8s_pods" "${evt_reason:0:22}" "${evt_category:0:12}" "$evt_lifecycle" "${evt_display_name:0:28}" "${window_display:0:28}" "${time_finished_display:0:22}" "$resched_display" "${me_announce_display:0:10}" "-" "$evt_cap_topo" "$evt_id" "$evt_instance_id" "${inst_gpu_cluster_name:0:30}" "$inst_fd_short" "$k8s_node_color" "$serial_color" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pods_color" "$reason_color" "$lifecycle_color" "$window_color" "$time_finished_color" "$resched_color" "$me_announce_color" "$GRAY" "$cap_topo_color" "$GRAY" "$GRAY" "$MAGENTA"
             
             # Display fault/additional details as dim sub-line aligned to main row columns
             # ↳ indented 3 spaces, then:  Fault ID→Instance Name  Component→K8s Node  Sev→Serial
@@ -10453,7 +10504,7 @@ list_maintenance_events() {
             cap_topo_color=$(color_host_health "$evt_cap_topo")
             
             printf "  "
-            _col_print_row "ME" "$me_idx" "$inst_name" "${k8s_node:0:20}" "${k8s_serial:0:14}" "$inst_state" "$k8s_display" "$cordon_display" "${taint_display:0:8}" "$k8s_pods" "${evt_reason:0:22}" "${evt_category:0:12}" "$evt_lifecycle" "${evt_display_name:0:28}" "${window_display:0:28}" "${time_finished_display:0:22}" "$resched_display" "${inst_announcement:0:10}" "${compact_fault_code:0:22}" "$evt_cap_topo" "$evt_id" "$evt_instance_id" "${inst_gpu_cluster_name:0:30}" "$inst_fd_short" "$k8s_node_color" "$serial_color" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pods_color" "$reason_color" "$lifecycle_color" "$window_color" "$time_finished_color" "$resched_color" "$ann_color" "$fault_code_color" "$cap_topo_color" "$GRAY" "$GRAY" "$MAGENTA"
+            _col_print_row "ME" "$me_idx" "$inst_name" "${k8s_node:0:20}" "${k8s_serial:0:14}" "$inst_state" "$k8s_display" "$cordon_display" "${taint_display:0:8}" "$k8s_pods" "${evt_reason:0:22}" "${evt_category:0:12}" "$evt_lifecycle" "${evt_display_name:0:28}" "${window_display:0:28}" "${time_finished_display:0:22}" "$resched_display" "${me_announce_display:0:10}" "${compact_fault_code:0:22}" "$evt_cap_topo" "$evt_id" "$evt_instance_id" "${inst_gpu_cluster_name:0:30}" "$inst_fd_short" "$k8s_node_color" "$serial_color" "$state_color" "$k8s_color" "$cordon_color" "$taint_color" "$pods_color" "$reason_color" "$lifecycle_color" "$window_color" "$time_finished_color" "$resched_color" "$me_announce_color" "$fault_code_color" "$cap_topo_color" "$GRAY" "$GRAY" "$MAGENTA"
         fi
             
     done < <(jq -r '.data[] | "\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["time-hard-due-date"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")|\(.["time-finished"] // "null")|\(.["time-created"] // "null")|\(.["additional-details"] // "{}" | @json)"' "$cache_file" 2>/dev/null | sort -t'|' -k6,6)
@@ -10509,6 +10560,7 @@ list_maintenance_events() {
         _lc_hdr_fmt+="${_ME_COL_FMTS[$_idx]}"
         local _lc_col_lbl="${_ME_COL_LABELS[$_idx]}"
         [[ $_idx -eq 16 ]] && _lc_col_lbl="Duration"
+        [[ $_idx -eq 18 ]] && _lc_col_lbl="Age"
         _lc_hdr_args_arr+=("$_lc_col_lbl")
         ((_lc_sep_w += _ME_COL_WIDTHS[$_idx]))
     done
@@ -10516,66 +10568,6 @@ list_maintenance_events() {
     _ME_HDR_FMT="$_lc_hdr_fmt"
     _ME_HDR_ARGS=("${_lc_hdr_args_arr[@]}")
     _ME_SEP_WIDTH=$_lc_sep_w
-
-    # Pre-fetch fault details for concluded events not already in ME_FAULT_MAP.
-    # Runs up to 8 parallel GET calls so fault codes appear on the first view.
-    local -a _lc_ids_to_fetch=()
-    while IFS='|' read -r _lcpf_tf _lcpf_id _; do
-        [[ ${#_lc_ids_to_fetch[@]} -ge 8 ]] && break
-        [[ -n "${ME_FAULT_MAP[$_lcpf_id]:-}" ]] && continue
-        _lc_ids_to_fetch+=("$_lcpf_id")
-    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)"' \
-        "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
-
-    if [[ ${#_lc_ids_to_fetch[@]} -gt 0 ]]; then
-        local _lcf_tmpdir="${TEMP_DIR}/lcf_$$"
-        mkdir -p "$_lcf_tmpdir"
-        local -a _lcf_pids=()
-        local _lcf_n=0
-        for _lcf_eid in "${_lc_ids_to_fetch[@]}"; do
-            _lcf_n=$(( _lcf_n + 1 ))
-            (
-                local _lcf_json _lcf_fd _lcf_obj
-                _lcf_json=$(oci compute instance-maintenance-event get \
-                    --instance-maintenance-event-id "$_lcf_eid" \
-                    --region "$region" --output json 2>/dev/null) || exit 0
-                [[ -z "$_lcf_json" ]] && exit 0
-                _lcf_fd=$(jq -r '(.data["additional-details"]["faultDetails"] //
-                    .data["additional-details"]["fault-details"] // "null")' \
-                    <<< "$_lcf_json" 2>/dev/null)
-                [[ "$_lcf_fd" == "null" || -z "$_lcf_fd" || "$_lcf_fd" == "[]" ]] && exit 0
-                _lcf_obj=$(jq -c \
-                    'if type == "string" then (try fromjson catch null) else . end |
-                     if type == "array" and length > 0 then .[0]
-                     elif type == "object" then . else null end' \
-                    <<< "$_lcf_fd" 2>/dev/null)
-                [[ -z "$_lcf_obj" || "$_lcf_obj" == "null" ]] && exit 0
-                local _lcf_fid
-                _lcf_fid=$(jq -r '.faultId // empty' <<< "$_lcf_obj" 2>/dev/null)
-                [[ -z "$_lcf_fid" ]] && exit 0
-                printf '%s=%s~%s~%s~%s~%s~%s\n' \
-                    "$_lcf_eid" "$_lcf_fid" \
-                    "$(jq -r '.faultComponent // "N/A"'         <<< "$_lcf_obj" 2>/dev/null)" \
-                    "$(jq -r '.severity // "N/A"'               <<< "$_lcf_obj" 2>/dev/null)" \
-                    "$(jq -r '.customerDescription // "N/A"'    <<< "$_lcf_obj" 2>/dev/null)" \
-                    "$(jq -r '.impactDescription // "N/A"'      <<< "$_lcf_obj" 2>/dev/null)" \
-                    "$(jq -r '.recommendedAction // "N/A"'      <<< "$_lcf_obj" 2>/dev/null)" \
-                    > "${_lcf_tmpdir}/${_lcf_n}.dat"
-            ) &
-            _lcf_pids+=($!)
-        done
-        for _lcf_pid in "${_lcf_pids[@]}"; do wait "$_lcf_pid" 2>/dev/null || true; done
-        local _lcf_dat _lcf_line _lcf_eid_r _lcf_data_r
-        for _lcf_dat in "${_lcf_tmpdir}"/*.dat; do
-            [[ -f "$_lcf_dat" ]] || continue
-            IFS= read -r _lcf_line < "$_lcf_dat"
-            IFS='=' read -r _lcf_eid_r _lcf_data_r <<< "$_lcf_line"
-            [[ -z "$_lcf_eid_r" || -z "$_lcf_data_r" ]] && continue
-            ME_FAULT_MAP[$_lcf_eid_r]="$_lcf_data_r"
-            echo "${_lcf_eid_r}=${_lcf_data_r}" >> "$FAULT_DETAILS_CACHE"
-        done
-        rm -rf "$_lcf_tmpdir"
-    fi
 
     local _lc_row=0
     while IFS='|' read -r _lc_tf _lc_id _lc_iid _lc_reason _lc_cat _lc_lcs _lc_win _lc_resched _lc_dname _lc_action; do
@@ -10637,13 +10629,18 @@ list_maintenance_events() {
         local _lc_win_d="${_lc_win:0:19}"; [[ "$_lc_win" == "null" || -z "$_lc_win" ]] && _lc_win_d="-"
         local _lc_tf_d="${_lc_tf:0:19}";   [[ "$_lc_tf"  == "null" || -z "$_lc_tf"  ]] && _lc_tf_d="-"
 
-        # Duration: window-start → time-finished (shown in Duration column)
+        # Parse time-finished epoch once — reused for Duration and Age
+        local _lc_tf_ep=""
+        if [[ "$_lc_tf" != "null" && -n "$_lc_tf" ]]; then
+            _lc_tf_ep=$(date -d "${_lc_tf:0:19}" +%s 2>/dev/null) || _lc_tf_ep=""
+        fi
+
+        # Duration: window-start → time-finished (shown in Duration column, idx 16)
         local _lc_duration="-" _lc_dur_col="$GRAY"
-        if [[ "$_lc_win" != "null" && -n "$_lc_win" && "$_lc_tf" != "null" && -n "$_lc_tf" ]]; then
-            local _lc_win_ep _lc_tf_ep
+        if [[ "$_lc_win" != "null" && -n "$_lc_win" && -n "$_lc_tf_ep" ]]; then
+            local _lc_win_ep
             _lc_win_ep=$(date -d "${_lc_win:0:19}" +%s 2>/dev/null) || _lc_win_ep=""
-            _lc_tf_ep=$(date  -d "${_lc_tf:0:19}"  +%s 2>/dev/null) || _lc_tf_ep=""
-            if [[ -n "$_lc_win_ep" && -n "$_lc_tf_ep" && $_lc_tf_ep -gt $_lc_win_ep ]]; then
+            if [[ -n "$_lc_win_ep" && $_lc_tf_ep -gt $_lc_win_ep ]]; then
                 local _dur_s=$(( _lc_tf_ep - _lc_win_ep ))
                 local _dur_d=$(( _dur_s / 86400 ))
                 local _dur_h=$(( (_dur_s % 86400) / 3600 ))
@@ -10652,6 +10649,20 @@ list_maintenance_events() {
                 elif [[ $_dur_h -gt 0 ]]; then _lc_duration="${_dur_h}h ${_dur_m}m"
                 else _lc_duration="${_dur_m}m"; fi
                 _lc_dur_col="$CYAN"
+            fi
+        fi
+
+        # Age since completion: now − time-finished (shown in Age column, idx 18)
+        local _lc_age="-" _lc_age_col="$GRAY"
+        if [[ -n "$_lc_tf_ep" ]]; then
+            local _age_s=$(( me_now_epoch - _lc_tf_ep ))
+            if [[ $_age_s -ge 0 ]]; then
+                local _age_d=$(( _age_s / 86400 ))
+                local _age_h=$(( (_age_s % 86400) / 3600 ))
+                local _age_m=$(( (_age_s % 3600) / 60 ))
+                if   [[ $_age_d -gt 0 ]]; then _lc_age="${_age_d}d ago";  _lc_age_col="$GRAY"
+                elif [[ $_age_h -gt 0 ]]; then _lc_age="${_age_h}h ago";  _lc_age_col="$YELLOW"
+                else                           _lc_age="${_age_m}m ago";  _lc_age_col="$CYAN"; fi
             fi
         fi
 
@@ -10681,11 +10692,11 @@ list_maintenance_events() {
             "$_lc_istate" "$_lc_kdisp" "$_lc_cordon" "${_lc_taint:0:8}" "$_lc_pods" \
             "${_lc_reason:0:22}" "${_lc_cat:0:12}" "$_lc_lcs" "${_lc_dname:0:28}" \
             "${_lc_win_d:0:28}" "${_lc_tf_d:0:22}" "-" "${_lc_duration:0:10}" "${_lc_fault_code:0:22}" \
-            "$_lc_cap_topo" "$_lc_id" "$_lc_iid" "${_lc_gpu_cluster:0:30}" "$_lc_ifd_short" \
+            "${_lc_age:0:10}" "$_lc_id" "$_lc_iid" "${_lc_gpu_cluster:0:30}" "$_lc_ifd_short" \
             "$_lc_knode_col" "$_lc_kser_col" "$_lc_state_color" "$_lc_kcol" \
             "$_lc_cordon_col" "$_lc_taint_col" "$_lc_pods_col" "$_lc_reason_col" \
             "$_lc_lcs_col" "$GRAY" "$GREEN" "$GRAY" \
-            "$_lc_dur_col" "$_lc_fault_col" "$_lc_cap_color" "$GRAY" "$GRAY" "$MAGENTA"
+            "$_lc_dur_col" "$_lc_fault_col" "$_lc_age_col" "$GRAY" "$GRAY" "$MAGENTA"
     done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
     [[ $_lc_row -eq 0 ]] && echo -e "  ${GRAY}(none)${NC}"
 
