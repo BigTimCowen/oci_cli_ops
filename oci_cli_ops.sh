@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.67"
+readonly SCRIPT_VERSION="3.34.68"
 readonly SCRIPT_VERSION_DATE="2026-06-24"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -10474,22 +10474,33 @@ list_maintenance_events() {
     local _me_sv_hdr_args=("${_ME_HDR_ARGS[@]}")
     local _me_sv_sep_width=$_ME_SEP_WIDTH
 
-    local _lc_new_indices=() _lc_has_14=false
+    # Build concluded-events column set:
+    #   always include: finished (14), duration (16=announce slot)
+    #   always exclude: resched (15), evt_ocid (19), inst_ocid (20)
+    local _lc_new_indices=() _lc_has_14=false _lc_has_16=false
     for _idx in "${_ME_ENABLED_INDICES[@]}"; do
-        [[ $_idx -eq 14 ]] && { _lc_has_14=true; break; }
+        [[ $_idx -eq 14 ]] && _lc_has_14=true
+        [[ $_idx -eq 16 ]] && _lc_has_16=true
     done
-    local _lc_added_14=false
+    local _lc_added_14=false _lc_added_16=false
     for _idx in "${_ME_ENABLED_INDICES[@]}"; do
-        [[ $_idx -eq 15 || $_idx -eq 16 ]] && continue
+        [[ $_idx -eq 15 || $_idx -eq 19 || $_idx -eq 20 ]] && continue
         _lc_new_indices+=("$_idx")
+        # Inject finished (14) immediately after window (13) if absent
         if [[ $_idx -eq 13 && "$_lc_has_14" == "false" && "$_lc_added_14" == "false" ]]; then
-            _lc_new_indices+=(14)
-            _lc_added_14=true
+            _lc_new_indices+=(14); _lc_added_14=true
+            if [[ "$_lc_has_16" == "false" && "$_lc_added_16" == "false" ]]; then
+                _lc_new_indices+=(16); _lc_added_16=true
+            fi
         fi
+        # Inject duration (16) immediately after finished (14) if absent
+        if [[ $_idx -eq 14 && "$_lc_has_16" == "false" && "$_lc_added_16" == "false" ]]; then
+            _lc_new_indices+=(16); _lc_added_16=true
+        fi
+        [[ $_idx -eq 16 ]] && _lc_added_16=true
     done
-    if [[ "$_lc_has_14" == "false" && "$_lc_added_14" == "false" ]]; then
-        _lc_new_indices+=(14)
-    fi
+    [[ "$_lc_has_14" == "false" && "$_lc_added_14" == "false" ]] && _lc_new_indices+=(14)
+    [[ "$_lc_added_16" == "false" ]] && _lc_new_indices+=(16)
 
     local _lc_hdr_fmt="" _lc_sep_w=0 _lc_first_col=true
     local -a _lc_hdr_args_arr=()
@@ -10497,7 +10508,7 @@ list_maintenance_events() {
         [[ "$_lc_first_col" == "true" ]] && _lc_first_col=false || { _lc_hdr_fmt+=" "; ((_lc_sep_w++)); }
         _lc_hdr_fmt+="${_ME_COL_FMTS[$_idx]}"
         local _lc_col_lbl="${_ME_COL_LABELS[$_idx]}"
-        [[ $_idx -eq 13 ]] && _lc_col_lbl="Hard Due Date"
+        [[ $_idx -eq 16 ]] && _lc_col_lbl="Duration"
         _lc_hdr_args_arr+=("$_lc_col_lbl")
         ((_lc_sep_w += _ME_COL_WIDTHS[$_idx]))
     done
@@ -10567,7 +10578,7 @@ list_maintenance_events() {
     fi
 
     local _lc_row=0
-    while IFS='|' read -r _lc_tf _lc_id _lc_iid _lc_reason _lc_cat _lc_lcs _lc_win _lc_resched _lc_dname _lc_action _lc_hard_due; do
+    while IFS='|' read -r _lc_tf _lc_id _lc_iid _lc_reason _lc_cat _lc_lcs _lc_win _lc_resched _lc_dname _lc_action; do
         _lc_row=$(( _lc_row + 1 ))
         [[ $_lc_row -gt 8 ]] && break
 
@@ -10623,9 +10634,26 @@ list_maintenance_events() {
             *)                   _lc_lcs_col="$WHITE" ;;
         esac
 
-        local _lc_win_d="${_lc_win:0:19}";       [[ "$_lc_win"      == "null" || -z "$_lc_win"      ]] && _lc_win_d="-"
-        local _lc_tf_d="${_lc_tf:0:19}";         [[ "$_lc_tf"       == "null" || -z "$_lc_tf"       ]] && _lc_tf_d="-"
-        local _lc_hard_due_d="${_lc_hard_due:0:19}"; [[ "$_lc_hard_due" == "null" || -z "$_lc_hard_due" ]] && _lc_hard_due_d="-"
+        local _lc_win_d="${_lc_win:0:19}"; [[ "$_lc_win" == "null" || -z "$_lc_win" ]] && _lc_win_d="-"
+        local _lc_tf_d="${_lc_tf:0:19}";   [[ "$_lc_tf"  == "null" || -z "$_lc_tf"  ]] && _lc_tf_d="-"
+
+        # Duration: window-start → time-finished (shown in Duration column)
+        local _lc_duration="-" _lc_dur_col="$GRAY"
+        if [[ "$_lc_win" != "null" && -n "$_lc_win" && "$_lc_tf" != "null" && -n "$_lc_tf" ]]; then
+            local _lc_win_ep _lc_tf_ep
+            _lc_win_ep=$(date -d "${_lc_win:0:19}" +%s 2>/dev/null) || _lc_win_ep=""
+            _lc_tf_ep=$(date  -d "${_lc_tf:0:19}"  +%s 2>/dev/null) || _lc_tf_ep=""
+            if [[ -n "$_lc_win_ep" && -n "$_lc_tf_ep" && $_lc_tf_ep -gt $_lc_win_ep ]]; then
+                local _dur_s=$(( _lc_tf_ep - _lc_win_ep ))
+                local _dur_d=$(( _dur_s / 86400 ))
+                local _dur_h=$(( (_dur_s % 86400) / 3600 ))
+                local _dur_m=$(( (_dur_s % 3600) / 60 ))
+                if   [[ $_dur_d -gt 0 ]]; then _lc_duration="${_dur_d}d ${_dur_h}h"
+                elif [[ $_dur_h -gt 0 ]]; then _lc_duration="${_dur_h}h ${_dur_m}m"
+                else _lc_duration="${_dur_m}m"; fi
+                _lc_dur_col="$CYAN"
+            fi
+        fi
 
         # Fault code — look up from ME_FAULT_MAP (populated for events seen while active)
         local _lc_fault_code="-" _lc_fault_col="$GRAY"
@@ -10652,13 +10680,13 @@ list_maintenance_events() {
             "lc${_lc_row}" "$_lc_iname" "${_lc_knode:0:20}" "${_lc_kserial:0:14}" \
             "$_lc_istate" "$_lc_kdisp" "$_lc_cordon" "${_lc_taint:0:8}" "$_lc_pods" \
             "${_lc_reason:0:22}" "${_lc_cat:0:12}" "$_lc_lcs" "${_lc_dname:0:28}" \
-            "${_lc_hard_due_d:0:28}" "${_lc_tf_d:0:22}" "-" "-" "${_lc_fault_code:0:22}" \
+            "${_lc_win_d:0:28}" "${_lc_tf_d:0:22}" "-" "${_lc_duration:0:10}" "${_lc_fault_code:0:22}" \
             "$_lc_cap_topo" "$_lc_id" "$_lc_iid" "${_lc_gpu_cluster:0:30}" "$_lc_ifd_short" \
             "$_lc_knode_col" "$_lc_kser_col" "$_lc_state_color" "$_lc_kcol" \
             "$_lc_cordon_col" "$_lc_taint_col" "$_lc_pods_col" "$_lc_reason_col" \
             "$_lc_lcs_col" "$GRAY" "$GREEN" "$GRAY" \
-            "$GRAY" "$_lc_fault_col" "$_lc_cap_color" "$GRAY" "$GRAY" "$MAGENTA"
-    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")|\(.["time-hard-due-date"] // "null")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
+            "$_lc_dur_col" "$_lc_fault_col" "$_lc_cap_color" "$GRAY" "$GRAY" "$MAGENTA"
+    done < <(jq -r '.data[] | select(.["time-finished"] != null) | "\(.["time-finished"])|\(.id)|\(.["instance-id"] // "")|\(.["maintenance-reason"] // "N/A")|\(.["maintenance-category"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["time-window-start"] // "null")|\(.["can-reschedule"] // false)|\(.["display-name"] // "N/A")|\(.["instance-action"] // "N/A")"' "$cache_file" 2>/dev/null | sort -t'|' -k1,1 -r)
     [[ $_lc_row -eq 0 ]] && echo -e "  ${GRAY}(none)${NC}"
 
     # Restore ME format globals to user's column configuration
