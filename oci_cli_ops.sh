@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.69"
+readonly SCRIPT_VERSION="3.34.70"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -9725,6 +9725,13 @@ list_maintenance_events() {
         echo "$_filt_id" >> "$filtered_evt_ids_file"
     done < <(jq -r '.data[] | "\(.id)|\(.["instance-id"] // "")|\(.["lifecycle-state"] // "")|\(.["time-finished"] // "null")"' "$cache_file" 2>/dev/null)
 
+    # Build display filter set BEFORE injecting concluded IDs — concluded events
+    # (CANCELED/SUCCEEDED/FAILED) must not leak into the active-filter table view.
+    declare -A _ME_FILTERED_EVTS=()
+    while IFS= read -r _fe_id; do
+        [[ -n "$_fe_id" ]] && _ME_FILTERED_EVTS[$_fe_id]=1
+    done < "$filtered_evt_ids_file"
+
     # Always include top 8 concluded event IDs so fault fetch covers them even when
     # filter_type excludes SUCCEEDED/FAILED/CANCELED events (e.g. filter_type="active").
     local _filt_existing_ids
@@ -9824,13 +9831,6 @@ list_maintenance_events() {
         rm -rf "${fault_temp_dir:?}" 2>/dev/null
     fi
 
-    # Build filtered event set for O(1) skip in display pass
-    declare -A _ME_FILTERED_EVTS=()
-    if [[ -f "$filtered_evt_ids_file" ]]; then
-        while IFS= read -r _fe_id; do
-            [[ -n "$_fe_id" ]] && _ME_FILTERED_EVTS[$_fe_id]=1
-        done < "$filtered_evt_ids_file"
-    fi
     rm -f "$filtered_evt_ids_file" 2>/dev/null
 
     # Show fault details as discovery step
