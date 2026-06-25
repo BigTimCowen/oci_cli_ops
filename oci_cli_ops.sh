@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.73"
+readonly SCRIPT_VERSION="3.34.74"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -10582,7 +10582,7 @@ list_maintenance_events() {
         [[ "$_lc_first_col" == "true" ]] && _lc_first_col=false || { _lc_hdr_fmt+=" "; ((_lc_sep_w++)); }
         _lc_hdr_fmt+="${_ME_COL_FMTS[$_idx]}"
         local _lc_col_lbl="${_ME_COL_LABELS[$_idx]}"
-        [[ $_idx -eq 18 ]] && _lc_col_lbl="Age"
+        [[ $_idx -eq 18 ]] && _lc_col_lbl="Finished Age"
         _lc_hdr_args_arr+=("$_lc_col_lbl")
         ((_lc_sep_w += _ME_COL_WIDTHS[$_idx]))
     done
@@ -10733,7 +10733,7 @@ list_maintenance_events() {
             "$_lc_istate" "$_lc_kdisp" "$_lc_cordon" "${_lc_taint:0:8}" "$_lc_pods" \
             "${_lc_reason:0:22}" "${_lc_cat:0:12}" "$_lc_lcs" "${_lc_dname:0:28}" \
             "${_lc_win_d:0:28}" "${_lc_tf_d:0:22}" "${_lc_duration:0:10}" "${_lc_cr_age:0:10}" "${_lc_fault_code:0:22}" \
-            "${_lc_age:0:10}" "$_lc_id" "$_lc_iid" "${_lc_gpu_cluster:0:30}" "$_lc_ifd_short" \
+            "${_lc_age:0:12}" "$_lc_id" "$_lc_iid" "${_lc_gpu_cluster:0:30}" "$_lc_ifd_short" \
             "$_lc_knode_col" "$_lc_kser_col" "$_lc_state_color" "$_lc_kcol" \
             "$_lc_cordon_col" "$_lc_taint_col" "$_lc_pods_col" "$_lc_reason_col" \
             "$_lc_lcs_col" "$GRAY" "$GREEN" \
@@ -33473,10 +33473,10 @@ _ANN_ENABLED_INDICES=()
 _ME_COL_CONF="$ME_COLUMNS_CONF"
 _ME_COL_KEYS=(           "id"     "inst_name"  "k8s_node"   "serial"     "state"    "k8s"    "cordon"  "taints"  "pods"   "reason"     "category"   "lifecycle"  "event_name"  "window"     "finished"     "resched" "announce"  "fault_code"  "comp_host"  "evt_ocid"     "inst_ocid"    "gpu_cluster"  "fd"     )
 _ME_COL_LABELS=(         "#"      "Instance Name" "K8s Node" "Serial"   "State"    "K8s"    "Crdn"    "Taints"  "Pods"   "Maint Reason" "Category" "Lifecycle"  "Event Name"  "Window Start" "Time Finished" "Duration" "Cr.Age"    "Fault Code"  "CompHost"   "Event OCID"   "Instance OCID" "GPU Cluster"  "FD"     )
-_ME_COL_DEFAULT_WIDTHS=( 4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             10        10          17            10           100            100            13             4        )
-_ME_COL_WIDTHS=(         4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             10        10          17            10           100            100            13             4        )
+_ME_COL_DEFAULT_WIDTHS=( 4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             10        10          17            12           100            100            13             4        )
+_ME_COL_WIDTHS=(         4        45           13           12           4          4        6         6         4        15           12           11           18            20           20             10        10          17            12           100            100            13             4        )
 _ME_COL_ALIGN=(          "-"      "-"          "-"          "-"          "-"        "-"      "-"       "-"       "-"      "-"          "-"          "-"          "-"           "-"          "-"            "-"       "-"         "-"           "-"          "-"            "-"            "-"            "-"      )
-_ME_COL_FMTS=(           "%-4.4s" "%-45.45s"   "%-13.13s"   "%-12.12s"   "%-4.4s"   "%-4.4s" "%-6.6s"  "%-6.6s"  "%-4.4s" "%-22.22s"   "%-12.12s"   "%-11.11s"   "%-28.28s"    "%-20.20s"   "%-20.20s"     "%-10.10s" "%-10.10s" "%-17.17s"    "%-10.10s"   "%-100s"       "%-100s"       "%-13.13s"     "%-4.4s" )
+_ME_COL_FMTS=(           "%-4.4s" "%-45.45s"   "%-13.13s"   "%-12.12s"   "%-4.4s"   "%-4.4s" "%-6.6s"  "%-6.6s"  "%-4.4s" "%-22.22s"   "%-12.12s"   "%-11.11s"   "%-28.28s"    "%-20.20s"   "%-20.20s"     "%-10.10s" "%-10.10s" "%-17.17s"    "%-12.12s"   "%-100s"       "%-100s"       "%-13.13s"     "%-4.4s" )
 _ME_COL_COLORS=(         "YELLOW" ""           "@1"         "@2"         "@3"       "@4"     "@5"      "@6"      "@7"     "@8"         ""           "@9"         ""            "@10"        "@11"          "@12"     "@13"       "@14"         "@15"        "@16"          "@17"          "@18"          "CYAN"   )
 _ME_COL_LOCKED=( "id" )
 _ME_COL_DEFAULTS=( "id" "inst_name" "k8s_node" "serial" "state" "k8s" "cordon" "taints" "pods" "reason" "lifecycle" "event_name" "window" "finished" "resched" "announce" "fault_code" "comp_host" "gpu_cluster" )
