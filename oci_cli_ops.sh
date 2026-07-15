@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.74"
+readonly SCRIPT_VERSION="3.34.75"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -1697,17 +1697,21 @@ refresh_all_caches() {
 }
 
 # Check if required commands are available
+# kubectl and helm are optional — K8s features degrade gracefully when absent
 check_dependencies() {
     local missing=()
-    
+
     command -v oci &>/dev/null || missing+=("oci")
-    command -v kubectl &>/dev/null || missing+=("kubectl")
     command -v jq &>/dev/null || missing+=("jq")
-    
+
     if [[ ${#missing[@]} -gt 0 ]]; then
         log_error "Missing required commands: ${missing[*]}"
         log_error "Please install the missing dependencies and try again."
         return 1
+    fi
+
+    if ! command -v kubectl &>/dev/null; then
+        log_warn "kubectl not found — Kubernetes features will be unavailable"
     fi
     return 0
 }
