@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.76"
+readonly SCRIPT_VERSION="3.34.77"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -78203,6 +78203,17 @@ check_oci_instance_principal() {
     fi
     # 10s timeout — instance principal auth can hang indefinitely when the instance
     # is not in a dynamic group or network can't reach OCI IAM endpoints.
+    if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
+        echo -e "\n${GRAY}[DEBUG] Running: timeout 10 oci iam region list --auth instance_principal${NC}" >&2
+        local _dbg_out _dbg_rc
+        _dbg_out=$(timeout 10 oci iam region list --auth instance_principal 2>&1)
+        _dbg_rc=$?
+        if [[ $_dbg_rc -ne 0 ]]; then
+            echo -e "${GRAY}[DEBUG] instance_principal failed (rc=$_dbg_rc):${NC}" >&2
+            echo "$_dbg_out" | head -20 | sed 's/^/  /' >&2
+        fi
+        return $_dbg_rc
+    fi
     if ! timeout 10 oci iam region list --auth instance_principal &>/dev/null; then
         return 1
     fi
@@ -78286,6 +78297,8 @@ fetch_local_oci_config_context() {
     fi
 
     # Validate auth works with the selected profile (15s timeout guards against hung API calls)
+    [[ "${DEBUG_MODE:-false}" == "true" ]] && \
+        echo -e "\n${GRAY}[DEBUG] Running: timeout 15 oci iam region-subscription list --tenancy-id ${_tenancy_id##*.} --profile ${_oci_profile}${NC}" >&2
     local _auth_err
     _auth_err=$(timeout 15 oci iam region-subscription list --tenancy-id "$_tenancy_id" --all --output json 2>&1)
     if [[ $? -ne 0 ]]; then
