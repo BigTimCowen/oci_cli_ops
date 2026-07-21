@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.75"
+readonly SCRIPT_VERSION="3.34.76"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -78201,11 +78201,11 @@ check_oci_instance_principal() {
     if ! command -v oci &>/dev/null; then
         return 1
     fi
-    
-    if ! oci iam region list --auth instance_principal &>/dev/null; then
+    # 10s timeout — instance principal auth can hang indefinitely when the instance
+    # is not in a dynamic group or network can't reach OCI IAM endpoints.
+    if ! timeout 10 oci iam region list --auth instance_principal &>/dev/null; then
         return 1
     fi
-    
     return 0
 }
 
@@ -78285,9 +78285,9 @@ fetch_local_oci_config_context() {
         return 1
     fi
 
-    # Validate auth works with the selected profile
+    # Validate auth works with the selected profile (15s timeout guards against hung API calls)
     local _auth_err
-    _auth_err=$(oci iam region-subscription list --tenancy-id "$_tenancy_id" --all --output json 2>&1)
+    _auth_err=$(timeout 15 oci iam region-subscription list --tenancy-id "$_tenancy_id" --all --output json 2>&1)
     if [[ $? -ne 0 ]]; then
         echo -e "  ${RED}Auth failed for profile [${_oci_profile}]:${NC}" >&2
         echo "$_auth_err" | head -5 | sed 's/^/    /' >&2
@@ -78423,9 +78423,9 @@ run_initial_setup() {
             else
                 _step_complete "metadata"
 
-                _step_active "OCI CLI"
+                _step_active "OCI CLI(instance principal, 10s)"
                 if ! check_oci_instance_principal; then
-                    _step_complete "OCI CLI(failed)"
+                    _step_complete "OCI CLI(no instance principal — using API key)"
                 else
                     _step_complete "OCI CLI"
                     _setup_use_instance_principal=true
@@ -78461,14 +78461,14 @@ run_initial_setup() {
 
         _step_active "names"
         if [[ "$_setup_use_instance_principal" == "true" ]]; then
-            setup_tenancy_name=$(oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
+            setup_tenancy_name=$(timeout 15 oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
                 --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
             [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
-            setup_compartment_name=$(oci iam compartment get --compartment-id "$SETUP_COMPARTMENT_ID" \
+            setup_compartment_name=$(timeout 15 oci iam compartment get --compartment-id "$SETUP_COMPARTMENT_ID" \
                 --auth instance_principal --query 'data.name' --raw-output 2>/dev/null)
             [[ "$setup_compartment_name" == "null" ]] && setup_compartment_name=""
         else
-            setup_tenancy_name=$(oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
+            setup_tenancy_name=$(timeout 15 oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
                 --query 'data.name' --raw-output 2>/dev/null)
             [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
             setup_compartment_name="$setup_tenancy_name"
