@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.77"
+readonly SCRIPT_VERSION="3.34.78"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -3288,6 +3288,64 @@ resolve_subnet_name_cached() {
     local api_name
     api_name=$(oci network subnet get --subnet-id "$subnet_ocid" --region "$region" --query 'data."display-name"' --raw-output 2>/dev/null) || api_name="N/A"
     echo "${api_name:-N/A}"
+}
+
+#--------------------------------------------------------------------------------
+# Check whether an OKE cluster endpoint subnet has a route to the Oracle Services
+# Network (OSN). The rule: public endpoint requires an Internet Gateway route;
+# private endpoint requires a NAT Gateway route in the same route table.
+# Args: $1 = endpoint_subnet_id, $2 = is_public_ip ("true"/"false"), $3 = region
+# Prints a single status line — caller embeds it in the Network Configuration block.
+#--------------------------------------------------------------------------------
+_oke_check_endpoint_osn_reach() {
+    local subnet_id="$1" is_public="$2" region="${3:-${FOCUS_REGION:-$REGION}}"
+    [[ -z "$subnet_id" || "$subnet_id" == "N/A" ]] && echo "${GRAY}OSN reach: unknown (no subnet)${NC}" && return
+
+    # 1. Resolve route table ID — try cache first, then API
+    local rt_id=""
+    if [[ -f "$NETWORK_RESOURCES_CACHE" ]]; then
+        rt_id=$(awk -F'|' -v sid="$subnet_id" '$1=="SUBNET" && $6==sid {print $7; exit}' "$NETWORK_RESOURCES_CACHE" 2>/dev/null)
+    fi
+    if [[ -z "$rt_id" || "$rt_id" == "N/A" ]]; then
+        rt_id=$(oci network subnet get --subnet-id "$subnet_id" --region "$region" \
+            --query 'data."route-table-id"' --raw-output 2>/dev/null) || rt_id=""
+    fi
+    if [[ -z "$rt_id" || "$rt_id" == "N/A" ]]; then
+        echo -e "  ${YELLOW}⚠${NC} OSN Reachability: ${YELLOW}unknown${NC} ${GRAY}(could not resolve route table)${NC}"
+        return
+    fi
+
+    # 2. Fetch route table rules
+    local rt_json
+    rt_json=$(oci network route-table get --rt-id "$rt_id" --region "$region" 2>/dev/null)
+    if [[ -z "$rt_json" ]]; then
+        echo -e "  ${YELLOW}⚠${NC} OSN Reachability: ${YELLOW}unknown${NC} ${GRAY}(could not fetch route table ${rt_id##*.})${NC}"
+        return
+    fi
+
+    local rt_name
+    rt_name=$(jq -r '.data."display-name" // "N/A"' <<< "$rt_json" 2>/dev/null)
+
+    # 3. Check for the required gateway type
+    if [[ "$is_public" == "true" ]]; then
+        local has_igw
+        has_igw=$(jq -r '.data["route-rules"][] | select(.["entity-type"] == "internetGateway") | .id' \
+            <<< "$rt_json" 2>/dev/null | head -1)
+        if [[ -n "$has_igw" ]]; then
+            echo -e "  ${GREEN}✓${NC} OSN Reachability: ${GREEN}OK${NC} ${GRAY}(public endpoint — Internet Gateway found in route table ${rt_name})${NC}"
+        else
+            echo -e "  ${RED}✗${NC} OSN Reachability: ${RED}FAIL${NC} ${YELLOW}(public endpoint — no Internet Gateway route in route table ${rt_name})${NC}"
+        fi
+    else
+        local has_nat
+        has_nat=$(jq -r '.data["route-rules"][] | select(.["entity-type"] == "natGateway") | .id' \
+            <<< "$rt_json" 2>/dev/null | head -1)
+        if [[ -n "$has_nat" ]]; then
+            echo -e "  ${GREEN}✓${NC} OSN Reachability: ${GREEN}OK${NC} ${GRAY}(private endpoint — NAT Gateway found in route table ${rt_name})${NC}"
+        else
+            echo -e "  ${RED}✗${NC} OSN Reachability: ${RED}FAIL${NC} ${YELLOW}(private endpoint — no NAT Gateway route in route table ${rt_name})${NC}"
+        fi
+    fi
 }
 
 #--------------------------------------------------------------------------------
@@ -21947,6 +22005,7 @@ manage_oke_cluster() {
     echo -e "${CYAN}[vcn]${NC}      VCN:                 ${GREEN}$vcn_name${NC} ${YELLOW}($vcn_id)${NC}"
     echo -e "${CYAN}[endpoint]${NC} Endpoint Subnet:     ${GREEN}$endpoint_subnet_name${NC} ${YELLOW}($endpoint_subnet_id)${NC}"
     echo -e "           Public Endpoint:     $public_endpoint"
+    _oke_check_endpoint_osn_reach "$endpoint_subnet_id" "$public_endpoint" "$region"
     echo -e "${CYAN}[svc-lb]${NC}   Service LB Subnet:   ${GREEN}$svc_lb_subnet_name${NC} ${YELLOW}($svc_lb_subnet_id)${NC}"
     echo -e "           Pods CIDR:           $pods_cidr"
     echo -e "           Services CIDR:       $services_cidr"
