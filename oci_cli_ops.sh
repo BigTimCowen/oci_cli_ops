@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.78"
+readonly SCRIPT_VERSION="3.34.79"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -3326,11 +3326,14 @@ _oke_check_endpoint_osn_reach() {
     local rt_name
     rt_name=$(jq -r '.data."display-name" // "N/A"' <<< "$rt_json" 2>/dev/null)
 
-    # 3. Check for the required gateway type
+    # 3. Check for the required gateway type.
+    # OCI route rules carry only "network-entity-id" (an OCID) — no entity-type field.
+    # Determine gateway type from the OCID resource-type prefix.
     if [[ "$is_public" == "true" ]]; then
         local has_igw
-        has_igw=$(jq -r '.data["route-rules"][] | select(.["entity-type"] == "internetGateway") | .id' \
-            <<< "$rt_json" 2>/dev/null | head -1)
+        has_igw=$(jq -r '.data["route-rules"][]
+            | select(.["network-entity-id"] // "" | startswith("ocid1.internetgateway."))
+            | .["network-entity-id"]' <<< "$rt_json" 2>/dev/null | head -1)
         if [[ -n "$has_igw" ]]; then
             echo -e "  ${GREEN}✓${NC} OSN Reachability: ${GREEN}OK${NC} ${GRAY}(public endpoint — Internet Gateway found in route table ${rt_name})${NC}"
         else
@@ -3338,8 +3341,9 @@ _oke_check_endpoint_osn_reach() {
         fi
     else
         local has_nat
-        has_nat=$(jq -r '.data["route-rules"][] | select(.["entity-type"] == "natGateway") | .id' \
-            <<< "$rt_json" 2>/dev/null | head -1)
+        has_nat=$(jq -r '.data["route-rules"][]
+            | select(.["network-entity-id"] // "" | startswith("ocid1.natgateway."))
+            | .["network-entity-id"]' <<< "$rt_json" 2>/dev/null | head -1)
         if [[ -n "$has_nat" ]]; then
             echo -e "  ${GREEN}✓${NC} OSN Reachability: ${GREEN}OK${NC} ${GRAY}(private endpoint — NAT Gateway found in route table ${rt_name})${NC}"
         else
