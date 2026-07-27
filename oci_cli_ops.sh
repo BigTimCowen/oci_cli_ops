@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.80"
+readonly SCRIPT_VERSION="3.34.81"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -15509,30 +15509,30 @@ resolve_compartment_name() {
     
     # Method 2: Try oci iam compartment get (single API call)
     if [[ "$ocid" == ocid1.compartment.* ]]; then
-        name=$(oci iam compartment get --compartment-id "$ocid" --region "$region" --query 'data.name' --raw-output 2>/dev/null)
+        name=$(timeout 10 oci iam compartment get --compartment-id "$ocid" --region "$region" --query 'data.name' --raw-output 2>/dev/null)
         if [[ -n "$name" && "$name" != "null" && "$name" != "None" ]]; then
             RESOLVED_COMP_NAME_CACHE[$ocid]="$name"
             echo "$name"
             return
         fi
         # Fallback: try JSON+jq in case --query failed
-        name=$(oci iam compartment get --compartment-id "$ocid" --region "$region" --output json 2>/dev/null | jq -r '.data.name // empty' 2>/dev/null)
+        name=$(timeout 10 oci iam compartment get --compartment-id "$ocid" --region "$region" --output json 2>/dev/null | jq -r '.data.name // empty' 2>/dev/null)
         if [[ -n "$name" ]]; then
             RESOLVED_COMP_NAME_CACHE[$ocid]="$name"
             echo "$name"
             return
         fi
     fi
-    
+
     # Method 3: Try as tenancy (root compartment)
     if [[ "$ocid" == ocid1.tenancy.* ]]; then
-        name=$(oci iam tenancy get --tenancy-id "$ocid" --region "$region" --query 'data.name' --raw-output 2>/dev/null)
+        name=$(timeout 10 oci iam tenancy get --tenancy-id "$ocid" --region "$region" --query 'data.name' --raw-output 2>/dev/null)
         if [[ -n "$name" && "$name" != "null" && "$name" != "None" ]]; then
             RESOLVED_COMP_NAME_CACHE[$ocid]="$name"
             echo "$name"
             return
         fi
-        name=$(oci iam tenancy get --tenancy-id "$ocid" --region "$region" --output json 2>/dev/null | jq -r '.data.name // empty' 2>/dev/null)
+        name=$(timeout 10 oci iam tenancy get --tenancy-id "$ocid" --region "$region" --output json 2>/dev/null | jq -r '.data.name // empty' 2>/dev/null)
         if [[ -n "$name" ]]; then
             RESOLVED_COMP_NAME_CACHE[$ocid]="$name"
             echo "$name"
@@ -15542,7 +15542,7 @@ resolve_compartment_name() {
 
     # Method 4: If OCID prefix unknown or above failed, try both
     if [[ -z "$name" ]]; then
-        name=$(oci iam compartment get --compartment-id "$ocid" --region "$region" --query 'data.name' --raw-output 2>/dev/null)
+        name=$(timeout 10 oci iam compartment get --compartment-id "$ocid" --region "$region" --query 'data.name' --raw-output 2>/dev/null)
         if [[ -n "$name" && "$name" != "null" && "$name" != "None" ]]; then
             RESOLVED_COMP_NAME_CACHE[$ocid]="$name"
             echo "$name"
@@ -15550,7 +15550,7 @@ resolve_compartment_name() {
         fi
     fi
     if [[ -z "$name" ]]; then
-        name=$(oci iam tenancy get --tenancy-id "$ocid" --region "$region" --query 'data.name' --raw-output 2>/dev/null)
+        name=$(timeout 10 oci iam tenancy get --tenancy-id "$ocid" --region "$region" --query 'data.name' --raw-output 2>/dev/null)
         if [[ -n "$name" && "$name" != "null" && "$name" != "None" ]]; then
             RESOLVED_COMP_NAME_CACHE[$ocid]="$name"
             echo "$name"
