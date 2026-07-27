@@ -15346,11 +15346,12 @@ _warm_comp_tree() {
         fi
     fi
 
-    # Fetch from API if no valid cache
+    # Fetch from API if no valid cache (30s timeout — large tenancies with many compartments
+    # can be slow, but an indefinite hang blocks the main menu from appearing)
     if [[ -z "$comp_json" ]]; then
         local tenancy_id="${TENANCY_OCID:-${TENANCY_ID:-}}"
         [[ -z "$tenancy_id" ]] && return 1
-        comp_json=$(oci iam compartment list \
+        comp_json=$(timeout 30 oci iam compartment list \
             --compartment-id "$tenancy_id" \
             --compartment-id-in-subtree true \
             --all --region "$region" --output json 2>/dev/null)
