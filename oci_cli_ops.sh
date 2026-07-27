@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.79"
+readonly SCRIPT_VERSION="3.34.80"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -1760,8 +1760,9 @@ _detect_tool_versions() {
             _TOOL_OCI_AUTH_SOURCE="config"   # Explicitly set via env var
         # Check if running on OCI instance with instance principal working
         elif curl -sS -m 2 -H "Authorization: Bearer Oracle" --max-redirs 0 http://169.254.169.254/opc/v2/instance/ -o /dev/null 2>/dev/null; then
-            # IMDS available — test if instance principal auth works
-            if oci iam region list --auth instance_principal --output json &>/dev/null 2>&1; then
+            # IMDS available — test if instance principal auth works (10s timeout: hangs
+            # indefinitely when instance is not in a dynamic group or IAM is unreachable)
+            if timeout 10 oci iam region list --auth instance_principal --output json &>/dev/null 2>&1; then
                 _TOOL_OCI_AUTH="instance_principal"
                 _TOOL_OCI_AUTH_SOURCE="derived"  # Auto-detected via IMDS probe
             fi
@@ -1807,7 +1808,7 @@ _detect_tool_versions() {
         # ── Tenancy name (resolve OCID → display name) ──
         _TOOL_TENANCY_NAME=""
         if [[ -n "${TENANCY_ID:-}" ]]; then
-            _TOOL_TENANCY_NAME=$(oci iam tenancy get --tenancy-id "$TENANCY_ID" \
+            _TOOL_TENANCY_NAME=$(timeout 15 oci iam tenancy get --tenancy-id "$TENANCY_ID" \
                 --query 'data.name' --raw-output 2>/dev/null) || true
             [[ "$_TOOL_TENANCY_NAME" == "null" ]] && _TOOL_TENANCY_NAME=""
         fi
