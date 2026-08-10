@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.81"
+readonly SCRIPT_VERSION="3.34.82"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -78464,7 +78464,7 @@ run_initial_setup() {
 
         # Resolve names using default Cloud Shell auth (no --auth flag needed)
         _step_active "names"
-        setup_tenancy_name=$(oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
+        setup_tenancy_name=$(timeout 15 oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
             --query 'data.name' --raw-output 2>/dev/null)
         [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
         _step_complete "names"
@@ -78584,7 +78584,7 @@ run_initial_setup() {
     _step_init
     _step_active "regions"
     local regions_json
-    regions_json=$(oci iam region-subscription list \
+    regions_json=$(timeout 15 oci iam region-subscription list \
         --tenancy-id "$SETUP_TENANCY_ID" \
         ${_setup_auth} \
         --all --output json 2>/dev/null)
@@ -78624,7 +78624,7 @@ run_initial_setup() {
     _step_init
     _step_active "availability domains"
     local ads_json
-    ads_json=$(oci iam availability-domain list \
+    ads_json=$(timeout 15 oci iam availability-domain list \
         --compartment-id "$SETUP_COMPARTMENT_ID" \
         --region "$SETUP_REGION" \
         ${_setup_auth} \
@@ -78710,7 +78710,7 @@ run_initial_setup() {
         _step_init
         _step_active "compartments"
         local comps_json
-        comps_json=$(oci iam compartment list \
+        comps_json=$(timeout 30 oci iam compartment list \
             --compartment-id "$SETUP_TENANCY_ID" \
             ${_setup_auth} \
             --lifecycle-state ACTIVE \
@@ -78757,7 +78757,7 @@ run_initial_setup() {
     _step_active "OKE clusters"
     
     local clusters_json
-    clusters_json=$(oci ce cluster list \
+    clusters_json=$(timeout 20 oci ce cluster list \
         --compartment-id "$SETUP_COMPARTMENT_ID" \
         --region "$SETUP_REGION" \
         ${_setup_auth} \
