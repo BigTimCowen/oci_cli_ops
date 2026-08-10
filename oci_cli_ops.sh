@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.82"
+readonly SCRIPT_VERSION="3.34.83"
 readonly SCRIPT_VERSION_DATE="2026-06-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -78454,15 +78454,37 @@ run_initial_setup() {
         SETUP_REGION="${OCI_REGION:-}"
         SETUP_AD=""
 
+        # Show detected env vars immediately so the user can verify before any API calls
+        _step_complete "Cloud Shell"
+        _step_finish
+        echo ""
+        echo -e "${WHITE}OCI Cloud Shell environment detected:${NC}"
+        echo -e "  ${CYAN}OCI_TENANCY:${NC}          ${SETUP_TENANCY_ID:-${RED}NOT SET${NC}}"
+        echo -e "  ${CYAN}OCI_REGION:${NC}           ${SETUP_REGION:-${RED}NOT SET${NC}}"
+        echo -e "  ${CYAN}OCI_CS_TERMINAL_OCID:${NC} ${OCI_CS_TERMINAL_OCID:0:40}..."
+        echo -e "  ${CYAN}Auth mode:${NC}            delegation_token ${GRAY}(Cloud Shell managed)${NC}"
+        echo ""
+
         if [[ -z "$SETUP_TENANCY_ID" || -z "$SETUP_REGION" ]]; then
-            _step_complete "Cloud Shell(missing env vars)"
-            _step_finish
-            echo -e "${RED}ERROR: OCI Cloud Shell detected but OCI_TENANCY/OCI_REGION not set${NC}"
+            echo -e "${RED}ERROR: OCI_TENANCY or OCI_REGION not set — Cloud Shell session may not be fully initialized.${NC}"
+            echo -e "${YELLOW}Try closing and reopening Cloud Shell, then run setup again.${NC}"
             return 1
         fi
-        _step_complete "Cloud Shell"
 
-        # Resolve names using default Cloud Shell auth (no --auth flag needed)
+        # Test OCI CLI connectivity before proceeding
+        echo -ne "  Testing OCI CLI connectivity... "
+        if timeout 10 oci iam region list --output json &>/dev/null 2>&1; then
+            echo -e "${GREEN}✓${NC}"
+        else
+            echo -e "${RED}✗ FAILED${NC}"
+            echo -e "${YELLOW}OCI CLI cannot reach IAM. Check network or re-authenticate:${NC}"
+            echo -e "  ${GRAY}oci session authenticate${NC}"
+            return 1
+        fi
+        echo ""
+
+        # Resolve tenancy name
+        _step_init
         _step_active "names"
         setup_tenancy_name=$(timeout 15 oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
             --query 'data.name' --raw-output 2>/dev/null)
@@ -78470,16 +78492,15 @@ run_initial_setup() {
         _step_complete "names"
         _step_finish
 
-        # Display detected environment
-        echo ""
-        echo -e "${WHITE}OCI Cloud Shell detected:${NC}"
+        # Display resolved environment
+        echo -e "${WHITE}Resolved:${NC}"
         if [[ -n "$setup_tenancy_name" ]]; then
-            echo -e "  Tenancy:     ${CYAN}${setup_tenancy_name}${NC} ${GRAY}[${SETUP_TENANCY_ID}]${NC}"
+            echo -e "  ${CYAN}Tenancy:${NC}     ${GREEN}${setup_tenancy_name}${NC} ${GRAY}[${SETUP_TENANCY_ID}]${NC}"
         else
-            echo -e "  Tenancy:     ${CYAN}${SETUP_TENANCY_ID}${NC}"
+            echo -e "  ${CYAN}Tenancy:${NC}     ${CYAN}${SETUP_TENANCY_ID}${NC}"
         fi
-        echo -e "  Compartment: ${CYAN}${SETUP_COMPARTMENT_ID}${NC} ${GRAY}(root)${NC}"
-        echo -e "  Region:      ${CYAN}$SETUP_REGION${NC}"
+        echo -e "  ${CYAN}Compartment:${NC} ${CYAN}${SETUP_COMPARTMENT_ID}${NC} ${GRAY}(root)${NC}"
+        echo -e "  ${CYAN}Region:${NC}      ${CYAN}$SETUP_REGION${NC}"
     else
         # ── Try IMDS first (OCI compute instance), then fall back to API key auth ──
         local _setup_source=""   # tracks which auth path succeeded: "imds" or "api_key"
