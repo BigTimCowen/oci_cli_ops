@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.83"
-readonly SCRIPT_VERSION_DATE="2026-06-25"
+readonly SCRIPT_VERSION="3.34.84"
+readonly SCRIPT_VERSION_DATE="2026-07-25"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -78445,6 +78445,9 @@ run_initial_setup() {
     _step_init
     local setup_tenancy_name=""
     local setup_compartment_name=""
+    # Declared here so both Cloud Shell and IMDS paths can reference them after the if/else
+    local _setup_use_instance_principal="false"
+    local _setup_mode=""
 
     # ── Check for OCI Cloud Shell ──
     if [[ -n "${OCI_CS_TERMINAL_OCID:-}" ]]; then
@@ -78503,11 +78506,6 @@ run_initial_setup() {
         echo -e "  ${CYAN}Region:${NC}      ${CYAN}$SETUP_REGION${NC}"
     else
         # ── Try IMDS first (OCI compute instance), then fall back to API key auth ──
-        local _setup_source=""   # tracks which auth path succeeded: "imds" or "api_key"
-
-        local _setup_use_instance_principal="false"
-        local _setup_mode=""
-
         _step_active "IMDS"
         if ! is_oci_instance; then
             _step_complete "IMDS(unavailable)"
@@ -78952,6 +78950,7 @@ main() {
     
     # Source variables file
     local variables_found=false
+    local _setup_already_ran=false
     # Pre-validate variables.sh contains only safe content (variable assignments, comments, blanks)
     _validate_variables_file() {
         local _vf="$1"
@@ -78984,6 +78983,7 @@ main() {
             if run_initial_setup; then
                 # Re-source the newly created file
                 source "./variables.sh"
+                _setup_already_ran=true
             else
                 echo -e "${RED}Setup failed or cancelled. Exiting.${NC}"
                 exit 1
@@ -79002,6 +79002,7 @@ main() {
             if run_initial_setup; then
                 # Re-source the file
                 source "./variables.sh"
+                _setup_already_ran=true
             else
                 echo -e "${RED}Setup failed or cancelled.${NC}"
                 exit 1
@@ -79068,7 +79069,8 @@ main() {
             interactive_management_main_menu
             ;;
         --setup)
-            run_initial_setup
+            # Skip if setup already ran from the "variables not found" prompt above
+            [[ "$_setup_already_ran" == "false" ]] && run_initial_setup
             ;;
         --list-cliques)
             list_all_cliques
