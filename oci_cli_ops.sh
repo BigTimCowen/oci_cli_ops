@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.84"
-readonly SCRIPT_VERSION_DATE="2026-07-25"
+readonly SCRIPT_VERSION="3.34.85"
+readonly SCRIPT_VERSION_DATE="2026-08-11"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -78441,8 +78441,6 @@ setup_select_from_list() {
 run_initial_setup() {
     _ui_menu_header "INITIAL SETUP - CREATING VARIABLES.SH" --color "$BLUE"
     
-    # ── Discovery: Cloud Shell or IMDS + OCI CLI ──
-    _step_init
     local setup_tenancy_name=""
     local setup_compartment_name=""
     # Declared here so both Cloud Shell and IMDS paths can reference them after the if/else
@@ -78451,16 +78449,14 @@ run_initial_setup() {
 
     # ── Check for OCI Cloud Shell ──
     if [[ -n "${OCI_CS_TERMINAL_OCID:-}" ]]; then
-        _step_active "Cloud Shell"
+        # Cloud Shell path — no spinner needed (env-var reads are instant); prints
+        # go directly to the terminal so any hang is visible where it occurs.
         SETUP_TENANCY_ID="${OCI_TENANCY:-}"
         SETUP_COMPARTMENT_ID="${OCI_TENANCY:-}"   # root compartment = tenancy OCID
         SETUP_REGION="${OCI_REGION:-}"
         SETUP_AD=""
 
-        # Show detected env vars immediately so the user can verify before any API calls
-        _step_complete "Cloud Shell"
-        _step_finish
-        echo ""
+        print_separator $UI_WIDTH "$GRAY"
         echo -e "${WHITE}OCI Cloud Shell environment detected:${NC}"
         echo -e "  ${CYAN}OCI_TENANCY:${NC}          ${SETUP_TENANCY_ID:-${RED}NOT SET${NC}}"
         echo -e "  ${CYAN}OCI_REGION:${NC}           ${SETUP_REGION:-${RED}NOT SET${NC}}"
@@ -78475,7 +78471,7 @@ run_initial_setup() {
         fi
 
         # Test OCI CLI connectivity before proceeding
-        echo -ne "  Testing OCI CLI connectivity... "
+        echo -ne "  Testing OCI CLI connectivity (10s timeout)... "
         if timeout 10 oci iam region list --output json &>/dev/null 2>&1; then
             echo -e "${GREEN}✓${NC}"
         else
@@ -78484,16 +78480,18 @@ run_initial_setup() {
             echo -e "  ${GRAY}oci session authenticate${NC}"
             return 1
         fi
-        echo ""
 
-        # Resolve tenancy name
-        _step_init
-        _step_active "names"
+        # Resolve tenancy name (15s timeout) — inline status, no background spinner
+        echo -ne "  Resolving tenancy name (15s timeout)... "
         setup_tenancy_name=$(timeout 15 oci iam tenancy get --tenancy-id "$SETUP_TENANCY_ID" \
             --query 'data.name' --raw-output 2>/dev/null)
         [[ "$setup_tenancy_name" == "null" ]] && setup_tenancy_name=""
-        _step_complete "names"
-        _step_finish
+        if [[ -n "$setup_tenancy_name" ]]; then
+            echo -e "${GREEN}${setup_tenancy_name}${NC}"
+        else
+            echo -e "${GRAY}(not resolved)${NC}"
+        fi
+        echo ""
 
         # Display resolved environment
         echo -e "${WHITE}Resolved:${NC}"
@@ -78506,6 +78504,7 @@ run_initial_setup() {
         echo -e "  ${CYAN}Region:${NC}      ${CYAN}$SETUP_REGION${NC}"
     else
         # ── Try IMDS first (OCI compute instance), then fall back to API key auth ──
+        _step_init
         _step_active "IMDS"
         if ! is_oci_instance; then
             _step_complete "IMDS(unavailable)"
