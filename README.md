@@ -1,6 +1,6 @@
 **OCI CLI Operations** — Interactive management tool for Oracle Cloud Infrastructure, Kubernetes, and GPU infrastructure.
 
-**Version:** 3.34.1 | **Date:** 2026-04-14
+**Version:** 3.34.85 | **Date:** 2026-08-11
 
 ## Overview
 
@@ -31,9 +31,9 @@ Resource Manager Stacks (Terraform state!), Work Requests, Maintenance Events wi
 
 | Tool | Required | Notes |
 |------|----------|-------|
-| `oci` | Yes | OCI CLI (instance principal, API key, or cloud shell auth) |
-| `kubectl` | Yes | Configured kubeconfig with cluster access |
+| `oci` | Yes | OCI CLI (instance principal, API key, or Cloud Shell auth) |
 | `jq` | Yes | JSON processor |
+| `kubectl` | Optional | Required only for Kubernetes/OKE features (`k1`–`k3`, cordon/drain in `c1`). Script warns and continues without it |
 | `helm` | Optional | For GPU Operator / DRA stack inspection |
 | `curl` | Optional | For IMDS metadata queries during setup |
 | `base64` / `gunzip` | Optional | For user-data decoding |
@@ -158,7 +158,7 @@ Global nav: type `:c`, `:k1`, `:n2`, etc. from any prompt to jump.
 
 | Option | Function | Description |
 |--------|----------|-------------|
-| `k1` | OKE Cluster Environment | Cluster details, VCN, node pools, add-ons |
+| `k1` | OKE Cluster Environment | Cluster details, VCN, node pools, add-ons. **OSN Reachability check** — verifies the cluster endpoint subnet's route table has an Internet Gateway (public endpoint) or NAT Gateway (private endpoint), so the control plane can reach the Oracle Services Network |
 | `k2` | NVIDIA GPU Stack Health | GPU Operator and DRA component status per node |
 | `k3` | Kubernetes Management | Node diagnostics, RDMA, SSH keys, debug DaemonSet (12 sub-options) |
 
@@ -226,7 +226,7 @@ Actions: `#` (resource detail), `/` (search port in NSG/SL rules), `drg` (DRG co
 |--------|----------|-------------|
 | `o1` | Resource Manager Stacks | Stacks, jobs, logs, outputs, state files |
 | `o2` | Work Requests | Status, errors, and logs for async operations |
-| `o3` | Maintenance | Instance maintenance events, reschedule windows, filter by reason/lifecycle, parallel data fetch. `i` shortcut from event-detail jumps to instance details (matches `c1, i#`). `!` past-due / imminent marker on Window Start column. `FD` column (default off) toggleable via `col` |
+| `o3` | Maintenance | Instance maintenance events, reschedule windows, filter by reason/lifecycle, parallel data fetch. `i` shortcut from event-detail jumps to instance details (matches `c1, i#`). `!` past-due / imminent marker on Window Start column. `FD` column (default off) toggleable via `col`. **`Duration`** column (window-start → time-finished for completed events) and **`Cr.Age`** column (created → now) shown alongside Window Start. **`Last N Concluded Events`** section under the main table with a `Finished Age` column and instance display name; count is configurable via `config` submenu (`ev` sets 1–100, default 8; `ann` toggles announcement linking). Filter menu adds `gmc` (by GPU memory cluster) |
 | `o4` | Announcements | Announcements with affected resource details |
 | `o5` | Service Limits & Quotas | Limits, usage, availability, GPU capacity reports |
 | `o6` | Audit Logs | OCI audit events (API calls, changes, access) |
@@ -419,6 +419,7 @@ Focus can be saved to `variables.sh` via `env` → `s` (save). The current focus
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 3.34.85 | 2026-08-11 | **v3.34.60–85 highlights (Jun–Aug 2026):** **o3** split Age column into `Duration` (window→finish) and `Cr.Age` (created→now); renamed concluded `Age` to `Finished Age` and widened the column; added configurable `Last N Concluded Events` section (1–100, default 8) with instance display name, fault code, hard due date, pods, and `lc#` drill-down; new `config` submenu (`ev` for count, `ann` for announcement linking); `gmc` filter (by GPU memory cluster); parallel cache-driven concluded query; concluded events no longer leak into `active` filter table. **k1** new **OSN Reachability check** on the OKE cluster endpoint — verifies the endpoint subnet's route table has an Internet Gateway (public) or NAT Gateway (private) so the control plane can reach the Oracle Services Network. **Startup reliability** kubectl is now optional (warn-only, no more hard-fail); `timeout` guards added to every OCI API call in `--setup`, `_detect_tool_versions`, `_warm_comp_tree`, and `resolve_compartment_name` — prevents indefinite hangs when instance principal is missing, IAM is unreachable, or the compartment tree is slow. **Cloud Shell setup** env-var diagnostic + 10s connectivity probe before any API calls; explicit `OCI_TENANCY` / `OCI_REGION` / `OCI_CS_TERMINAL_OCID` display; removed decorative spinner from the instant Cloud Shell path (parent/child sync was hanging on some terminals); fixed unset-variable abort in Cloud Shell branch under `set -u`; guard against double-invocation when `--setup` is passed and `variables.sh` is missing. `--debug` flag now surfaces raw OCI CLI errors during setup for troubleshooting. |
 | 3.34.59 | 2026-06-09 | **v3.34.x series highlights (Apr–Jun 2026):** **c2** new `u` Instance Configuration Usage pivot with togglable A (IC-centric) / B (resource-centric) views — surfaces orphan ICs and which Pools/GMCs/CNs reference each IC. **c4** `np` Unprovisioned-Hosts view (EMPTY / OCI / ORPHAN tagging), `With OCI` column on fabric rows (UNAVAILABLE/INACTIVE/FAILED/PROVISIONING + no instance), per-cluster `[D: N]` / `[M: N]` badges + legend, per-HPC-island `[N: N]` available-nodes badge, firmware versions parsed from bundle description, `[↑ Update Avail: 1.3.4, 1.3.6]` inline version list, fabric+cluster OCID column toggle (off by default), GPU memory fabric summary fix when no resolved hosts, cluster-OCID column alignment + 1-col State drift fix, FD column on `o3` detail map. **c8** new `t` Topology page (per-pool tree with Cluster Network / HPC / NetBlks / LocBlks / `[D:]` / `[M:]` / Faults badges and aggregate footer), `t → s` By HPC Island pivot, `Instance Config` column on list view. **c9** Network Block ID + Local Block ID columns on detail instance table, new `d` Topology page mirroring c8 with `Pool: <name>  (IC: <name>)` line and `[D:]` / `[M:]` / `[N: N]` / Faults indicators, `d → s` By HPC Island pivot, per-CN topology aggregate (CNs with degraded/maint/faults, top fault codes). **c8 + c9** By-HPC-Island pivots gain `With OCI: N` per-island column and footer total. **c1** `i` jump-to-instance from `o3` event detail, skip kubectl when no kubeconfig configured (no more network-timeout stalls), FD column. **o3** `[Type - <name>]` prompt style on detail views, `!` past-due/imminent marker (ASCII for column-width safety), `⚠` legacy fix. **Reliability fixes:** add `--all` to 4 paginated list calls (DRG IPsec, route rules), kubectl `--request-timeout=5s` in `c1`, `_oci_throttle` on per-host detail fetch loops. |
 | 3.34.1 | 2026-04-14 | c1: Node Pool/OKE Cluster columns, BVR guard for nodepool instances, OKE Node Pool section in instance detail. c2: `cci` cloud-init YAML creator. c10: SN column, fault code filter (`f`), optimized impacted detail fetch. c11: host count per group. c12: event rule list/detail/delete. o3: parallel data fetch, filter by maintenance reason (`re`), wider instance name column. k3: option 12 debug DaemonSet. `env profile` for multi-profile OCI configs. macOS `grep -oP` → portable `grep -oE`/`sed`. Spinner wrap fix. Dynamic group matching rule fix. Policy hints for firmware bundles, compute clusters, GPU clusters. `k8s_run_command.sh` standalone script |
 | 3.33.1 | 2026-04-10 | c11 Host Groups (CRUD, attach/detach BM hosts, capacity pre-flight, BM.GPU shape picker). c12 Notifications (ONS topics, subscriptions, event rule list/detail/delete). c10 `notify` for event rules. macOS support (Bash 4 guard, `~/.oci/config` setup, IMDS skip on Darwin). OKE focus fix, BVR `--region`, env r persistence in menus, capacity topology AD filtering |
@@ -505,6 +506,25 @@ On macOS / laptop (no IMDS), setup falls back to `~/.oci/config`:
    0) Keep root compartment (tenancy)
   Select compartment [Enter to keep root]: 1
   ✓ Compartment: gpu-workloads
+```
+
+In OCI Cloud Shell (`OCI_CS_TERMINAL_OCID` is set), setup uses the managed delegation token and prints an inline diagnostic before any API call so hangs are visible:
+
+```
+  ────────────────────────────────────────────────────────────────────
+  OCI Cloud Shell environment detected:
+    OCI_TENANCY:          ocid1.tenancy.oc1..aaaa...
+    OCI_REGION:           us-ashburn-1
+    OCI_CS_TERMINAL_OCID: ocid1.cloudshellterminal.oc1.iad.aaaa...
+    Auth mode:            delegation_token (Cloud Shell managed)
+
+    Testing OCI CLI connectivity (10s timeout)... ✓
+    Resolving tenancy name (15s timeout)... naciegpu
+
+  Resolved:
+    Tenancy:     naciegpu [ocid1.tenancy.oc1..aaaa...]
+    Compartment: ocid1.tenancy.oc1..aaaa... (root)
+    Region:      us-ashburn-1
 ```
 
 ---
@@ -1031,12 +1051,20 @@ Fabric-attached compute hosts not in any GPU memory cluster — three case tags 
 ### Maintenance Events (`--manage o,3`)
 
 ```
-  #   Instance Name             K8s Node            Serial        State     K8s    Crdn  Taints  Pods  Maint Reason          Lifecycle   Event Name                 Window Start
-  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  1   gpu-worker-node-03        gpu-worker-03       SN-A1B2C3D4   RUNNING   Ready  false none      0   HARDWARE_FAILURE      SCHEDULED   LIVE_MIGRATION             2026-03-10T08:00:00
-  2   gpu-worker-node-07        gpu-worker-07       SN-X7Y8Z9A0   RUNNING   Ready  true  maint     7   PLANNED_MAINTENANCE   SUCCEEDED   REBOOT_MIGRATION           2026-02-15T12:00:00
-  3   gpu-worker-node-12        gpu-worker-12       SN-D5E6F7G8   RUNNING   Ready  false none     14   HARDWARE_FAILURE      SCHEDULED   LIVE_MIGRATION             2026-03-12T06:00:00
-  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  #   Instance Name             K8s Node            Serial        State     K8s    Crdn  Taints  Pods  Maint Reason          Lifecycle   Event Name                 Window Start          Time Finished         Duration    Cr.Age
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1   gpu-worker-node-03        gpu-worker-03       SN-A1B2C3D4   RUNNING   Ready  false none      0   HARDWARE_FAILURE      SCHEDULED   LIVE_MIGRATION             2026-08-15T08:00:00   -                     -           3d old
+  2   gpu-worker-node-07        gpu-worker-07       SN-X7Y8Z9A0   RUNNING   Ready  true  maint     7   PLANNED_MAINTENANCE   SUCCEEDED   REBOOT_MIGRATION           2026-08-05T12:00:00   2026-08-05T12:47:00   47m         12d old
+  3   gpu-worker-node-12        gpu-worker-12       SN-D5E6F7G8   RUNNING   Ready  false none     14   HARDWARE_FAILURE      SCHEDULED   LIVE_MIGRATION             2026-08-14T06:00:00   -                     -           1d old
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ◆ Last 8 Concluded Events
+  #    Instance Name           Fault Code                Reason               Lifecycle    Event Name             Time Finished         Finished Age
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  lc1  gpu-worker-node-07      HPCRDMA-0002-02           PLANNED_MAINTENANCE  SUCCEEDED    REBOOT_MIGRATION       2026-08-05T12:47:00   6d ago
+  lc2  gpu-worker-node-22      SMARTNIC-8000-17          HARDWARE_FAILURE     SUCCEEDED    REBOOT_MIGRATION       2026-08-04T09:12:00   7d ago
+  lc3  gpu-worker-node-31      HPCRDMA-0002-02           PLANNED_MAINTENANCE  CANCELED     LIVE_MIGRATION         2026-08-02T14:00:00   9d ago
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
   ◆ Summary
 
@@ -1092,8 +1120,8 @@ Fabric-attached compute hosts not in any GPU memory cluster — three case tags 
   --------- ---------------- -------------------- ------ ------- ------- ------- -------
                              Total                    29      25       4       0       0  4 fabric(s)
 
-  m# event detail  h# host detail  m#,r reschedule  view toggle  col columns  r refresh
-  [Maintenance Events] m#, h#, view, col, r, q >
+  m# event detail  h# host detail  m#,r reschedule  lc# concluded detail  view toggle  col columns  filter  config (ann/ev)  r refresh
+  [Maintenance Events] e#, m#, re #, f, view, col, r, b, show >
 ```
 
 ---
