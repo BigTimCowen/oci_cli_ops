@@ -450,7 +450,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.95"
+readonly SCRIPT_VERSION="3.34.96"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -61921,9 +61921,11 @@ _attach_compute_host_to_group() {
         return
     fi
 
-    # Filter to hosts without a group (field 13 == "N/A")
+    # Filter to hosts without a group (field 13), then sort by topology so hosts
+    # cluster: HPC Island(10) → Network Block(11) → Local Block(12) → State(2).
     local _avail_hosts
-    _avail_hosts=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' '$13 == "N/A" || $13 == ""')
+    _avail_hosts=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' '$13 == "N/A" || $13 == ""' \
+        | sort -t'|' -k10,10 -k11,11 -k12,12 -k2,2)
     local _avail_count=0
     [[ -n "$_avail_hosts" ]] && _avail_count=$(echo "$_avail_hosts" | grep -c .)
 
@@ -61936,13 +61938,13 @@ _attach_compute_host_to_group() {
 
     echo -e "  ${WHITE}Bare metal hosts without a group assignment:${NC}"
     echo ""
-    printf "  ${GRAY}%-4s %-40s %-15s %-12s %-10s %s${NC}\n" "#" "Display Name" "Shape" "State" "Health" "Bare Metal Host OCID"
-    echo -e "  ${GRAY}$(printf '─%.0s' {1..170})${NC}"
+    printf "  ${GRAY}%-4s %-40s %-15s %-8s %-8s %-8s %-12s %-10s %s${NC}\n" "#" "Display Name" "Shape" "HPC" "NetBlk" "LocalBlk" "State" "Health" "Bare Metal Host OCID"
+    echo -e "  ${GRAY}$(printf '─%.0s' {1..210})${NC}"
 
     declare -A _ATT_MAP=()
     declare -A _ATT_BY_OCID=()
     local _ai=0
-    while IFS='|' read -r _an _as _ah _ashape _ap _aad _afd _ainst _aocid _rest; do
+    while IFS='|' read -r _an _as _ah _ashape _ap _aad _afd _ainst _aocid _ahpc _anb _alb _rest; do
         [[ -z "$_an" ]] && continue
         ((_ai++))
         _ATT_MAP[$_ai]="${_aocid}|${_an}|${_ashape}|${_as}|${_ah}"
@@ -61953,14 +61955,21 @@ _attach_compute_host_to_group() {
         local _ahc="$GREEN"
         case "$_ah" in DEGRADED|IMPAIRED) _ahc="$YELLOW" ;; UNHEALTHY|FAILED) _ahc="$RED" ;; esac
 
+        # Topology short-ids (last 5 chars of each block OCID) for grouping; "-" if unset.
+        # Last-5 matches the script's existing Last5Chars convention (GPU fabric caches).
+        local _hpc_s="-" _nb_s="-" _lb_s="-"
+        [[ -n "$_ahpc" && "$_ahpc" != "N/A" ]] && _hpc_s="${_ahpc: -5}"
+        [[ -n "$_anb"  && "$_anb"  != "N/A" ]] && _nb_s="${_anb: -5}"
+        [[ -n "$_alb"  && "$_alb"  != "N/A" ]] && _lb_s="${_alb: -5}"
+
         # Zebra striping (Excel "format as table"): shade even rows. ${_zb} re-asserts
         # the background after each color (the palette's "0;NN" codes are full resets
         # that clear bg); ${_zr} resets fg but keeps bg between columns; the OCID is
         # padded so the band reaches a consistent right edge. Empty on odd rows.
         local _zb="" _zr="$NC"
         (( _ai % 2 == 0 )) && { _zb="$ZEBRA_BG"; _zr="$ZEBRA_FGR"; }
-        printf "${_zb}  ${YELLOW}${_zb}%-4s${_zr} ${WHITE}${_zb}%-40s${_zr} ${CYAN}${_zb}%-15s${_zr} ${_asc}${_zb}%-12s${_zr} ${_ahc}${_zb}%-10s${_zr} ${YELLOW}${_zb}%-95s${NC}\n" \
-            "$_ai" "$_an" "$_ashape" "$_as" "$_ah" "$_aocid"
+        printf "${_zb}  ${YELLOW}${_zb}%-4s${_zr} ${WHITE}${_zb}%-40s${_zr} ${CYAN}${_zb}%-15s${_zr} ${MAGENTA}${_zb}%-8s${_zr} ${BLUE}${_zb}%-8s${_zr} ${CYAN}${_zb}%-8s${_zr} ${_asc}${_zb}%-12s${_zr} ${_ahc}${_zb}%-10s${_zr} ${YELLOW}${_zb}%-95s${NC}\n" \
+            "$_ai" "$_an" "$_ashape" "$_hpc_s" "$_nb_s" "$_lb_s" "$_as" "$_ah" "$_aocid"
     done <<< "$_avail_hosts"
 
     echo ""
