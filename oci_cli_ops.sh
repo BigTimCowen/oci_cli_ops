@@ -450,7 +450,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.96"
+readonly SCRIPT_VERSION="3.34.97"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -61466,7 +61466,8 @@ _view_compute_host_group_details() {
         local _attached_hosts=""
         local _attached_count=0
         if [[ -f "$COMPUTE_HOST_CACHE" ]]; then
-            _attached_hosts=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v gid="$hg_id" '$13 == gid')
+            _attached_hosts=$(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' -v gid="$hg_id" '$13 == gid' \
+                | sort -t'|' -k10,10 -k11,11 -k12,12 -k2,2)
             [[ -n "$_attached_hosts" ]] && _attached_count=$(echo "$_attached_hosts" | grep -c .)
         fi
 
@@ -61475,8 +61476,8 @@ _view_compute_host_group_details() {
 
         declare -a _ATT_HOST_LIST=()
         if [[ "$_attached_count" -gt 0 ]]; then
-            printf "  ${GRAY}%-4s %-40s %-15s %-12s %-16s %-10s %s${NC}\n" "#" "Display Name" "Shape" "State" "Recycle Level" "Health" "Bare Metal Host OCID"
-            echo -e "  ${GRAY}$(printf '─%.0s' {1..187})${NC}"
+            printf "  ${GRAY}%-4s %-40s %-15s %-8s %-8s %-8s %-12s %-16s %-10s %s${NC}\n" "#" "Display Name" "Shape" "HPC" "NetBlk" "LocalBlk" "State" "Recycle Level" "Health" "Bare Metal Host OCID"
+            echo -e "  ${GRAY}$(printf '─%.0s' {1..214})${NC}"
 
             local _ai=0
             while IFS='|' read -r _an _as _ah _ashape _aplatform _aad _afd _ainst _aocid _rest; do
@@ -61504,8 +61505,14 @@ _view_compute_host_group_details() {
                 local _arl="${_rf[10]:-N/A}"
                 [[ -z "$_arl" || "$_arl" == "N/A" || "$_arl" == "null" ]] && _arl="${_HG_RECYCLE_BY_TARGET[$_ashape]:-N/A}"
 
-                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${_asc}%-12s${NC} ${CYAN}%-16.16s${NC} ${_ahc}%-10s${NC} ${YELLOW}%s${NC}\n" \
-                    "$_ai" "$_an" "$_ashape" "$_as" "$_arl" "$_ah" "$_aocid"
+                # Topology short-ids (last 5) from cache fields 10/11/12 = _rf[0..2]
+                local _hpc_s="-" _nb_s="-" _lb_s="-"
+                [[ -n "${_rf[0]:-}" && "${_rf[0]}" != "N/A" ]] && _hpc_s="${_rf[0]: -5}"
+                [[ -n "${_rf[1]:-}" && "${_rf[1]}" != "N/A" ]] && _nb_s="${_rf[1]: -5}"
+                [[ -n "${_rf[2]:-}" && "${_rf[2]}" != "N/A" ]] && _lb_s="${_rf[2]: -5}"
+
+                printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${MAGENTA}%-8s${NC} ${BLUE}%-8s${NC} ${CYAN}%-8s${NC} ${_asc}%-12s${NC} ${CYAN}%-16.16s${NC} ${_ahc}%-10s${NC} ${YELLOW}%s${NC}\n" \
+                    "$_ai" "$_an" "$_ashape" "$_hpc_s" "$_nb_s" "$_lb_s" "$_as" "$_arl" "$_ah" "$_aocid"
             done <<< "$_attached_hosts"
         else
             echo -e "  ${GRAY}(No bare metal hosts attached to this group)${NC}"
