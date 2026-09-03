@@ -450,7 +450,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.92"
+readonly SCRIPT_VERSION="3.34.93"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -33169,6 +33169,15 @@ _col_print_row() {
     shift $_ncols
     local -a _row_colors=("" "$@")  # 1-indexed: _row_colors[1]=@1, [2]=@2, ...
 
+    # Zebra striping (opt-in): when _COL_ZEBRA matches this view, shade even rows.
+    # Even rows use ZEBRA_FGR between columns (resets fg, keeps bg) and wrap the
+    # whole row in ZEBRA_BG…NC. Columns are fixed-width, so the band spans the row.
+    local _row_reset="$NC" _z_on=0
+    if [[ -n "${_COL_ZEBRA:-}" && "$_pfx" == "$_COL_ZEBRA" ]]; then
+        _COL_ZEBRA_ROW=$(( ${_COL_ZEBRA_ROW:-0} + 1 ))
+        (( _COL_ZEBRA_ROW % 2 == 0 )) && { _z_on=1; _row_reset="$ZEBRA_FGR"; }
+    fi
+
     local _fmt_str="" _first=true
     local -a _args=()
     for _idx in "${_pr_indices[@]}"; do
@@ -33176,14 +33185,15 @@ _col_print_row() {
         local _clr="${_pr_colors[$_idx]}"
         if [[ "$_clr" == @* ]]; then
             local _ci="${_clr#@}"
-            _fmt_str+="${_row_colors[$_ci]}${_pr_fmts[$_idx]}${NC}"
+            _fmt_str+="${_row_colors[$_ci]}${_pr_fmts[$_idx]}${_row_reset}"
         elif [[ -n "$_clr" ]]; then
-            _fmt_str+="${!_clr}${_pr_fmts[$_idx]}${NC}"
+            _fmt_str+="${!_clr}${_pr_fmts[$_idx]}${_row_reset}"
         else
             _fmt_str+="${_pr_fmts[$_idx]}"
         fi
         _args+=("${_vals[$_idx]}")
     done
+    (( _z_on )) && _fmt_str="${ZEBRA_BG}${_fmt_str}${NC}"
     if [[ -n "${_COL_ROW_SUFFIX:-}" ]]; then
         printf "${_fmt_str}" "${_args[@]}"
         printf "  %b\n" "$_COL_ROW_SUFFIX"
@@ -35039,6 +35049,9 @@ manage_compute_instances() {
         printf "${BOLD}${_INST_HDR_FMT}${NC}\n" "${_INST_HDR_ARGS[@]}"
         print_separator $_INST_SEP_WIDTH
 
+        # Enable Excel-style zebra striping for this render; parity counter starts at 0
+        _COL_ZEBRA="INST"; _COL_ZEBRA_ROW=0
+
         # Sort by time-created (ascending - oldest first, newest last)
         # Uses process substitution (not pipeline) so the while loop runs in the main
         # shell — this lets us populate INSTANCE_INDEX_MAP directly and avoids the
@@ -35178,7 +35191,8 @@ manage_compute_instances() {
             select(.["lifecycle-state"] != "TERMINATED") |
             "\(.["time-created"] // "N/A")|\(.["display-name"])|\(.["lifecycle-state"])|\(.shape)|\(.["availability-domain"])|\(.["fault-domain"] // "N/A")|\(.id)|\(.["system-tags"]["orcl-containerengine"]["NodePool"] // "")|\(.["system-tags"]["orcl-containerengine"]["Cluster"] // "")"
         ' <<< "$instances_json" 2>/dev/null | sort -t'|' -k1,1)
-        
+        _COL_ZEBRA=""   # disable striping after the instance render
+
         local total_instances=${#INSTANCE_INDEX_MAP[@]}
         echo ""
         echo -e "${GRAY}Total: ${total_instances} instances (excluding TERMINATED)${NC}"
