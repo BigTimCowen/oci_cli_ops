@@ -418,6 +418,8 @@ readonly ORANGE='\033[38;5;208m'
 readonly BOLD='\033[1m'
 readonly DIM='\033[2m'           # Dim/faint text
 readonly NC='\033[0m'            # No Color / Reset
+readonly ZEBRA_BG='\033[48;5;236m'  # Subtle dark-gray row background (Excel-style table striping)
+readonly ZEBRA_FGR='\033[22;39m'    # Reset foreground+intensity, KEEP background (use between columns in striped rows)
 readonly CLEAR_LINE='\033[2K\r'  # Clear entire line + carriage return (for spinners/progress)
 readonly CLEAR_EOL='\033[K'      # Clear from cursor to end of line (for spinner cleanup)
 
@@ -448,7 +450,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.91"
+readonly SCRIPT_VERSION="3.34.92"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -61930,7 +61932,12 @@ _attach_compute_host_to_group() {
         local _ahc="$GREEN"
         case "$_ah" in DEGRADED|IMPAIRED) _ahc="$YELLOW" ;; UNHEALTHY|FAILED) _ahc="$RED" ;; esac
 
-        printf "  ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${_asc}%-12s${NC} ${_ahc}%-10s${NC} ${YELLOW}%s${NC}\n" \
+        # Zebra striping (Excel "format as table"): shade even rows. On shaded rows
+        # ${_zr} resets fg but keeps the background so the stripe spans all columns;
+        # the OCID is padded so the band reaches a consistent right edge.
+        local _zb="" _zr="$NC"
+        (( _ai % 2 == 0 )) && { _zb="$ZEBRA_BG"; _zr="$ZEBRA_FGR"; }
+        printf "${_zb}  ${YELLOW}%-4s${_zr} ${WHITE}%-40s${_zr} ${CYAN}%-15s${_zr} ${_asc}%-12s${_zr} ${_ahc}%-10s${_zr} ${YELLOW}%-95s${NC}\n" \
             "$_ai" "$_an" "$_ashape" "$_as" "$_ah" "$_aocid"
     done <<< "$_avail_hosts"
 
