@@ -450,7 +450,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.93"
+readonly SCRIPT_VERSION="3.34.94"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -33172,24 +33172,28 @@ _col_print_row() {
     # Zebra striping (opt-in): when _COL_ZEBRA matches this view, shade even rows.
     # Even rows use ZEBRA_FGR between columns (resets fg, keeps bg) and wrap the
     # whole row in ZEBRA_BG…NC. Columns are fixed-width, so the band spans the row.
-    local _row_reset="$NC" _z_on=0
+    # Zebra striping: on even rows, ${_zbg} re-asserts the row background after each
+    # column's color (the palette's "0;NN" codes are full SGR resets that clear bg)
+    # and after each separator, so the band spans the whole row; ${_row_reset} between
+    # columns resets fg but keeps bg. Empty when striping is off → byte-identical.
+    local _row_reset="$NC" _z_on=0 _zbg=""
     if [[ -n "${_COL_ZEBRA:-}" && "$_pfx" == "$_COL_ZEBRA" ]]; then
         _COL_ZEBRA_ROW=$(( ${_COL_ZEBRA_ROW:-0} + 1 ))
-        (( _COL_ZEBRA_ROW % 2 == 0 )) && { _z_on=1; _row_reset="$ZEBRA_FGR"; }
+        (( _COL_ZEBRA_ROW % 2 == 0 )) && { _z_on=1; _row_reset="$ZEBRA_FGR"; _zbg="$ZEBRA_BG"; }
     fi
 
     local _fmt_str="" _first=true
     local -a _args=()
     for _idx in "${_pr_indices[@]}"; do
-        [[ "$_first" == "true" ]] && _first=false || _fmt_str+=" "
+        [[ "$_first" == "true" ]] && _first=false || _fmt_str+="${_zbg} "
         local _clr="${_pr_colors[$_idx]}"
         if [[ "$_clr" == @* ]]; then
             local _ci="${_clr#@}"
-            _fmt_str+="${_row_colors[$_ci]}${_pr_fmts[$_idx]}${_row_reset}"
+            _fmt_str+="${_row_colors[$_ci]}${_zbg}${_pr_fmts[$_idx]}${_row_reset}"
         elif [[ -n "$_clr" ]]; then
-            _fmt_str+="${!_clr}${_pr_fmts[$_idx]}${_row_reset}"
+            _fmt_str+="${!_clr}${_zbg}${_pr_fmts[$_idx]}${_row_reset}"
         else
-            _fmt_str+="${_pr_fmts[$_idx]}"
+            _fmt_str+="${_zbg}${_pr_fmts[$_idx]}"
         fi
         _args+=("${_vals[$_idx]}")
     done
@@ -61946,12 +61950,13 @@ _attach_compute_host_to_group() {
         local _ahc="$GREEN"
         case "$_ah" in DEGRADED|IMPAIRED) _ahc="$YELLOW" ;; UNHEALTHY|FAILED) _ahc="$RED" ;; esac
 
-        # Zebra striping (Excel "format as table"): shade even rows. On shaded rows
-        # ${_zr} resets fg but keeps the background so the stripe spans all columns;
-        # the OCID is padded so the band reaches a consistent right edge.
+        # Zebra striping (Excel "format as table"): shade even rows. ${_zb} re-asserts
+        # the background after each color (the palette's "0;NN" codes are full resets
+        # that clear bg); ${_zr} resets fg but keeps bg between columns; the OCID is
+        # padded so the band reaches a consistent right edge. Empty on odd rows.
         local _zb="" _zr="$NC"
         (( _ai % 2 == 0 )) && { _zb="$ZEBRA_BG"; _zr="$ZEBRA_FGR"; }
-        printf "${_zb}  ${YELLOW}%-4s${_zr} ${WHITE}%-40s${_zr} ${CYAN}%-15s${_zr} ${_asc}%-12s${_zr} ${_ahc}%-10s${_zr} ${YELLOW}%-95s${NC}\n" \
+        printf "${_zb}  ${YELLOW}${_zb}%-4s${_zr} ${WHITE}${_zb}%-40s${_zr} ${CYAN}${_zb}%-15s${_zr} ${_asc}${_zb}%-12s${_zr} ${_ahc}${_zb}%-10s${_zr} ${YELLOW}${_zb}%-95s${NC}\n" \
             "$_ai" "$_an" "$_ashape" "$_as" "$_ah" "$_aocid"
     done <<< "$_avail_hosts"
 
