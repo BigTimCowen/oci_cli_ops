@@ -450,7 +450,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.94"
+readonly SCRIPT_VERSION="3.34.95"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -60392,8 +60392,11 @@ manage_compute_hosts() {
                         fi
 
                         # Fixed-width state/health for column alignment
+                        # State padded to 12 (longest state = PROVISIONING); health to 9
+                        # (longest = UNHEALTHY) so [State] [Health] [OCID] stay aligned
+                        # across rows regardless of value length.
                         local _hs_p _hh_p
-                        printf -v _hs_p '%-9s' "$_hs"
+                        printf -v _hs_p '%-12s' "$_hs"
                         printf -v _hh_p '%-9s' "$_hh"
                         echo -e "  ${ch_hpc_pipe}   ${ch_nb_pipe}   ${ch_lb_pipe}   ${_hconn}── ${CYAN}${_hshape_p}${NC}[${_hsc}${_hs_p}${NC}] [${_hhc}${_hh_p}${NC}]${_hocid_d}${_hinst_flag}${_himpact_flag}"
                     done < <(echo "$ch_lb_hosts" | sort -t'|' -k4,4 -k2,2)
