@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.88"
+readonly SCRIPT_VERSION="3.34.89"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -61996,7 +61996,10 @@ _attach_compute_host_to_group() {
     echo -e "  ${GRAY}oci compute compute-host attach --compute-host-id <HOST_OCID> --compute-host-group-id \"${hg_id}\" --region \"${region}\"${NC}"
     echo ""
 
-    if ! _ui_confirm "ATTACH" "confirm attaching ${_sel_total} host(s), or anything else to cancel" "$CYAN"; then
+    echo -n -e "  ${CYAN}Attach ${_sel_total} host(s)? (Y/n): ${NC}"
+    local _att_go
+    read -r _att_go
+    if [[ "${_att_go,,}" == "n" || "${_att_go,,}" == "no" ]]; then
         echo -e "  ${YELLOW}Cancelled.${NC}"
         return
     fi
