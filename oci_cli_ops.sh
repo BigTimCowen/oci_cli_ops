@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.87"
+readonly SCRIPT_VERSION="3.34.88"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -61863,7 +61863,10 @@ _delete_compute_host_groups() {
 
 #--------------------------------------------------------------------------------
 # Attach Bare Metal Host(s) to Host Group
-# Multi-select via _parse_targets: single (5), list (1,3), range (30-40), or all.
+# Two input modes at the selection prompt:
+#   • Index — _parse_targets: single (5), list (1,3), range (30-40), or all.
+#   • OCID  — paste one or more bare-metal-host OCIDs (comma/space separated);
+#             need not appear in the unattached list (resolved from cache when known).
 # Previews all selected hosts, confirms once, then attaches each sequentially
 # with per-host command display + action logging.
 #--------------------------------------------------------------------------------
@@ -61914,11 +61917,13 @@ _attach_compute_host_to_group() {
     echo -e "  ${GRAY}$(printf '─%.0s' {1..170})${NC}"
 
     declare -A _ATT_MAP=()
+    declare -A _ATT_BY_OCID=()
     local _ai=0
     while IFS='|' read -r _an _as _ah _ashape _ap _aad _afd _ainst _aocid _rest; do
         [[ -z "$_an" ]] && continue
         ((_ai++))
         _ATT_MAP[$_ai]="${_aocid}|${_an}|${_ashape}"
+        _ATT_BY_OCID[$_aocid]="${_an}|${_ashape}"
 
         local _asc="$GREEN"
         case "$_as" in AVAILABLE) _asc="$CYAN" ;; INACTIVE) _asc="$YELLOW" ;; esac
@@ -61930,27 +61935,52 @@ _attach_compute_host_to_group() {
     done <<< "$_avail_hosts"
 
     echo ""
-    echo -e "  ${GRAY}Select one or more — e.g. ${WHITE}5${GRAY}, ${WHITE}1,3${GRAY}, ${WHITE}30-40${GRAY}, ${WHITE}1-3,5,20${GRAY}, or ${WHITE}all${NC}"
+    echo -e "  ${GRAY}Select from the list — e.g. ${WHITE}5${GRAY}, ${WHITE}1,3${GRAY}, ${WHITE}30-40${GRAY}, ${WHITE}1-3,5,20${GRAY}, or ${WHITE}all${NC}"
+    echo -e "  ${GRAY}…or paste bare metal host OCID(s), comma/space separated (need not be in the list)${NC}"
     echo -n -e "  ${CYAN}Select host(s) to attach: ${NC}"
     local _att_choice
     read -r _att_choice
 
-    # Multi-select via standard _parse_targets (bare numeric keys → empty prefix).
-    # Sets _SEL_INDICES; supports single, comma-list, range, and all.
-    if ! _parse_targets "" "$_att_choice" "_ATT_MAP"; then
-        echo -e "  ${RED}No valid selection — cancelled${NC}"
-        return
+    # Snapshot selected host attributes before any execution (name/shape resolved
+    # from cache where known; "-" when a pasted OCID isn't in the unattached list).
+    local -a _sel_ocids=() _sel_names=() _sel_shapes=()
+    local _o _n _s
+
+    if [[ "$_att_choice" == *ocid1.computebaremetalhost.* ]]; then
+        # ── OCID mode: extract every bare-metal-host OCID from the input ──
+        local -a _ocid_toks=()
+        while read -r _o; do
+            [[ -n "$_o" ]] && _ocid_toks+=("$_o")
+        done < <(grep -oE 'ocid1\.computebaremetalhost\.[a-z0-9._-]+' <<< "$_att_choice" | awk '!seen[$0]++')
+
+        if [[ ${#_ocid_toks[@]} -eq 0 ]]; then
+            echo -e "  ${RED}No valid bare metal host OCIDs found — cancelled${NC}"
+            return
+        fi
+        for _o in "${_ocid_toks[@]}"; do
+            local _meta="${_ATT_BY_OCID[$_o]:-}"
+            if [[ -n "$_meta" ]]; then
+                IFS='|' read -r _n _s <<< "$_meta"
+            else
+                _n="(not in unattached list)"; _s="-"
+            fi
+            _sel_ocids+=("$_o"); _sel_names+=("$_n"); _sel_shapes+=("$_s")
+        done
+    else
+        # ── Index mode: standard _parse_targets (bare numeric keys → empty prefix) ──
+        # Sets _SEL_INDICES; supports single, comma-list, range, and all.
+        if ! _parse_targets "" "$_att_choice" "_ATT_MAP"; then
+            echo -e "  ${RED}No valid selection — cancelled${NC}"
+            return
+        fi
+        local _si
+        for _si in "${_SEL_INDICES[@]}"; do
+            IFS='|' read -r _o _n _s <<< "${_ATT_MAP[$_si]}"
+            _sel_ocids+=("$_o"); _sel_names+=("$_n"); _sel_shapes+=("$_s")
+        done
     fi
 
-    local _sel_total=${#_SEL_INDICES[@]}
-
-    # Snapshot selected host attributes before any execution (indices → OCID/name/shape)
-    local -a _sel_ocids=() _sel_names=() _sel_shapes=()
-    local _si _o _n _s
-    for _si in "${_SEL_INDICES[@]}"; do
-        IFS='|' read -r _o _n _s <<< "${_ATT_MAP[$_si]}"
-        _sel_ocids+=("$_o"); _sel_names+=("$_n"); _sel_shapes+=("$_s")
-    done
+    local _sel_total=${#_sel_ocids[@]}
 
     # ── Preview every host that will be attached ──
     echo ""
@@ -61959,7 +61989,7 @@ _attach_compute_host_to_group() {
     local _pi
     for ((_pi=0; _pi<_sel_total; _pi++)); do
         printf "    ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${GRAY}%s${NC}\n" \
-            "${_SEL_INDICES[$_pi]}" "${_sel_names[$_pi]}" "${_sel_shapes[$_pi]}" "${_sel_ocids[$_pi]}"
+            "$((_pi + 1))" "${_sel_names[$_pi]}" "${_sel_shapes[$_pi]}" "${_sel_ocids[$_pi]}"
     done
     echo ""
     echo -e "  ${WHITE}Command (executed per host):${NC}"
