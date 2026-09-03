@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.89"
+readonly SCRIPT_VERSION="3.34.90"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -61922,8 +61922,8 @@ _attach_compute_host_to_group() {
     while IFS='|' read -r _an _as _ah _ashape _ap _aad _afd _ainst _aocid _rest; do
         [[ -z "$_an" ]] && continue
         ((_ai++))
-        _ATT_MAP[$_ai]="${_aocid}|${_an}|${_ashape}"
-        _ATT_BY_OCID[$_aocid]="${_an}|${_ashape}"
+        _ATT_MAP[$_ai]="${_aocid}|${_an}|${_ashape}|${_as}|${_ah}"
+        _ATT_BY_OCID[$_aocid]="${_an}|${_ashape}|${_as}|${_ah}"
 
         local _asc="$GREEN"
         case "$_as" in AVAILABLE) _asc="$CYAN" ;; INACTIVE) _asc="$YELLOW" ;; esac
@@ -61941,10 +61941,10 @@ _attach_compute_host_to_group() {
     local _att_choice
     read -r _att_choice
 
-    # Snapshot selected host attributes before any execution (name/shape resolved
-    # from cache where known; "-" when a pasted OCID isn't in the unattached list).
-    local -a _sel_ocids=() _sel_names=() _sel_shapes=()
-    local _o _n _s
+    # Snapshot selected host attributes before any execution (name/shape/state/health
+    # resolved from cache where known; "-" when a pasted OCID isn't in the unattached list).
+    local -a _sel_ocids=() _sel_names=() _sel_shapes=() _sel_states=() _sel_healths=()
+    local _o _n _s _st _he
 
     if [[ "$_att_choice" == *ocid1.computebaremetalhost.* ]]; then
         # ── OCID mode: extract every bare-metal-host OCID from the input ──
@@ -61960,11 +61960,12 @@ _attach_compute_host_to_group() {
         for _o in "${_ocid_toks[@]}"; do
             local _meta="${_ATT_BY_OCID[$_o]:-}"
             if [[ -n "$_meta" ]]; then
-                IFS='|' read -r _n _s <<< "$_meta"
+                IFS='|' read -r _n _s _st _he <<< "$_meta"
             else
-                _n="(not in unattached list)"; _s="-"
+                _n="(not in unattached list)"; _s="-"; _st="?"; _he="?"
             fi
             _sel_ocids+=("$_o"); _sel_names+=("$_n"); _sel_shapes+=("$_s")
+            _sel_states+=("$_st"); _sel_healths+=("$_he")
         done
     else
         # ── Index mode: standard _parse_targets (bare numeric keys → empty prefix) ──
@@ -61975,8 +61976,9 @@ _attach_compute_host_to_group() {
         fi
         local _si
         for _si in "${_SEL_INDICES[@]}"; do
-            IFS='|' read -r _o _n _s <<< "${_ATT_MAP[$_si]}"
+            IFS='|' read -r _o _n _s _st _he <<< "${_ATT_MAP[$_si]}"
             _sel_ocids+=("$_o"); _sel_names+=("$_n"); _sel_shapes+=("$_s")
+            _sel_states+=("$_st"); _sel_healths+=("$_he")
         done
     fi
 
@@ -61986,12 +61988,22 @@ _attach_compute_host_to_group() {
     echo ""
     echo -e "  ${WHITE}The following ${YELLOW}${_sel_total}${WHITE} host(s) will be attached to ${CYAN}${hg_name}${WHITE}:${NC}"
     echo ""
-    local _pi
+    printf "    ${GRAY}%-4s %-40s %-15s %-12s %-10s %s${NC}\n" "#" "Display Name" "Shape" "State" "Health" "Bare Metal Host OCID"
+    local _pi _not_avail=0
     for ((_pi=0; _pi<_sel_total; _pi++)); do
-        printf "    ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${GRAY}%s${NC}\n" \
-            "$((_pi + 1))" "${_sel_names[$_pi]}" "${_sel_shapes[$_pi]}" "${_sel_ocids[$_pi]}"
+        local _psc="$GREEN"
+        case "${_sel_states[$_pi]}" in AVAILABLE) _psc="$CYAN" ;; INACTIVE) _psc="$YELLOW" ;; esac
+        local _phc="$GREEN"
+        case "${_sel_healths[$_pi]}" in DEGRADED|IMPAIRED) _phc="$YELLOW" ;; UNHEALTHY|FAILED) _phc="$RED" ;; esac
+        [[ "${_sel_states[$_pi]}" != "AVAILABLE" ]] && _not_avail=$((_not_avail + 1))
+        printf "    ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${_psc}%-12s${NC} ${_phc}%-10s${NC} ${GRAY}%s${NC}\n" \
+            "$((_pi + 1))" "${_sel_names[$_pi]}" "${_sel_shapes[$_pi]}" "${_sel_states[$_pi]}" "${_sel_healths[$_pi]}" "${_sel_ocids[$_pi]}"
     done
     echo ""
+    if [[ $_not_avail -gt 0 ]]; then
+        echo -e "  ${YELLOW}⚠ ${_not_avail} of ${_sel_total} host(s) are not in AVAILABLE state — the API rejects attach for those.${NC}"
+        echo ""
+    fi
     echo -e "  ${WHITE}Command (executed per host):${NC}"
     echo -e "  ${GRAY}oci compute compute-host attach --compute-host-id <HOST_OCID> --compute-host-group-id \"${hg_id}\" --region \"${region}\"${NC}"
     echo ""
