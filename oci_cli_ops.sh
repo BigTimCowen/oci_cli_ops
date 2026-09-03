@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.86"
+readonly SCRIPT_VERSION="3.34.87"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -61862,7 +61862,10 @@ _delete_compute_host_groups() {
 }
 
 #--------------------------------------------------------------------------------
-# Attach Bare Metal Host to Host Group
+# Attach Bare Metal Host(s) to Host Group
+# Multi-select via _parse_targets: single (5), list (1,3), range (30-40), or all.
+# Previews all selected hosts, confirms once, then attaches each sequentially
+# with per-host command display + action logging.
 #--------------------------------------------------------------------------------
 _attach_compute_host_to_group() {
     local hg_id="$1"
@@ -61927,53 +61930,88 @@ _attach_compute_host_to_group() {
     done <<< "$_avail_hosts"
 
     echo ""
-    echo -n -e "  ${CYAN}Select host to attach: ${NC}"
+    echo -e "  ${GRAY}Select one or more — e.g. ${WHITE}5${GRAY}, ${WHITE}1,3${GRAY}, ${WHITE}30-40${GRAY}, ${WHITE}1-3,5,20${GRAY}, or ${WHITE}all${NC}"
+    echo -n -e "  ${CYAN}Select host(s) to attach: ${NC}"
     local _att_choice
     read -r _att_choice
 
-    if [[ ! "$_att_choice" =~ ^[0-9]+$ ]] || [[ -z "${_ATT_MAP[$_att_choice]:-}" ]]; then
-        echo -e "  ${RED}Invalid selection — cancelled${NC}"
+    # Multi-select via standard _parse_targets (bare numeric keys → empty prefix).
+    # Sets _SEL_INDICES; supports single, comma-list, range, and all.
+    if ! _parse_targets "" "$_att_choice" "_ATT_MAP"; then
+        echo -e "  ${RED}No valid selection — cancelled${NC}"
         return
     fi
 
-    local _att_ocid _att_name _att_shape
-    IFS='|' read -r _att_ocid _att_name _att_shape <<< "${_ATT_MAP[$_att_choice]}"
+    local _sel_total=${#_SEL_INDICES[@]}
 
+    # Snapshot selected host attributes before any execution (indices → OCID/name/shape)
+    local -a _sel_ocids=() _sel_names=() _sel_shapes=()
+    local _si _o _n _s
+    for _si in "${_SEL_INDICES[@]}"; do
+        IFS='|' read -r _o _n _s <<< "${_ATT_MAP[$_si]}"
+        _sel_ocids+=("$_o"); _sel_names+=("$_n"); _sel_shapes+=("$_s")
+    done
+
+    # ── Preview every host that will be attached ──
     echo ""
-    echo -e "  ${WHITE}Command to Execute:${NC}"
-    local _att_cmd="oci compute compute-host attach \\
-      --compute-host-id \"${_att_ocid}\" \\
-      --compute-host-group-id \"${hg_id}\" \\
-      --region \"${region}\""
-    echo -e "  ${GRAY}${_att_cmd}${NC}"
+    echo -e "  ${WHITE}The following ${YELLOW}${_sel_total}${WHITE} host(s) will be attached to ${CYAN}${hg_name}${WHITE}:${NC}"
+    echo ""
+    local _pi
+    for ((_pi=0; _pi<_sel_total; _pi++)); do
+        printf "    ${YELLOW}%-4s${NC} ${WHITE}%-40s${NC} ${CYAN}%-15s${NC} ${GRAY}%s${NC}\n" \
+            "${_SEL_INDICES[$_pi]}" "${_sel_names[$_pi]}" "${_sel_shapes[$_pi]}" "${_sel_ocids[$_pi]}"
+    done
+    echo ""
+    echo -e "  ${WHITE}Command (executed per host):${NC}"
+    echo -e "  ${GRAY}oci compute compute-host attach --compute-host-id <HOST_OCID> --compute-host-group-id \"${hg_id}\" --region \"${region}\"${NC}"
     echo ""
 
-    if ! _ui_confirm "ATTACH" "confirm, or anything else to cancel" "$CYAN"; then
+    if ! _ui_confirm "ATTACH" "confirm attaching ${_sel_total} host(s), or anything else to cancel" "$CYAN"; then
         echo -e "  ${YELLOW}Cancelled.${NC}"
         return
     fi
 
-    log_action "ATTACH" "$_att_cmd"
-    local _att_result
-    _att_result=$(oci compute compute-host attach \
-        --compute-host-id "$_att_ocid" \
-        --compute-host-group-id "$hg_id" \
-        --region "$region" --output json 2>&1)
-    local _att_rc=$?
+    # ── Execute sequentially; display + log each command ──
+    echo ""
+    local _ok=0 _fail=0
+    for ((_pi=0; _pi<_sel_total; _pi++)); do
+        local _att_ocid="${_sel_ocids[$_pi]}" _att_name="${_sel_names[$_pi]}"
+        local _att_cmd="oci compute compute-host attach \\
+      --compute-host-id \"${_att_ocid}\" \\
+      --compute-host-group-id \"${hg_id}\" \\
+      --region \"${region}\""
 
-    if [[ $_att_rc -eq 0 ]]; then
-        local _wr
-        _wr=$(jq -r '.["opc-work-request-id"] // empty' <<< "$_att_result" 2>/dev/null)
-        echo -e "  ${GREEN}✓ Attach initiated: ${WHITE}${_att_name}${NC} → ${WHITE}${hg_name}${NC}"
-        [[ -n "$_wr" ]] && echo -e "  ${GRAY}Work request: ${YELLOW}${_wr}${NC}"
-        log_action_result "SUCCESS" "Attached $_att_name to $hg_name"
-    else
-        echo -e "  ${RED}✗ Attach failed: ${WHITE}${_att_name}${NC}"
-        echo -e "    ${RED}${_att_result}${NC}"
+        echo -e "  ${BOLD}[$((_pi+1))/${_sel_total}]${NC} ${WHITE}${_att_name}${NC}"
+        echo -e "  ${GRAY}${_att_cmd}${NC}"
+        log_action "ATTACH" "$_att_cmd"
+
+        local _att_result _att_rc
+        _att_result=$(oci compute compute-host attach \
+            --compute-host-id "$_att_ocid" \
+            --compute-host-group-id "$hg_id" \
+            --region "$region" --output json 2>&1)
+        _att_rc=$?
+
+        if [[ $_att_rc -eq 0 ]]; then
+            local _wr
+            _wr=$(jq -r '.["opc-work-request-id"] // empty' <<< "$_att_result" 2>/dev/null)
+            echo -e "  ${GREEN}✓ Attach initiated${NC}${_wr:+  ${GRAY}(work request: ${YELLOW}${_wr}${GRAY})${NC}}"
+            log_action_result "SUCCESS" "Attached $_att_name to $hg_name"
+            _ok=$((_ok + 1))
+        else
+            echo -e "  ${RED}✗ Attach failed:${NC} ${RED}${_att_result}${NC}"
+            log_action_result "FAILED" "Attach $_att_name to $hg_name"
+            _fail=$((_fail + 1))
+        fi
+        echo ""
+    done
+
+    # ── Summary ──
+    echo -e "  ${WHITE}Attach summary:${NC} ${GREEN}${_ok} succeeded${NC}, ${RED}${_fail} failed${NC} ${GRAY}(of ${_sel_total})${NC}"
+    if [[ $_fail -gt 0 ]]; then
         echo ""
         _ui_policy_hint "manage compute-hosts in tenancy" \
             "manage compute-host-groups in compartment"
-        log_action_result "FAILED" "Attach $_att_name to $hg_name"
     fi
     echo ""
     _ui_pause
