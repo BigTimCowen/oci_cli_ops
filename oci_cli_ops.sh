@@ -448,7 +448,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.90"
+readonly SCRIPT_VERSION="3.34.91"
 readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -62097,7 +62097,10 @@ _detach_compute_host_from_group() {
     echo -e "  ${GRAY}${_dt_cmd}${NC}"
     echo ""
 
-    if ! _ui_confirm "DETACH" "confirm, or anything else to cancel" "$RED"; then
+    echo -n -e "  ${CYAN}Detach ${bm_name}? (Y/n): ${NC}"
+    local _dt_go
+    read -r _dt_go
+    if [[ "${_dt_go,,}" == "n" || "${_dt_go,,}" == "no" ]]; then
         echo -e "  ${YELLOW}Cancelled.${NC}"
         return
     fi
