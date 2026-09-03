@@ -448,8 +448,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.85"
-readonly SCRIPT_VERSION_DATE="2026-08-11"
+readonly SCRIPT_VERSION="3.34.86"
+readonly SCRIPT_VERSION_DATE="2026-09-03"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -45104,13 +45104,13 @@ _fw_update_fabric_firmware() {
     echo -e "  ${BOLD}${WHITE}Select fabric recycle level:${NC}"
     echo ""
     echo -e "    ${GREEN}1${NC}) FULL_RECYCLE     ${GRAY}- Full fabric recycle (recommended)${NC}"
-    echo -e "    ${GREEN}2${NC}) NO_RECYCLE        ${GRAY}- No recycle (apply on next maintenance)${NC}"
+    echo -e "    ${GREEN}2${NC}) SKIP_RECYCLE     ${GRAY}- Skip host wipe (apply on next maintenance)${NC}"
     echo ""
     echo -n -e "  ${CYAN}Select # [1]: ${NC}"
     local _rsel
     read -r _rsel
     local _recycle_level="FULL_RECYCLE"
-    [[ "$_rsel" == "2" ]] && _recycle_level="NO_RECYCLE"
+    [[ "$_rsel" == "2" ]] && _recycle_level="SKIP_RECYCLE"
 
     # ── Step 4: Confirm and execute ──
     echo ""
@@ -61651,14 +61651,14 @@ _create_compute_host_group() {
     # ── Recycle Level ──
     _ui_subheader "Recycle Level" 0
     echo ""
-    echo -e "  ${YELLOW}1${NC}) SKIP_RECYCLE  ${GRAY}- Skip host recycling (default)${NC}"
-    echo -e "  ${YELLOW}2${NC}) RECYCLE       ${GRAY}- Standard recycling${NC}"
+    echo -e "  ${YELLOW}1${NC}) SKIP_RECYCLE  ${GRAY}- Skip host wipe (faster; default)${NC}"
+    echo -e "  ${YELLOW}2${NC}) FULL_RECYCLE  ${GRAY}- Full host wipe/recycle${NC}"
     echo ""
     echo -n -e "  ${CYAN}Select recycle level [1]: ${NC}"
     local _rl_choice
     read -r _rl_choice
     local recycle_level="SKIP_RECYCLE"
-    [[ "$_rl_choice" == "2" ]] && recycle_level="RECYCLE"
+    [[ "$_rl_choice" == "2" ]] && recycle_level="FULL_RECYCLE"
     echo -e "  ${GREEN}✓ Recycle Level: ${WHITE}${recycle_level}${NC}"
     echo ""
 
