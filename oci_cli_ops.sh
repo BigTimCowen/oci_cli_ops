@@ -451,7 +451,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.37.0"
+readonly SCRIPT_VERSION="3.38.0"
 readonly SCRIPT_VERSION_DATE="2026-09-04"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -60508,23 +60508,26 @@ manage_compute_hosts() {
         #-----------------------------------------------------------------------
         # Lifecycle Summary (consolidated State + Health)
         #
-        # Mirrors the c5 Capacity Topology summary. Cross-tabulates the two axes
-        # the compute-host API reports independently — lifecycle-state
+        # Mirrors the c5 Capacity Topology summary. Cross-tabulates shape against
+        # the two axes the compute-host API reports independently — lifecycle-state
         # (AVAILABLE/OCCUPIED/PROVISIONING/REPAIR/UNAVAILABLE) and health
         # (HEALTHY/UNHEALTHY). The previous one-line "By State"/"By Health"
         # marginals could not show the pairing: they reported 4 UNHEALTHY hosts
-        # without saying which states those sat in.
+        # without saying which states those sat in, nor which shape they were.
+        # Rows sort by shape then count descending, so each shape's rows cluster
+        # in a mixed fleet. PERCENT stays relative to total hosts across all
+        # shapes, so the whole column still sums to 100%.
         #
         # Note this is a DIFFERENT vocabulary from the c5 table, which reads the
         # capacity-topology API (ACTIVE/INACTIVE + AVAILABLE/DEGRADED/UNAVAILABLE).
         # The two views describe the same hardware through different APIs.
         #-----------------------------------------------------------------------
         _ui_subheader "Lifecycle Summary" 0
-        printf "  ${BOLD}%-15s %-30s %8s %8s${NC}\n" "STATE" "HEALTH" "COUNT" "PERCENT"
-        echo -e "  ${GRAY}────────────────────────────────────────────────────────────────${NC}"
+        printf "  ${BOLD}%-22s %-14s %-12s %8s %8s${NC}\n" "SHAPE" "STATE" "HEALTH" "COUNT" "PERCENT"
+        echo -e "  ${GRAY}────────────────────────────────────────────────────────────────────${NC}"
 
-        while IFS='|' read -r _ls_state _ls_health _ls_count; do
-            [[ -z "$_ls_state" ]] && continue
+        while IFS='|' read -r _ls_shape _ls_state _ls_health _ls_count; do
+            [[ -z "$_ls_shape" ]] && continue
             local _ls_pct
             _ls_pct=$(_calc 1 "$_ls_count * 100 / $total_hosts") || _ls_pct="0"
 
@@ -60544,15 +60547,16 @@ manage_compute_hosts() {
                 *)                 _ls_hc="$GRAY" ;;
             esac
 
-            printf "  ${_ls_sc}%-15s${NC} ${_ls_hc}%-30s${NC} %8s %7s%%\n" \
-                "$_ls_state" "$_ls_health" "$_ls_count" "$_ls_pct"
+            printf "  ${CYAN}%-22s${NC} ${_ls_sc}%-14s${NC} ${_ls_hc}%-12s${NC} %8s %7s%%\n" \
+                "$_ls_shape" "$_ls_state" "$_ls_health" "$_ls_count" "$_ls_pct"
         done < <(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' '{
-            state  = ($2 == "" || $2 == "N/A") ? "(none)" : $2
-            health = ($3 == "" || $3 == "N/A") ? "(none)" : $3
-            count[state "|" health]++
+            shape  = ($4 == "" || $4 == "N/A") ? "(unknown)" : $4
+            state  = ($2 == "" || $2 == "N/A") ? "(none)"    : $2
+            health = ($3 == "" || $3 == "N/A") ? "(none)"    : $3
+            count[shape "|" state "|" health]++
         } END {
             for (k in count) printf "%s|%d\n", k, count[k]
-        }' | sort -t'|' -k3 -rn)
+        }' | sort -t'|' -k1,1 -k4,4rn -k2,2 -k3,3)
 
         echo ""
 
