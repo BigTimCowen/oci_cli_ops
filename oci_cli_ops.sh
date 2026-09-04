@@ -487,7 +487,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.39.0"
+readonly SCRIPT_VERSION="3.40.0"
 readonly SCRIPT_VERSION_DATE="2026-09-04"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -942,6 +942,22 @@ is_cache_fresh() {
     
     local cache_age=$((current_time - file_mtime))
     [[ $cache_age -lt $ttl ]]
+}
+
+# Fresh AND non-empty — use instead of is_cache_fresh wherever an empty result
+# would mask recovery.
+#
+# A fetch that legitimately returns nothing still writes a header-only cache (so
+# the caller can tell "none found" apart from "API call failed", which leaves no
+# file at all). is_cache_fresh honours that file for the full TTL, so once a
+# query comes back empty the view keeps reporting "none found" for minutes after
+# the underlying cause is fixed — the user changes focus, retries, and sees the
+# same stale zero. Re-querying an empty result costs one list call and is worth it.
+#
+# Usage: _cache_fresh_rows "$SOME_CACHE" && return 0
+_cache_fresh_rows() {
+    is_cache_fresh "$1" "${2:-}" || return 1
+    [[ "$(_clc "$1")" -gt 0 ]]
 }
 
 # Atomic cache write: write to temp file then rename (mv is atomic on same filesystem)
@@ -2814,12 +2830,17 @@ fetch_node_states() {
 fetch_capacity_topology() {
     [[ -z "$TENANCY_ID" ]] && { log_warn "TENANCY_ID not set. Capacity topology unavailable."; return 1; }
     local region="${FOCUS_REGION:-$REGION}"
-    # Use explicit AD arg, or fall back to focused AD if set
-    local ad_filter="${1:-${FOCUS_AD:-${AD:-}}}"
-    # If multi-AD (comma-separated), use first
-    [[ "$ad_filter" == *","* ]] && ad_filter="${ad_filter%%,*}"
+    # NOTE: deliberately ignores FOCUS_AD/AD. Capacity topology is queried across
+    # every AD in the region and AD is carried through as a display dimension
+    # (field 12) instead. Filtering here was silently wrong: AD names are
+    # tenancy-prefixed but rendered stripped, so a variables.sh holding another
+    # tenancy's prefix matched nothing while the focus line still looked correct,
+    # and the view reported "no capacity topologies in <region>" for a region that
+    # plainly had them.
 
-    is_cache_fresh "$CAPACITY_TOPOLOGY_CACHE" && return 0
+    # _cache_fresh_rows, not is_cache_fresh: a zero-result cache must not pin the
+    # view to "none found" for the whole TTL after the AD/region focus is fixed.
+    _cache_fresh_rows "$CAPACITY_TOPOLOGY_CACHE" && return 0
 
     local topologies_json
     topologies_json=$(create_temp_file) || return 1
@@ -2828,7 +2849,6 @@ fetch_capacity_topology() {
         --compartment-id "$TENANCY_ID"
         --region "$region"
         --all --output json)
-    [[ -n "$ad_filter" ]] && _ct_cmd+=(--availability-domain "$ad_filter")
 
     if ! "${_ct_cmd[@]}" > "$topologies_json" 2>/dev/null; then
         rm -f "$topologies_json"
@@ -2840,12 +2860,14 @@ fetch_capacity_topology() {
     # Write cache header
     {
         echo "# Capacity Topology Hosts"
-        echo "# Format: InstanceOCID|HostLifecycleState|HostLifecycleDetails|TopologyOCID|InstanceShape|HPCIslandID|NetworkBlockID|LocalBlockID|TimeCreated|TimeUpdated|BareMetalHostOCID"
+        echo "# Format: InstanceOCID|HostLifecycleState|HostLifecycleDetails|TopologyOCID|InstanceShape|HPCIslandID|NetworkBlockID|LocalBlockID|TimeCreated|TimeUpdated|BareMetalHostOCID|AvailabilityDomain"
     } | _cache_write "$CAPACITY_TOPOLOGY_CACHE"
     
     # Get topology IDs - filter out DELETED/TERMINATED states, deduplicate
     local topology_ids
-    topology_ids=$(jq -r '.data.items[] | select(.["lifecycle-state"] != "DELETED" and .["lifecycle-state"] != "TERMINATED") | .id // empty' "$topologies_json" 2>/dev/null | sort -u)
+    # "<id>\t<availability-domain>" — the AD lives on the topology, not on the
+    # bare-metal-host records, so it has to be carried down from this response.
+    topology_ids=$(jq -r '.data.items[] | select(.["lifecycle-state"] != "DELETED" and .["lifecycle-state"] != "TERMINATED") | "\(.id // empty)\t\(.["availability-domain"] // "N/A")"' "$topologies_json" 2>/dev/null | grep -v '^\t' | sort -u)
     
     local topo_count
     topo_count=$(echo "$topology_ids" | grep -c . 2>/dev/null | tr -d '[:space:]')
@@ -2876,7 +2898,7 @@ fetch_capacity_topology() {
     # Run parallel fetch using () & + wait pattern (avoids export -f portability issues)
     local _topo_pids=()
     local _topo_batch=0
-    while IFS= read -r topo_id; do
+    while IFS=$'\t' read -r topo_id topo_ad; do
         [[ -z "$topo_id" ]] && continue
         (
             local output_file="${parallel_temp}/topo_${topo_id##*.}.txt"
@@ -2893,9 +2915,9 @@ fetch_capacity_topology() {
             elif [[ -n "$hosts_json" ]]; then
                 # Save raw JSON for json viewer (j)
                 echo "$hosts_json" > "$json_file" 2>/dev/null
-                jq -r --arg topo "$topo_id" '
+                jq -r --arg topo "$topo_id" --arg tad "${topo_ad:-N/A}" '
                     .data.items[]? |
-                    "\(.["instance-id"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["lifecycle-details"] // "N/A")|\($topo)|\(.["instance-shape"] // "N/A")|\(.["compute-hpc-island-id"] // "N/A")|\(.["compute-network-block-id"] // "N/A")|\(.["compute-local-block-id"] // "N/A")|\(.["time-created"] // "N/A")|\(.["time-updated"] // "N/A")|\(.id // "N/A")"
+                    "\(.["instance-id"] // "N/A")|\(.["lifecycle-state"] // "N/A")|\(.["lifecycle-details"] // "N/A")|\($topo)|\(.["instance-shape"] // "N/A")|\(.["compute-hpc-island-id"] // "N/A")|\(.["compute-network-block-id"] // "N/A")|\(.["compute-local-block-id"] // "N/A")|\(.["time-created"] // "N/A")|\(.["time-updated"] // "N/A")|\(.id // "N/A")|\($tad)"
                 ' <<< "$hosts_json" > "$output_file" 2>/dev/null
             fi
         ) &
@@ -58118,7 +58140,7 @@ _ct_search_hosts() {
         declare -gA CT_HOST_MAP=()
         CT_HOST_MAP=()
 
-        while IFS='|' read -r inst_id state details topo_id inst_shape hpc_island net_block local_block time_created time_updated bm_host_id; do
+        while IFS='|' read -r inst_id state details topo_id inst_shape hpc_island net_block local_block time_created time_updated bm_host_id _host_ad; do
             [[ -z "$inst_id" ]] && continue
             ((_ct_idx++))
 
@@ -58180,10 +58202,18 @@ manage_capacity_topology() {
     
     while true; do
         echo ""
+        # Mirror fetch_capacity_topology's real argv, including --region and the
+        # --availability-domain filter. Showing an abbreviated command invites the
+        # user to reproduce it by hand, get a different answer, and lose time on
+        # the difference — which is exactly what happened before this was fixed.
+        local _ct_hdr_region="${FOCUS_REGION:-$REGION}"
+        local _ct_hdr_cmd="oci compute capacity-topology list --compartment-id \$TENANCY_ID --region ${_ct_hdr_region} --all"
+        _ct_hdr_cmd+=" | oci compute capacity-topology bare-metal-host list --capacity-topology-id <id> --all"
+
         _ui_menu_header "CAPACITY TOPOLOGY" \
             --color "$YELLOW" \
             --breadcrumb "Compute" "Capacity Topology" \
-            --cmd "oci compute capacity-topology list --compartment-id \$TENANCY_ID --all | oci compute capacity-topology bare-metal-host list" \
+            --cmd "$_ct_hdr_cmd" \
             --env \
             --cache \
             "${CAPACITY_TOPOLOGY_CACHE}|Capacity Hosts"
@@ -58197,7 +58227,7 @@ manage_capacity_topology() {
 
         # ── Discovery ──
         _step_init
-        if is_cache_fresh "$CAPACITY_TOPOLOGY_CACHE"; then
+        if _cache_fresh_rows "$CAPACITY_TOPOLOGY_CACHE"; then
             _step_complete "capacity topology($(_clc "$CAPACITY_TOPOLOGY_CACHE") cached)"
         else
             _step_active "capacity topology"
@@ -58223,6 +58253,7 @@ manage_capacity_topology() {
         if [[ "${total_hosts:-0}" -eq 0 ]]; then
             local _ct_region="${FOCUS_REGION:-$REGION}"
             echo -e "${YELLOW}No capacity topologies found in ${WHITE}${_ct_region}${NC}"
+            echo -e "  ${GRAY}All ADs in the region were queried — the AD focus is not applied here.${NC}"
             echo -e "  ${GRAY}Capacity topologies are region-specific. Use ${WHITE}env r${GRAY} to switch regions.${NC}"
             echo ""
             _ui_pause "return"
@@ -58253,14 +58284,20 @@ manage_capacity_topology() {
         }
         
         # Capacity Topology OCID(s) at top (prefix visible=2, pad=43)
+        # "<ad>|<topology ocid>", ordered by AD so a multi-AD region groups sensibly.
+        # AD is field 12; each topology belongs to exactly one AD.
         local ro_topo_ocids
-        ro_topo_ocids=$(grep -v "^#" "$CAPACITY_TOPOLOGY_CACHE" | cut -d'|' -f4 | sort -u)
-        
-        while IFS= read -r ro_tid; do
+        ro_topo_ocids=$(grep -v "^#" "$CAPACITY_TOPOLOGY_CACHE" | awk -F'|' '{print $12 "|" $4}' | sort -u)
+
+        while IFS='|' read -r ro_tad ro_tid; do
             [[ -z "$ro_tid" ]] && continue
             local ro_tid_cnt
             ro_tid_cnt=$(grep -v "^#" "$CAPACITY_TOPOLOGY_CACHE" | awk -F'|' -v t="$ro_tid" '$4 == t' | wc -l)
-            _ro_line "  " "${BOLD}${WHITE}" "Capacity Topology:" 41 "$ro_tid_cnt" "${YELLOW}" "$ro_tid"
+            # Label shows the AD stripped of its tenancy prefix, matching how AD is
+            # rendered everywhere else. Fits inside the 41-char label pad.
+            local ro_lbl="Capacity Topology:"
+            [[ -n "$ro_tad" && "$ro_tad" != "N/A" ]] && ro_lbl="Capacity Topology [${ro_tad##*:}]:"
+            _ro_line "  " "${BOLD}${WHITE}" "$ro_lbl" 41 "$ro_tid_cnt" "${YELLOW}" "$ro_tid"
         done <<< "$ro_topo_ocids"
 
         # Get unique HPC Islands, N/A sorted last
@@ -58346,7 +58383,7 @@ manage_capacity_topology() {
                     local r_host_idx=0
                     local r_host_total="$r_lb_cnt"
 
-                    while IFS='|' read -r r_inst_id r_h_state r_h_details r_h_topo r_h_shape _r_hpc _r_nb _r_lb r_h_tcreated r_h_tupdated r_h_host_ocid; do
+                    while IFS='|' read -r r_inst_id r_h_state r_h_details r_h_topo r_h_shape _r_hpc _r_nb _r_lb r_h_tcreated r_h_tupdated r_h_host_ocid _r_ad; do
                         [[ -z "$r_inst_id" ]] && continue
                         ((r_host_idx++))
 
@@ -58412,6 +58449,43 @@ manage_capacity_topology() {
         echo ""
         
         #-----------------------------------------------------------------------
+        #-----------------------------------------------------------------------
+        # Summary by AD
+        #
+        # Capacity topology is queried across every AD in the region (the AD focus
+        # is deliberately not applied — see fetch_capacity_topology), so this is
+        # where the per-AD breakdown lands. AD is field 12, carried down from the
+        # topology record. Counts mirror the Dedicated Pool's buckets: a host is
+        # provisionable only when nothing runs on it AND its hardware is AVAILABLE
+        # or DEGRADED.
+        #-----------------------------------------------------------------------
+        _ui_subheader "Summary by AD" 0
+        printf "  ${BOLD}%-24s %8s %8s %10s %8s %9s${NC}\n" \
+            "AVAILABILITY DOMAIN" "TOPOS" "HOSTS" "AVAILABLE" "IN USE" "UNAVAIL"
+        echo -e "  ${GRAY}───────────────────────────────────────────────────────────────────────${NC}"
+
+        while IFS='|' read -r _ad_name _ad_topos _ad_hosts _ad_avail _ad_inuse _ad_unavail; do
+            [[ -z "$_ad_name" ]] && continue
+            local _ad_ac="${NC}"; [[ "$_ad_avail"   -gt 0 ]] && _ad_ac="${GREEN}"
+            local _ad_ic="${NC}"; [[ "$_ad_inuse"   -gt 0 ]] && _ad_ic="${YELLOW}"
+            local _ad_uc="${NC}"; [[ "$_ad_unavail" -gt 0 ]] && _ad_uc="${RED}"
+            printf "  ${CYAN}%-24s${NC} %8s %8s ${_ad_ac}%10s${NC} ${_ad_ic}%8s${NC} ${_ad_uc}%9s${NC}\n" \
+                "${_ad_name##*:}" "$_ad_topos" "$_ad_hosts" "$_ad_avail" "$_ad_inuse" "$_ad_unavail"
+        done < <(grep -v "^#" "$CAPACITY_TOPOLOGY_CACHE" | awk -F'|' '{
+            ad = ($12 == "" || $12 == "N/A") ? "(unknown)" : $12
+            hosts[ad]++
+            topo[ad "|" $4] = 1
+            if ($1 != "N/A" && $1 != "")                    inuse[ad]++
+            else if ($3 == "AVAILABLE" || $3 == "DEGRADED") avail[ad]++
+            else                                            unavail[ad]++
+        } END {
+            for (k in topo) { split(k, p, "|"); tcount[p[1]]++ }
+            for (a in hosts)
+                printf "%s|%d|%d|%d|%d|%d\n", a, tcount[a]+0, hosts[a], avail[a]+0, inuse[a]+0, unavail[a]+0
+        }' | sort -t'|' -k1,1)
+
+        echo ""
+
         #-----------------------------------------------------------------------
         # Lifecycle Summary (consolidated State + Details)
         #-----------------------------------------------------------------------
@@ -58598,7 +58672,7 @@ capacity_topology_view_by_state() {
     declare -gA CT_HOST_MAP=()
     CT_HOST_MAP=()
 
-    while IFS='|' read -r inst_id state details topo_id inst_shape hpc_island net_block local_block time_created time_updated bm_host_id; do
+    while IFS='|' read -r inst_id state details topo_id inst_shape hpc_island net_block local_block time_created time_updated bm_host_id _host_ad; do
         [[ -z "$inst_id" ]] && continue
         ((_ct_idx++))
 
@@ -58736,7 +58810,7 @@ capacity_topology_view_by_details() {
     declare -gA CT_HOST_MAP=()
     CT_HOST_MAP=()
 
-    while IFS='|' read -r inst_id state details topo_id inst_shape hpc_island net_block local_block time_created time_updated bm_host_id; do
+    while IFS='|' read -r inst_id state details topo_id inst_shape hpc_island net_block local_block time_created time_updated bm_host_id _host_ad; do
         [[ -z "$inst_id" ]] && continue
         ((_ct_idx++))
 
@@ -58849,7 +58923,7 @@ capacity_topology_view_all_hosts() {
     declare -gA CT_HOST_MAP=()
     CT_HOST_MAP=()
 
-    while IFS='|' read -r inst_id state details topo_id inst_shape hpc_island net_block local_block time_created time_updated bm_host_id; do
+    while IFS='|' read -r inst_id state details topo_id inst_shape hpc_island net_block local_block time_created time_updated bm_host_id _host_ad; do
         [[ -z "$inst_id" ]] && continue
         ((_ct_idx++))
 
@@ -59058,7 +59132,7 @@ capacity_topology_view_rdma_tree() {
                 local host_idx=0
                 local host_total="$lb_host_count"
                 
-                while IFS='|' read -r inst_id h_state h_details h_topo h_shape _hpc _nb _lb h_tcreated h_tupdated h_host_ocid; do
+                while IFS='|' read -r inst_id h_state h_details h_topo h_shape _hpc _nb _lb h_tcreated h_tupdated h_host_ocid _h_ad; do
                     [[ -z "$inst_id" ]] && continue
                     ((host_idx++))
 
