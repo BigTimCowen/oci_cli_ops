@@ -1,6 +1,6 @@
 **OCI CLI Operations** — Interactive management tool for Oracle Cloud Infrastructure, Kubernetes, and GPU infrastructure.
 
-**Version:** 3.34.85 | **Date:** 2026-08-11
+**Version:** 3.39.0 | **Date:** 2026-09-04
 
 ## Overview
 
@@ -146,7 +146,7 @@ Global nav: type `:c`, `:k1`, `:n2`, etc. from any prompt to jump.
 | `c11` | Host Groups | Create, view, delete host groups; attach/detach BM hosts; capacity topology pre-flight; host count per group |
 | `c12` | Notifications | ONS topics, subscriptions (email/Slack/PagerDuty/webhook), event rules list/detail/delete |
 
-**Instance Actions** (`c1` prompt): `i#` (detail), `/` (search), `taint`, `untaint`, `cordon`, `uncordon`, `drain`, `reboot`, `cdt` (Cordon-Drain-Tag-Terminate), `terminate`, `bvr` (Boot Volume Replacement), `brc` (Bulk Run-Command), `p` (properties view), `col` (column picker, includes `np` and `oke_cluster`)
+**Instance Actions** (`c1` prompt): `i#` (detail), `/` (search), `taint`, `untaint`, `cordon`, `uncordon`, `drain`, `reboot`, `cdt` (Cordon-Drain-Tag-Terminate), `terminate`, `bvr` (Boot Volume Replacement), `brc` (Bulk Run-Command), `p` (properties view), `col` (column picker, includes `np` and `oke_cluster`; `z` toggles row striping)
 
 **Host Group Actions** (`c11` detail): `a` (attach BM host), `dt #` (detach), `notify` (create event rule), `j` (JSON)
 
@@ -299,7 +299,9 @@ Actions: `#` (resource detail), `/` (search port in NSG/SL rules), `drg` (DRG co
 
 | Pattern | Description |
 |---------|-------------|
-| `_col_*` functions | Generic column visibility system — toggleable columns with persistent width/alignment |
+| `_col_*` functions | Generic column visibility system — toggleable columns with persistent width/alignment, plus per-view display preferences (see below) |
+| Per-view display prefs | A display choice some views want and others don't is a persisted per-view preference, never hardcoded around one render site. Stored in the view's `*_columns.conf` as a comment-shaped pragma (`#zebra=1`) so older builds skip it harmlessly. Row striping (`col` → `z`) is the reference implementation |
+| `_calc()` | Fixed-point arithmetic without `bc` — OCI Cloud Shell has no `bc`, so all non-integer math goes through this awk-backed helper |
 | `_parse_targets()` | Multi-select targeting — `i1`, `i1,i3`, `i1-i5`, `all` |
 | `_step_*` functions | Multi-phase spinner with elapsed timer |
 | `_safe_exec()` | Command validation and array-based execution |
@@ -309,7 +311,10 @@ Actions: `#` (resource detail), `/` (search port in NSG/SL rules), `drg` (DRG co
 
 ### Cache Files
 
-All caches stored in `./cache/` relative to the script. Key caches:
+All caches stored in `./cache/` relative to the script. Several resources keep a
+pair: a pipe-delimited `.txt` that the display pipeline reads, and the raw `.json`
+API response backing the JSON viewer (`compute_hosts.txt` / `.json`,
+`capacity_topology_hosts.txt` / `.json`). Key caches:
 
 | Cache | File | TTL |
 |-------|------|-----|
@@ -347,7 +352,7 @@ All create, update, and delete operations:
 
 ## Script Layout (by line range)
 
-> **Note:** Line ranges below are approximate, captured at v3.34.1 (~71K lines). The current script is ~78K lines (v3.34.59); section boundaries have drifted by a few thousand lines but the relative ordering is unchanged. Use `grep -n '^manage_'` or similar to find current entry points.
+> **Note:** Line ranges below are approximate, captured at v3.34.1 (~71K lines). The current script is ~79.6K lines (v3.39.0); section boundaries have drifted by several thousand lines but the relative ordering is unchanged. Use `grep -n '^manage_'` or similar to find current entry points.
 
 | Lines | Section | Description |
 |-------|---------|-------------|
@@ -419,6 +424,7 @@ Focus can be saved to `variables.sh` via `env` → `s` (save). The current focus
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 3.39.0 | 2026-09-04 | **v3.34.86–3.39.0 highlights (Aug–Sep 2026):** **c11** attach bare-metal hosts by pasted OCID and by multi-select; Y/n confirms defaulting to Yes on attach and detach; State/Health shown in the attach preview; HPC/NetBlk/LocalBlk columns + topology sort on both the attach candidate and attached-host lists; valid `RecycleLevel` enums. **Row striping** Excel-style zebra banding on list views, now a **persisted per-view preference** toggled with `z` in the `col` picker rather than hardcoded — stored in each view's `*_columns.conf` as a comment-shaped `#zebra=` pragma so older builds skip it harmlessly. On for `c1` by default, off elsewhere. **`bc` removed** OCI Cloud Shell ships without `bc`, so all 30 call sites (Lifecycle Summary percentages, File Storage and Object Storage sizes, Lustre TB↔GB and capacity validation, block-device totals) now use a new awk-backed `_calc` helper; the Lustre `--capacity-in-gbs` conversion additionally rounds rather than truncates, since `31.2 * 1000` is `31199.999…` in IEEE754 and truncation rejected valid presets. **c5** State/Details/OCID columns aligned across every row in both RDMA trees, and the two trees normalised to one geometry (block OCIDs at col 56, host OCIDs at 81); Dedicated Pool no longer counts `UNAVAILABLE` hosts as provisionable and gains an `UNAVAIL` column so `TOTAL = AVAILABLE + IN USE + UNAVAIL` reconciles; the panel now reads the same cache as the Lifecycle Summary above it, which also fixes it silently rendering nothing when the compute-host cache was cold. **c10** new cross-tabulated **Lifecycle Summary** (shape / state / health / count / percent) replacing the `By State` and `By Health` one-liners; State padded to 12 so `PROVISIONING` no longer pushes Health and the OCID out of alignment. **k3** node storage compare `Total Disk` now sums the `SIZE` column with binary-unit normalisation (it was summing `MODEL` names and always showing `N/A`). **Versioning** `SCRIPT_VERSION` is now actually displayed — every menu header leads with `ops: <version> (<date>)`, and the duplicate version record in the file header comment was removed. |
 | 3.34.85 | 2026-08-11 | **v3.34.60–85 highlights (Jun–Aug 2026):** **o3** split Age column into `Duration` (window→finish) and `Cr.Age` (created→now); renamed concluded `Age` to `Finished Age` and widened the column; added configurable `Last N Concluded Events` section (1–100, default 8) with instance display name, fault code, hard due date, pods, and `lc#` drill-down; new `config` submenu (`ev` for count, `ann` for announcement linking); `gmc` filter (by GPU memory cluster); parallel cache-driven concluded query; concluded events no longer leak into `active` filter table. **k1** new **OSN Reachability check** on the OKE cluster endpoint — verifies the endpoint subnet's route table has an Internet Gateway (public) or NAT Gateway (private) so the control plane can reach the Oracle Services Network. **Startup reliability** kubectl is now optional (warn-only, no more hard-fail); `timeout` guards added to every OCI API call in `--setup`, `_detect_tool_versions`, `_warm_comp_tree`, and `resolve_compartment_name` — prevents indefinite hangs when instance principal is missing, IAM is unreachable, or the compartment tree is slow. **Cloud Shell setup** env-var diagnostic + 10s connectivity probe before any API calls; explicit `OCI_TENANCY` / `OCI_REGION` / `OCI_CS_TERMINAL_OCID` display; removed decorative spinner from the instant Cloud Shell path (parent/child sync was hanging on some terminals); fixed unset-variable abort in Cloud Shell branch under `set -u`; guard against double-invocation when `--setup` is passed and `variables.sh` is missing. `--debug` flag now surfaces raw OCI CLI errors during setup for troubleshooting. |
 | 3.34.59 | 2026-06-09 | **v3.34.x series highlights (Apr–Jun 2026):** **c2** new `u` Instance Configuration Usage pivot with togglable A (IC-centric) / B (resource-centric) views — surfaces orphan ICs and which Pools/GMCs/CNs reference each IC. **c4** `np` Unprovisioned-Hosts view (EMPTY / OCI / ORPHAN tagging), `With OCI` column on fabric rows (UNAVAILABLE/INACTIVE/FAILED/PROVISIONING + no instance), per-cluster `[D: N]` / `[M: N]` badges + legend, per-HPC-island `[N: N]` available-nodes badge, firmware versions parsed from bundle description, `[↑ Update Avail: 1.3.4, 1.3.6]` inline version list, fabric+cluster OCID column toggle (off by default), GPU memory fabric summary fix when no resolved hosts, cluster-OCID column alignment + 1-col State drift fix, FD column on `o3` detail map. **c8** new `t` Topology page (per-pool tree with Cluster Network / HPC / NetBlks / LocBlks / `[D:]` / `[M:]` / Faults badges and aggregate footer), `t → s` By HPC Island pivot, `Instance Config` column on list view. **c9** Network Block ID + Local Block ID columns on detail instance table, new `d` Topology page mirroring c8 with `Pool: <name>  (IC: <name>)` line and `[D:]` / `[M:]` / `[N: N]` / Faults indicators, `d → s` By HPC Island pivot, per-CN topology aggregate (CNs with degraded/maint/faults, top fault codes). **c8 + c9** By-HPC-Island pivots gain `With OCI: N` per-island column and footer total. **c1** `i` jump-to-instance from `o3` event detail, skip kubectl when no kubeconfig configured (no more network-timeout stalls), FD column. **o3** `[Type - <name>]` prompt style on detail views, `!` past-due/imminent marker (ASCII for column-width safety), `⚠` legacy fix. **Reliability fixes:** add `--all` to 4 paginated list calls (DRG IPsec, route rules), kubectl `--request-timeout=5s` in `c1`, `_oci_throttle` on per-host detail fetch loops. |
 | 3.34.1 | 2026-04-14 | c1: Node Pool/OKE Cluster columns, BVR guard for nodepool instances, OKE Node Pool section in instance detail. c2: `cci` cloud-init YAML creator. c10: SN column, fault code filter (`f`), optimized impacted detail fetch. c11: host count per group. c12: event rule list/detail/delete. o3: parallel data fetch, filter by maintenance reason (`re`), wider instance name column. k3: option 12 debug DaemonSet. `env profile` for multi-profile OCI configs. macOS `grep -oP` → portable `grep -oE`/`sed`. Spinner wrap fix. Dynamic group matching rule fix. Policy hints for firmware bundles, compute clusters, GPU clusters. `k8s_run_command.sh` standalone script |
@@ -639,8 +645,21 @@ In OCI Cloud Shell (`OCI_CS_TERMINAL_OCID` is set), setup uses the managed deleg
   └── HPC Island          [1 nb, 3 lb, 24 hosts       ]  [ocid1.hpcisland.oc1.phx...e1f2g3]
       └── ...
 
+  ◆ Lifecycle Summary
+  SHAPE                  STATE          HEALTH          COUNT  PERCENT
+  ────────────────────────────────────────────────────────────────────
+  BM.GPU.H100.8          OCCUPIED       HEALTHY            44    91.7%
+  BM.GPU.H100.8          OCCUPIED       DEGRADED            3     6.3%
+  BM.GPU.H100.8          AVAILABLE      UNHEALTHY           1     2.1%
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────┐
+  │ Lifecycle Legend: State and Health are two independent axes on a compute host           │
+  │  AVAILABLE / HEALTHY   = Host free, hardware sound — ready to provision                 │
+  │  OCCUPIED  / HEALTHY   = Instance running on sound hardware                             │
+  │  ...                                                                                    │
+  └────────────────────────────────────────────────────────────────────────────────────────┘
+
   ◆ Summary
-  By State:   OCCUPIED(46) AVAILABLE(2)     By Health:  HEALTHY(44) DEGRADED(3) UNHEALTHY(1)
   By Shape:   BM.GPU.H100.8(48)
 
   ◆ GPU Memory Fabrics (6)

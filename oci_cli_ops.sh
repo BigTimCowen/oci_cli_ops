@@ -356,6 +356,42 @@
 #   Lifecycle color helpers: color_oci_state, color_cluster_state, color_resource_state,
 #   color_cap_topo_state, color_fabric_state, color_node_state (use instead of inline case)
 #
+# PER-VIEW DISPLAY PREFERENCES (design principle — extend this, don't hardcode):
+#   A display choice that some views want and others don't is a PERSISTED PER-VIEW
+#   PREFERENCE, never a hardcoded call around one render site. The user decides per
+#   view, the choice survives restarts, and no other view is touched.
+#
+#   Zebra row striping is the reference implementation. To add another pref:
+#     1. Declare beside the view's format globals, with the out-of-box value in a
+#        _<PFX>_COL_<PREF>_DEFAULT constant:
+#            _CHOST_COL_ZEBRA_DEFAULT=0
+#            _CHOST_COL_ZEBRA=0
+#     2. _col_load  — seed from the _DEFAULT, then override from the config file.
+#     3. _col_save  — write it as a COMMENT-SHAPED PRAGMA: "#<pref>=<value>".
+#        This matters: a build that predates the pref skips it as a comment rather
+#        than loading it as a phantom column key, so configs stay compatible in both
+#        directions. Never write a pref as a bare line — that IS the column format.
+#     4. _col_picker — one letter to toggle, current state shown above the hints.
+#     5. Per-render state (counters, parity) resets in _col_build_fmt, which every
+#        list render calls exactly once before printing. Reset there, not at call
+#        sites, so a new view needs no wiring. Reset only in the non-search branch —
+#        views that also build a search variant call _col_build_fmt twice per render.
+#
+#   Rules that fall out of this, and why:
+#     - Off by default unless the view already had the behaviour. New prefs must not
+#       change what any existing view looks like until the user asks.
+#     - Render through _col_print_row, never a hand-rolled printf. The palette defines
+#       colours as "\033[0;NNm" and that leading "0;" is a full SGR reset that clears
+#       the background — any row-background effect dies at the first coloured column
+#       unless the background is re-asserted after every colour AND every separator.
+#       _col_print_row does this; each hand-rolled copy is a fresh chance to get it
+#       wrong (see the attach-candidate list, which re-implements it across 9 columns).
+#     - Nothing may leak into _col_print_row_plain, which backs search and export
+#       capture — captured rows must stay plain text.
+#     - Background colours are terminal-theme dependent (ZEBRA_BG is a fixed dark
+#       grey, and assumes 256-colour). That is exactly why these are opt-in prefs and
+#       not global styling.
+#
 # TERMINAL CONTROL (use variables, never raw ANSI codes):
 #   CLEAR_LINE (\033[2K\r)  - Clear entire line + carriage return (spinners/progress)
 #   CLEAR_EOL  (\033[K)     - Clear from cursor to end of line (timer/spinner cleanup)
@@ -451,7 +487,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.38.0"
+readonly SCRIPT_VERSION="3.39.0"
 readonly SCRIPT_VERSION_DATE="2026-09-04"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -33087,12 +33123,26 @@ _col_load() {
     local _conf_var="_${_pfx}_COL_CONF"
     local _conf="${!_conf_var}"
 
+    # View-level display prefs (see "Per-view display preferences" in the header).
+    # Seeded from _<PFX>_COL_<PREF>_DEFAULT so a view's out-of-box behaviour lives
+    # with its column metadata, then overridden by anything the user saved.
+    local -n _ld_zebra="_${_pfx}_COL_ZEBRA"
+    local _zdef_var="_${_pfx}_COL_ZEBRA_DEFAULT"
+    _ld_zebra="${!_zdef_var:-0}"
+
     _ld_enabled=()
     for _i in "${!_ld_keys[@]}"; do
         _ld_widths[$_i]="${_ld_dw[$_i]}"
     done
     if [[ -f "$_conf" ]]; then
         while read -r _line; do
+            # Prefs ride in comment-shaped lines ("#<pref>=<value>") so a build of
+            # the script that predates the pref — or a rollback — skips them as
+            # comments instead of loading one as a phantom column key.
+            if [[ "$_line" == "#zebra="* ]]; then
+                [[ "${_line#\#zebra=}" == "1" ]] && _ld_zebra=1 || _ld_zebra=0
+                continue
+            fi
             [[ -z "$_line" || "$_line" == "#"* ]] && continue
             local _key="${_line%%:*}"
             _ld_enabled+=("$_key")
@@ -33135,8 +33185,11 @@ _col_save() {
     local _conf_var="_${_pfx}_COL_CONF"
     local _conf="${!_conf_var}"
 
+    local -n _sv_zebra="_${_pfx}_COL_ZEBRA"
+
     mkdir -p "$(dirname "$_conf")"
     printf "# Column config (auto-generated, format: key[:width])\n" > "$_conf"
+    printf "#zebra=%s\n" "${_sv_zebra:-0}" >> "$_conf"
     for _key in "${_sv_enabled[@]}"; do
         local _saved=false
         for _i in "${!_sv_keys[@]}"; do
@@ -33195,6 +33248,12 @@ _col_build_fmt() {
         local -n _sw="_${_pfx}_SEP_WIDTH"; _sw=$_sep_w
         local -n _cc="_${_pfx}_COL_COUNT"; _cc=$_col_cnt
         local -n _ei="_${_pfx}_ENABLED_INDICES"; _ei=("${_enabled_idx[@]}")
+        # Reset zebra row parity here rather than at each call site: every list
+        # render calls _col_build_fmt "<PFX>" once, immediately before printing
+        # its header and rows, so striping needs no per-view wiring at all.
+        # Only the non-search branch resets — a view that also builds a search
+        # variant (e.g. PROP) calls this twice for one render.
+        local -n _zrow="_${_pfx}_COL_ZEBRA_ROW"; _zrow=0
     fi
 }
 
@@ -33212,17 +33271,22 @@ _col_print_row() {
     shift $_ncols
     local -a _row_colors=("" "$@")  # 1-indexed: _row_colors[1]=@1, [2]=@2, ...
 
-    # Zebra striping (opt-in): when _COL_ZEBRA matches this view, shade even rows.
-    # Even rows use ZEBRA_FGR between columns (resets fg, keeps bg) and wrap the
-    # whole row in ZEBRA_BG…NC. Columns are fixed-width, so the band spans the row.
-    # Zebra striping: on even rows, ${_zbg} re-asserts the row background after each
-    # column's color (the palette's "0;NN" codes are full SGR resets that clear bg)
-    # and after each separator, so the band spans the whole row; ${_row_reset} between
-    # columns resets fg but keeps bg. Empty when striping is off → byte-identical.
+    # Zebra striping — driven by the persisted per-view pref _<PFX>_COL_ZEBRA,
+    # which the user toggles with "z" in the col picker. Parity is per view and
+    # reset by _col_build_fmt, so no render site needs zebra-specific wiring.
+    #
+    # On even rows ${_zbg} re-asserts the row background after every column colour
+    # and every separator — the palette defines colours as "\033[0;NNm" and that
+    # leading "0;" is a full SGR reset that clears the background, so without this
+    # the band dies at the first coloured column. ${_row_reset} resets fg but keeps
+    # bg between columns. All three are empty when striping is off, so an unstriped
+    # row is byte-identical to what it was before striping existed.
     local _row_reset="$NC" _z_on=0 _zbg=""
-    if [[ -n "${_COL_ZEBRA:-}" && "$_pfx" == "$_COL_ZEBRA" ]]; then
-        _COL_ZEBRA_ROW=$(( ${_COL_ZEBRA_ROW:-0} + 1 ))
-        (( _COL_ZEBRA_ROW % 2 == 0 )) && { _z_on=1; _row_reset="$ZEBRA_FGR"; _zbg="$ZEBRA_BG"; }
+    local _pr_zvar="_${_pfx}_COL_ZEBRA"
+    if [[ "${!_pr_zvar:-0}" == "1" ]]; then
+        local -n _pr_zrow="_${_pfx}_COL_ZEBRA_ROW"
+        _pr_zrow=$(( ${_pr_zrow:-0} + 1 ))
+        (( _pr_zrow % 2 == 0 )) && { _z_on=1; _row_reset="$ZEBRA_FGR"; _zbg="$ZEBRA_BG"; }
     fi
 
     local _fmt_str="" _first=true
@@ -33295,6 +33359,7 @@ _col_picker() {
     local -n _pk_dw="_${_pfx}_COL_DEFAULT_WIDTHS"
     local -n _pk_locked="_${_pfx}_COL_LOCKED"
     local -n _pk_enabled="_${_pfx}_ENABLED_COLS"
+    local -n _pk_zebra="_${_pfx}_COL_ZEBRA"
 
     declare -A _enabled=()
     for _ek in "${_pk_enabled[@]}"; do _enabled["$_ek"]=1; done
@@ -33339,12 +33404,23 @@ _col_picker() {
         [[ $_en_count -gt 1 ]] && ((_tw += _en_count - 1))
         echo ""
         echo -e "  ${WHITE}${_en_count}/${_total} columns visible (table width: ~${_tw} chars)${NC}"
+
+        local _z_state _z_hint
+        if [[ "${_pk_zebra:-0}" == "1" ]]; then
+            _z_state="${GREEN}on${NC}"
+            _z_hint="shaded band on alternate rows"
+        else
+            _z_state="${GRAY}off${NC}"
+            _z_hint="helps track a row across wide tables"
+        fi
+        echo -e "  ${WHITE}Row striping: ${_z_state}  ${GRAY}(${_z_hint})${NC}"
         echo ""
         echo -e "  ${GRAY}Toggle: ${WHITE}3${GRAY}, ${WHITE}1,3,5${GRAY}, ${WHITE}1-5${GRAY}  │  ${WHITE}all${GRAY} = show all  ${WHITE}none${GRAY} = hide all (except locked)${NC}"
         echo -e "  ${GRAY}Width:  ${WHITE}w2${GRAY} = resize col 2  │  ${WHITE}reset${GRAY} = restore default widths${NC}"
+        echo -e "  ${GRAY}Rows:   ${WHITE}z${GRAY} = toggle row striping${NC}"
         echo -e "  ${GRAY}${WHITE}Enter${GRAY} = save & back${NC}"
         echo ""
-        _ui_prompt "Column Visibility" "1-${_total}, w#, all, none, reset, Enter"
+        _ui_prompt "Column Visibility" "1-${_total}, w#, z, all, none, reset, Enter"
         local _input
         read -r _input
         case "${_input:-}" in
@@ -33363,7 +33439,8 @@ _col_picker() {
                 done
                 _col_save "$_pfx"
                 _col_build_fmt "$_pfx"
-                echo -e "  ${GREEN}✓ Saved ${#_pk_enabled[@]} columns${NC}"
+                local _z_saved="off"; [[ "${_pk_zebra:-0}" == "1" ]] && _z_saved="on"
+                echo -e "  ${GREEN}✓ Saved ${#_pk_enabled[@]} columns, striping ${_z_saved}${NC}"
                 sleep 0.5
                 return
                 ;;
@@ -33409,6 +33486,16 @@ _col_picker() {
                     echo -e "  ${RED}Invalid width: ${_nw}${NC}"
                     sleep 1
                 fi
+                ;;
+            z|Z)
+                if [[ "${_pk_zebra:-0}" == "1" ]]; then
+                    _pk_zebra=0
+                    echo -e "  ${GREEN}✓ Row striping off${NC}"
+                else
+                    _pk_zebra=1
+                    echo -e "  ${GREEN}✓ Row striping on${NC}"
+                fi
+                sleep 0.4
                 ;;
             reset|RESET)
                 for _i in "${!_pk_keys[@]}"; do
@@ -33457,6 +33544,9 @@ _PROP_HDR_ARGS=()
 _PROP_SEP_WIDTH=0
 _PROP_COL_COUNT=0
 _PROP_ENABLED_INDICES=()
+_PROP_COL_ZEBRA_DEFAULT=0   # row striping out of the box; user overrides via col "z"
+_PROP_COL_ZEBRA=0
+_PROP_COL_ZEBRA_ROW=0
 _PROP_SEARCH_HDR_FMT=""
 _PROP_SEARCH_HDR_ARGS=()
 _PROP_SEARCH_SEP_WIDTH=0
@@ -33484,6 +33574,9 @@ _INST_HDR_ARGS=()
 _INST_SEP_WIDTH=0
 _INST_COL_COUNT=0
 _INST_ENABLED_INDICES=()
+_INST_COL_ZEBRA_DEFAULT=1   # row striping out of the box; user overrides via col "z"
+_INST_COL_ZEBRA=1
+_INST_COL_ZEBRA_ROW=0
 _INST_SEARCH_HDR_FMT=""
 _INST_SEARCH_HDR_ARGS=()
 _INST_SEARCH_SEP_WIDTH=0
@@ -33511,6 +33604,9 @@ _CTOP_HDR_ARGS=()
 _CTOP_SEP_WIDTH=0
 _CTOP_COL_COUNT=0
 _CTOP_ENABLED_INDICES=()
+_CTOP_COL_ZEBRA_DEFAULT=0   # row striping out of the box; user overrides via col "z"
+_CTOP_COL_ZEBRA=0
+_CTOP_COL_ZEBRA_ROW=0
 _CTOP_SEARCH_HDR_FMT=""
 _CTOP_SEARCH_HDR_ARGS=()
 _CTOP_SEARCH_SEP_WIDTH=0
@@ -33541,6 +33637,9 @@ _CHOST_HDR_ARGS=()
 _CHOST_SEP_WIDTH=0
 _CHOST_COL_COUNT=0
 _CHOST_ENABLED_INDICES=()
+_CHOST_COL_ZEBRA_DEFAULT=0   # row striping out of the box; user overrides via col "z"
+_CHOST_COL_ZEBRA=0
+_CHOST_COL_ZEBRA_ROW=0
 _CHOST_SEARCH_HDR_FMT=""
 _CHOST_SEARCH_HDR_ARGS=()
 _CHOST_SEARCH_SEP_WIDTH=0
@@ -33572,6 +33671,9 @@ _FWB_HDR_ARGS=()
 _FWB_SEP_WIDTH=0
 _FWB_COL_COUNT=0
 _FWB_ENABLED_INDICES=()
+_FWB_COL_ZEBRA_DEFAULT=0   # row striping out of the box; user overrides via col "z"
+_FWB_COL_ZEBRA=0
+_FWB_COL_ZEBRA_ROW=0
 _FWB_SEARCH_HDR_FMT=""
 _FWB_SEARCH_HDR_ARGS=()
 _FWB_SEARCH_SEP_WIDTH=0
@@ -33596,6 +33698,9 @@ _ANN_HDR_ARGS=()
 _ANN_SEP_WIDTH=0
 _ANN_COL_COUNT=0
 _ANN_ENABLED_INDICES=()
+_ANN_COL_ZEBRA_DEFAULT=0   # row striping out of the box; user overrides via col "z"
+_ANN_COL_ZEBRA=0
+_ANN_COL_ZEBRA_ROW=0
 
 # ── Column config — ME (Maintenance Events, --manage o,3) ──
 _ME_COL_CONF="$ME_COLUMNS_CONF"
@@ -33616,6 +33721,9 @@ _ME_HDR_ARGS=()
 _ME_SEP_WIDTH=0
 _ME_COL_COUNT=0
 _ME_ENABLED_INDICES=()
+_ME_COL_ZEBRA_DEFAULT=0   # row striping out of the box; user overrides via col "z"
+_ME_COL_ZEBRA=0
+_ME_COL_ZEBRA_ROW=0
 
 # ── Column config — AUD (Audit Logs, --manage o,6) ──
 _AUD_COL_CONF="$AUD_COLUMNS_CONF"
@@ -33636,6 +33744,9 @@ _AUD_HDR_ARGS=()
 _AUD_SEP_WIDTH=0
 _AUD_COL_COUNT=0
 _AUD_ENABLED_INDICES=()
+_AUD_COL_ZEBRA_DEFAULT=0   # row striping out of the box; user overrides via col "z"
+_AUD_COL_ZEBRA=0
+_AUD_COL_ZEBRA_ROW=0
 _AUD_SEARCH_HDR_FMT=""
 _AUD_SEARCH_HDR_ARGS=()
 _AUD_SEARCH_SEP_WIDTH=0
@@ -35096,8 +35207,6 @@ manage_compute_instances() {
         printf "${BOLD}${_INST_HDR_FMT}${NC}\n" "${_INST_HDR_ARGS[@]}"
         print_separator $_INST_SEP_WIDTH
 
-        # Enable Excel-style zebra striping for this render; parity counter starts at 0
-        _COL_ZEBRA="INST"; _COL_ZEBRA_ROW=0
 
         # Sort by time-created (ascending - oldest first, newest last)
         # Uses process substitution (not pipeline) so the while loop runs in the main
@@ -35238,7 +35347,6 @@ manage_compute_instances() {
             select(.["lifecycle-state"] != "TERMINATED") |
             "\(.["time-created"] // "N/A")|\(.["display-name"])|\(.["lifecycle-state"])|\(.shape)|\(.["availability-domain"])|\(.["fault-domain"] // "N/A")|\(.id)|\(.["system-tags"]["orcl-containerengine"]["NodePool"] // "")|\(.["system-tags"]["orcl-containerengine"]["Cluster"] // "")"
         ' <<< "$instances_json" 2>/dev/null | sort -t'|' -k1,1)
-        _COL_ZEBRA=""   # disable striping after the instance render
 
         local total_instances=${#INSTANCE_INDEX_MAP[@]}
         echo ""
@@ -44435,6 +44543,9 @@ manage_firmware_bundles() {
             done
             _FWB_ENABLED_COLS=("${_tmp_cols[@]}")
             _FWB_COL_COUNT=${#_FWB_ENABLED_COLS[@]}
+            # This path rebuilds the format by hand rather than via _col_build_fmt,
+            # so it has to reset zebra row parity itself.
+            _FWB_COL_ZEBRA_ROW=0
             _FWB_ENABLED_INDICES=()
             for _ek in "${_FWB_ENABLED_COLS[@]}"; do
                 for _ki in "${!_FWB_COL_KEYS[@]}"; do
