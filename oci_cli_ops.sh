@@ -451,7 +451,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.36.0"
+readonly SCRIPT_VERSION="3.37.0"
 readonly SCRIPT_VERSION_DATE="2026-09-04"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -60506,36 +60506,72 @@ manage_compute_hosts() {
         echo ""
 
         #-----------------------------------------------------------------------
-        # Summary (State / Health / Shape counts + Impacted)
+        # Lifecycle Summary (consolidated State + Health)
+        #
+        # Mirrors the c5 Capacity Topology summary. Cross-tabulates the two axes
+        # the compute-host API reports independently — lifecycle-state
+        # (AVAILABLE/OCCUPIED/PROVISIONING/REPAIR/UNAVAILABLE) and health
+        # (HEALTHY/UNHEALTHY). The previous one-line "By State"/"By Health"
+        # marginals could not show the pairing: they reported 4 UNHEALTHY hosts
+        # without saying which states those sat in.
+        #
+        # Note this is a DIFFERENT vocabulary from the c5 table, which reads the
+        # capacity-topology API (ACTIVE/INACTIVE + AVAILABLE/DEGRADED/UNAVAILABLE).
+        # The two views describe the same hardware through different APIs.
+        #-----------------------------------------------------------------------
+        _ui_subheader "Lifecycle Summary" 0
+        printf "  ${BOLD}%-15s %-30s %8s %8s${NC}\n" "STATE" "HEALTH" "COUNT" "PERCENT"
+        echo -e "  ${GRAY}────────────────────────────────────────────────────────────────${NC}"
+
+        while IFS='|' read -r _ls_state _ls_health _ls_count; do
+            [[ -z "$_ls_state" ]] && continue
+            local _ls_pct
+            _ls_pct=$(_calc 1 "$_ls_count * 100 / $total_hosts") || _ls_pct="0"
+
+            # Colours mirror the RDMA tree above so both agree at a glance
+            local _ls_sc="$WHITE"
+            case "$_ls_state" in
+                OCCUPIED)  _ls_sc="$GREEN" ;;
+                AVAILABLE) _ls_sc="$CYAN" ;;
+                INACTIVE)  _ls_sc="$YELLOW" ;;
+                *)         _ls_sc="$RED" ;;
+            esac
+            local _ls_hc="$WHITE"
+            case "$_ls_health" in
+                HEALTHY)           _ls_hc="$GREEN" ;;
+                DEGRADED|IMPAIRED) _ls_hc="$YELLOW" ;;
+                UNHEALTHY|FAILED)  _ls_hc="$RED" ;;
+                *)                 _ls_hc="$GRAY" ;;
+            esac
+
+            printf "  ${_ls_sc}%-15s${NC} ${_ls_hc}%-30s${NC} %8s %7s%%\n" \
+                "$_ls_state" "$_ls_health" "$_ls_count" "$_ls_pct"
+        done < <(grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' '{
+            state  = ($2 == "" || $2 == "N/A") ? "(none)" : $2
+            health = ($3 == "" || $3 == "N/A") ? "(none)" : $3
+            count[state "|" health]++
+        } END {
+            for (k in count) printf "%s|%d\n", k, count[k]
+        }' | sort -t'|' -k3 -rn)
+
+        echo ""
+
+        # ── Legend ──
+        echo -e "  ${GRAY}┌────────────────────────────────────────────────────────────────────────────────────────┐${NC}"
+        echo -e "  ${GRAY}│${NC}${GRAY} ${BOLD}${WHITE}Lifecycle Legend:${NC}${GRAY} State and Health are two independent axes on a compute host          ${GRAY}│${NC}"
+        echo -e "  ${GRAY}│${NC}${GRAY}  ${CYAN}AVAILABLE${GRAY} / ${GREEN}HEALTHY${GRAY}   = Host free, hardware sound — ready to provision                ${GRAY}│${NC}"
+        echo -e "  ${GRAY}│${NC}${GRAY}  ${GREEN}OCCUPIED${GRAY}  / ${GREEN}HEALTHY${GRAY}   = Instance running on sound hardware                            ${GRAY}│${NC}"
+        echo -e "  ${GRAY}│${NC}${GRAY}  ${RED}PROVISIONING${GRAY}          = Host being prepared — transient, not yet allocatable          ${GRAY}│${NC}"
+        echo -e "  ${GRAY}│${NC}${GRAY}  ${RED}REPAIR${GRAY}                = Host under hardware repair                                    ${GRAY}│${NC}"
+        echo -e "  ${GRAY}│${NC}${GRAY}  ${RED}UNAVAILABLE${GRAY}           = Host not allocatable                                          ${GRAY}│${NC}"
+        echo -e "  ${GRAY}│${NC}${GRAY}  Health ${RED}UNHEALTHY${GRAY}      = Hardware fault; see ${LIGHT_RED}[Impacted]${GRAY} tags in the tree above         ${GRAY}│${NC}"
+        echo -e "  ${GRAY}└────────────────────────────────────────────────────────────────────────────────────────┘${NC}"
+        echo ""
+
+        #-----------------------------------------------------------------------
+        # Summary (Shape counts + Impacted; State/Health live in Lifecycle Summary)
         #-----------------------------------------------------------------------
         _ui_subheader "Summary" 0
-
-        # Summary by State
-        echo -n -e "  ${BOLD}${WHITE}By State:${NC}   "
-        while read -r cnt st; do
-            local _sc="$WHITE"
-            case "$st" in
-                OCCUPIED) _sc="$GREEN" ;;
-                AVAILABLE) _sc="$CYAN" ;;
-                INACTIVE) _sc="$YELLOW" ;;
-                *) _sc="$RED" ;;
-            esac
-            echo -n -e "${_sc}${st}${NC}(${cnt})  "
-        done < <(grep -v "^#" "$COMPUTE_HOST_CACHE" | cut -d'|' -f2 | sort | uniq -c | sort -rn)
-        echo ""
-
-        # Summary by Health
-        echo -n -e "  ${BOLD}${WHITE}By Health:${NC}  "
-        while read -r cnt ht; do
-            local _hc="$WHITE"
-            case "$ht" in
-                HEALTHY) _hc="$GREEN" ;;
-                DEGRADED|IMPAIRED) _hc="$YELLOW" ;;
-                UNHEALTHY|FAILED) _hc="$RED" ;;
-            esac
-            echo -n -e "${_hc}${ht}${NC}(${cnt})  "
-        done < <(grep -v "^#" "$COMPUTE_HOST_CACHE" | cut -d'|' -f3 | sort | uniq -c | sort -rn)
-        echo ""
 
         # Summary by Shape
         echo -n -e "  ${BOLD}${WHITE}By Shape:${NC}   "
