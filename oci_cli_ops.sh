@@ -451,7 +451,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.35.0"
+readonly SCRIPT_VERSION="3.35.1"
 readonly SCRIPT_VERSION_DATE="2026-09-04"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -63336,13 +63336,35 @@ _storage_compare() {
         fi
         _v_nvme_health+=("$_nh")
 
-        # Total disk (sum sizes from LSBLK_DEVICES)
+        # Total disk — sum the SIZE column from LSBLK_DEVICES.
+        # The emitter is `lsblk -d -o NAME,ROTA,DISC-GRAN,MODEL,SERIAL,REV,SIZE`,
+        # so SIZE is the LAST field. Index from $NF, not a fixed column: MODEL
+        # routinely contains spaces ("Dell Express Flash NVMe") which shifts every
+        # position after it. This previously read $4 (MODEL), summed device model
+        # names, and so always fell back to N/A.
+        # lsblk suffixes are binary (K/M/G/T/P = KiB..PiB); normalise to GiB and
+        # render in the largest unit that keeps the number short.
         local _total="N/A"
         if [[ -n "$_lsblk_dev" && "$_lsblk_dev" != *"unavailable"* ]]; then
-            local _sum_expr
-            _sum_expr=$(echo "$_lsblk_dev" | awk '/^(sd|vd|nvme)/{print $4}' | paste -sd+)
-            _total=$(_calc 1 "$_sum_expr") || _total="N/A"
-            [[ -n "$_total" && "$_total" != "N/A" ]] && _total="${_total}G"
+            _total=$(echo "$_lsblk_dev" | awk '
+                /^(sd|vd|nvme)/ {
+                    sz = $NF
+                    unit = substr(sz, length(sz), 1)
+                    val  = substr(sz, 1, length(sz) - 1) + 0
+                    if      (unit == "P") gib += val * 1048576
+                    else if (unit == "T") gib += val * 1024
+                    else if (unit == "G") gib += val
+                    else if (unit == "M") gib += val / 1024
+                    else if (unit == "K") gib += val / 1048576
+                    else                  gib += (sz + 0) / 1073741824
+                    n++
+                }
+                END {
+                    if (n == 0) { print "N/A"; exit }
+                    if (gib >= 1024) printf "%.1fT\n", gib / 1024
+                    else             printf "%.1fG\n", gib
+                }' 2>/dev/null)
+            [[ -z "$_total" ]] && _total="N/A"
         fi
         _v_total_disk+=("$_total")
     done
