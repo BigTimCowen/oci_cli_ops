@@ -26,7 +26,8 @@
 #   Optional: OKE_CLUSTER_ID to specify which OKE cluster to manage
 #
 # Author: Tim Cowen
-# Version: 3.32.3 (2026-04-09)
+# Version: single source of truth is SCRIPT_VERSION / SCRIPT_VERSION_DATE below;
+#          shown at runtime in every menu header. Do not restate it here.
 # Please use at your own risk.
 #
 #===============================================================================
@@ -450,8 +451,8 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.34.97"
-readonly SCRIPT_VERSION_DATE="2026-09-03"
+readonly SCRIPT_VERSION="3.35.0"
+readonly SCRIPT_VERSION_DATE="2026-09-04"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
 ( umask 077 && mkdir -p "$CACHE_DIR" 2>/dev/null )
@@ -1560,6 +1561,43 @@ _step_progress_start() {
 # Usage: _clc "$CACHE_FILE"  →  "12" or "0"
 _clc() { local _n; _n=$(grep -v '^#' "$1" 2>/dev/null | grep -c . 2>/dev/null); echo "${_n:-0}"; }
 
+# Fixed-point arithmetic without the `bc` dependency
+# ---------------------------------------------------------------------------
+# OCI Cloud Shell ships without `bc`, so `echo "..." | bc` dies there with
+# "bc: command not found" and yields an empty field. awk is present in every
+# environment this script runs in (Cloud Shell, OL, Ubuntu), so it is the
+# portable substitute.
+#
+# Usage: _calc <scale> <expression>
+#   _calc 1 "3 * 100 / 120"   → 2.5
+#   _calc 2 "$bytes / 1073741824"
+#
+# Notes:
+#   - Rounds to nearest at <scale> digits (printf ties-to-even); `bc` truncated.
+#     Rounding is the safer behaviour for the TB->GB conversions: 31.2 * 1000 is
+#     31199.999999999996 in IEEE754, which truncation would turn into 31199.
+#   - `_calc 0` always yields a bare integer, so its output is safe inside
+#     $(( )) and % — lfs_validate_capacity and the --capacity-in-gbs API call
+#     both depend on that.
+#   - Returns "0" with rc=1 on an empty, non-arithmetic, or undefined result
+#     (divide-by-zero, inf, nan) so callers never render a blank column.
+#   - The expression is evaluated by awk, so only arithmetic characters are
+#     accepted — never interpolate unvalidated input into it.
+#
+# Reuse: use this anywhere non-integer math is needed instead of `bc`.
+_calc() {
+    local _c_scale="${1:-2}" _c_expr="${2:-}" _c_out
+    [[ "$_c_scale" =~ ^[0-9]+$ ]] || _c_scale=2
+    if [[ -z "$_c_expr" || ! "$_c_expr" =~ ^[0-9eE.+*/()[:space:]-]+$ ]]; then
+        echo "0"; return 1
+    fi
+    _c_out=$(awk -v s="$_c_scale" "BEGIN { printf \"%.*f\", s, ($_c_expr) }" 2>/dev/null) || _c_out=""
+    if [[ ! "$_c_out" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "0"; return 1
+    fi
+    printf '%s\n' "$_c_out"
+}
+
 # Wait for an array of background PIDs with optional debug logging on failure
 # Usage: _wait_pids <label> pid1 pid2 ...
 # Logs per-pid failures when DEBUG_MODE=true; always returns count of failures
@@ -1850,8 +1888,13 @@ _k8s_usable() {
 
 # Build formatted tools/auth line for environment display headers
 # Usage: local line; line=$(_build_tools_line)
+#
+# Leads with this script's own version so the copy being run is identifiable at
+# a glance — the same tree is commonly checked out on a workstation and in Cloud
+# Shell, and previously nothing on screen distinguished them.
 _build_tools_line() {
-    local tl="${CYAN}OCI CLI:${NC} ${GREEN}${_TOOL_OCI_VER:-n/a}${NC}"
+    local tl="${CYAN}ops:${NC} ${GREEN}${SCRIPT_VERSION}${NC} ${GRAY}(${SCRIPT_VERSION_DATE})${NC}"
+    tl+="  ${GRAY}│${NC}  ${CYAN}OCI CLI:${NC} ${GREEN}${_TOOL_OCI_VER:-n/a}${NC}"
     # Auth color follows Focus convention: GREEN=config (env var/file), CYAN=derived (auto-detected)
     local _auth_color="$GREEN"
     [[ "${_TOOL_OCI_AUTH_SOURCE:-config}" == "derived" ]] && _auth_color="$CYAN"
@@ -54329,7 +54372,7 @@ fss_recursive_delete_file_system() {
     local fs_metered
     fs_metered=$(jq -r '.data["metered-bytes"]' <<< "$fs_json" 2>/dev/null)
     local fs_metered_gb="0"
-    [[ -n "$fs_metered" && "$fs_metered" != "null" ]] && fs_metered_gb=$(echo "scale=2; $fs_metered / 1073741824" | bc 2>/dev/null || echo "0")
+    [[ -n "$fs_metered" && "$fs_metered" != "null" ]] && fs_metered_gb=$(_calc 2 "$fs_metered / 1073741824")
     
     echo -e "  ${CYAN}File System:${NC} ${WHITE}$fs_name${NC} (${fs_state}) - ${fs_metered_gb} GB"
     echo -e "  ${GRAY}$fs_id${NC}"
@@ -54896,11 +54939,11 @@ fss_show_overview() {
                     local fs_size="0 B"
                     if [[ -n "$fs_bytes" && "$fs_bytes" != "null" && "$fs_bytes" -gt 0 ]] 2>/dev/null; then
                         if [[ "$fs_bytes" -ge 1073741824 ]]; then
-                            fs_size="$(echo "scale=1; $fs_bytes / 1073741824" | bc) GB"
+                            fs_size="$(_calc 1 "$fs_bytes / 1073741824") GB"
                         elif [[ "$fs_bytes" -ge 1048576 ]]; then
-                            fs_size="$(echo "scale=1; $fs_bytes / 1048576" | bc) MB"
+                            fs_size="$(_calc 1 "$fs_bytes / 1048576") MB"
                         elif [[ "$fs_bytes" -ge 1024 ]]; then
-                            fs_size="$(echo "scale=1; $fs_bytes / 1024" | bc) KB"
+                            fs_size="$(_calc 1 "$fs_bytes / 1024") KB"
                         else
                             fs_size="${fs_bytes} B"
                         fi
@@ -54961,11 +55004,11 @@ fss_show_overview() {
             local fs_size="0 B"
             if [[ -n "$fs_bytes" && "$fs_bytes" != "null" && "$fs_bytes" -gt 0 ]] 2>/dev/null; then
                 if [[ "$fs_bytes" -ge 1073741824 ]]; then
-                    fs_size="$(echo "scale=1; $fs_bytes / 1073741824" | bc) GB"
+                    fs_size="$(_calc 1 "$fs_bytes / 1073741824") GB"
                 elif [[ "$fs_bytes" -ge 1048576 ]]; then
-                    fs_size="$(echo "scale=1; $fs_bytes / 1048576" | bc) MB"
+                    fs_size="$(_calc 1 "$fs_bytes / 1048576") MB"
                 elif [[ "$fs_bytes" -ge 1024 ]]; then
-                    fs_size="$(echo "scale=1; $fs_bytes / 1024" | bc) KB"
+                    fs_size="$(_calc 1 "$fs_bytes / 1024") KB"
                 else
                     fs_size="${fs_bytes} B"
                 fi
@@ -55037,7 +55080,7 @@ fss_show_file_system_detail() {
     time_created=$(jq -r '.data["time-created"] // "N/A"' <<< "$fs_json")
     
     local metered_gb="0"
-    [[ -n "$metered_bytes" && "$metered_bytes" != "null" ]] && metered_gb=$(echo "scale=2; $metered_bytes / 1073741824" | bc 2>/dev/null || echo "0")
+    [[ -n "$metered_bytes" && "$metered_bytes" != "null" ]] && metered_gb=$(_calc 2 "$metered_bytes / 1073741824")
     
     echo -e "  ${CYAN}Name:${NC}              ${WHITE}$name${NC}"
     echo -e "  ${CYAN}State:${NC}             ${WHITE}$state${NC}"
@@ -55345,7 +55388,7 @@ fss_list_file_systems() {
         
         # Convert bytes to GB
         local metered_gb="0"
-        [[ -n "$metered_bytes" && "$metered_bytes" != "null" ]] && metered_gb=$(echo "scale=2; $metered_bytes / 1073741824" | bc 2>/dev/null || echo "0")
+        [[ -n "$metered_bytes" && "$metered_bytes" != "null" ]] && metered_gb=$(_calc 2 "$metered_bytes / 1073741824")
         
         # Extract AD name (last part)
         local ad_short="${ad_name##*:}"
@@ -56011,7 +56054,7 @@ manage_lustre_file_systems() {
                     # Convert capacity to TB
                     local capacity_display="N/A"
                     if [[ "$capacity_gb" =~ ^[0-9]+$ ]] && [[ "$capacity_gb" -gt 0 ]]; then
-                        capacity_display=$(echo "scale=1; $capacity_gb / 1000" | bc)
+                        capacity_display=$(_calc 1 "$capacity_gb / 1000")
                         capacity_display="${capacity_display}TB"
                     fi
                     
@@ -56190,7 +56233,8 @@ _display_lfs_details() {
             .["file-system-name"] // "N/A",
             .["mgs-address"] // "N/A"
         ] | @tsv' <<< "$lfs_json")
-    local capacity_tb=$(echo "scale=1; $capacity_gb / 1000" | bc)
+    local capacity_tb
+    capacity_tb=$(_calc 1 "$capacity_gb / 1000") || capacity_tb="0"
     
     # Performance tier
     local performance_tier
@@ -56207,7 +56251,7 @@ _display_lfs_details() {
         esac
         if [[ "$tier_value" -gt 0 ]]; then
             local expected_throughput
-            expected_throughput=$(echo "$capacity_tb * $tier_value" | bc | cut -d'.' -f1)
+            expected_throughput=$(_calc 1 "$capacity_tb * $tier_value" | cut -d'.' -f1)
             throughput_display="${expected_throughput} MB/s (${tier_value} MB/s per TB)"
         fi
     fi
@@ -56396,7 +56440,7 @@ lfs_list_file_systems() {
         local capacity_display
         if [[ "$capacity_gb" =~ ^[0-9]+$ ]] && [[ "$capacity_gb" -gt 500 ]]; then
             # Likely in GB, convert to TB
-            capacity_display=$(echo "scale=1; $capacity_gb / 1000" | bc)
+            capacity_display=$(_calc 1 "$capacity_gb / 1000")
             capacity_display="${capacity_display}TB"
         else
             capacity_display="${capacity_gb}TB"
@@ -56620,7 +56664,7 @@ lfs_create_file_system() {
             # Validate the capacity
             if ! lfs_validate_capacity "$capacity_tb"; then
                 local entered_gb
-                entered_gb=$(echo "scale=0; $capacity_tb * 1000 / 1" | bc 2>/dev/null)
+                entered_gb=$(_calc 0 "$capacity_tb * 1000")
                 echo -e "${RED}Invalid capacity. ${entered_gb} GB is not a multiple of 10,400 GB.${NC}"
                 echo -e "${GRAY}Nearest valid values: $(( (entered_gb / 10400) * 10400 )) GB or $(( ((entered_gb / 10400) + 1) * 10400 )) GB${NC}"
                 return
@@ -56651,10 +56695,10 @@ lfs_create_file_system() {
     # Calculate expected throughput
     local expected_throughput
     case "$performance_tier" in
-        MBPS_PER_TB_125) expected_throughput=$(echo "$capacity_tb * 125" | bc) ;;
-        MBPS_PER_TB_250) expected_throughput=$(echo "$capacity_tb * 250" | bc) ;;
-        MBPS_PER_TB_500) expected_throughput=$(echo "$capacity_tb * 500" | bc) ;;
-        MBPS_PER_TB_1000) expected_throughput=$(echo "$capacity_tb * 1000" | bc) ;;
+        MBPS_PER_TB_125) expected_throughput=$(_calc 1 "$capacity_tb * 125") ;;
+        MBPS_PER_TB_250) expected_throughput=$(_calc 1 "$capacity_tb * 250") ;;
+        MBPS_PER_TB_500) expected_throughput=$(_calc 1 "$capacity_tb * 500") ;;
+        MBPS_PER_TB_1000) expected_throughput=$(_calc 1 "$capacity_tb * 1000") ;;
     esac
     echo -e "${GRAY}  Expected throughput: ~${expected_throughput} MB/s${NC}"
     
@@ -56749,7 +56793,7 @@ lfs_create_file_system() {
     # API requires multiples of 10400 GB
     # Preset values: 31.2 TB = 31200 GB, 41.6 TB = 41600 GB, etc.
     local capacity_gb
-    capacity_gb=$(echo "scale=0; $capacity_tb * 1000 / 1" | bc)
+    capacity_gb=$(_calc 0 "$capacity_tb * 1000")
     
     # Build root-squash-configuration JSON (identitySquash required by API)
     local root_squash_config="{\"rootSquash\": \"$root_squash\", \"identitySquash\": \"NONE\"}"
@@ -56881,7 +56925,7 @@ lfs_validate_capacity() {
     
     # Convert to GB and check if it's a multiple of 10400
     local capacity_gb
-    capacity_gb=$(echo "scale=0; $capacity * 1000 / 1" | bc)
+    capacity_gb=$(_calc 0 "$capacity * 1000")
     
     # Minimum is 31200 GB (3 * 10400)
     if [[ "$capacity_gb" -lt 31200 ]]; then
@@ -56919,7 +56963,7 @@ lfs_update_file_system() {
     
     # Convert GB to TB for display (1000 GB = 1 TB for Lustre)
     local current_capacity_tb
-    current_capacity_tb=$(echo "scale=1; $current_capacity_gb / 1000" | bc)
+    current_capacity_tb=$(_calc 1 "$current_capacity_gb / 1000")
     
     local current_name
     current_name=$(jq -r '.data["display-name"] // "N/A"' <<< "$lfs_json")
@@ -56995,7 +57039,8 @@ lfs_update_file_system() {
                 for i in 1 2 3 4 5; do
                     if [[ "$next_gb" -le 124800 ]]; then
                         next_caps_gb+=("$next_gb")
-                        local tb_val=$(echo "scale=1; $next_gb / 1000" | bc)
+                        local tb_val
+                        tb_val=$(_calc 1 "$next_gb / 1000") || tb_val="0"
                         next_caps_tb+=("$tb_val")
                         next_gb=$((next_gb + 10400))
                     else
@@ -57016,7 +57061,8 @@ lfs_update_file_system() {
                 fi
                 for i in 1 2 3 4 5; do
                     next_caps_gb+=("$next_gb")
-                    local tb_val=$(echo "scale=1; $next_gb / 1000" | bc)
+                    local tb_val
+                    tb_val=$(_calc 1 "$next_gb / 1000") || tb_val="0"
                     next_caps_tb+=("$tb_val")
                     next_gb=$((next_gb + 41600))
                 done
@@ -57064,7 +57110,7 @@ lfs_update_file_system() {
                     return
                 fi
                 
-                new_capacity_tb=$(echo "scale=1; $new_capacity_gb / 1000" | bc)
+                new_capacity_tb=$(_calc 1 "$new_capacity_gb / 1000")
             elif [[ "$cap_selection" =~ ^[0-9]+$ ]] && [[ "$cap_selection" -ge 1 ]] && [[ "$cap_selection" -le ${#next_caps_gb[@]} ]]; then
                 new_capacity_gb="${next_caps_gb[$((cap_selection-1))]}"
                 new_capacity_tb="${next_caps_tb[$((cap_selection-1))]}"
@@ -58062,8 +58108,11 @@ manage_capacity_topology() {
         
         # Aligned tree line helper
         # Args: prefix, label_color, label_text, label_pad_width, count, value_color, value
-        # Visible column widths: CT=2, HPC=6, NB=10, LB=14, Shape=18
-        # Target alignment column = 45; label_pad = 45 - prefix_visible
+        # Visible prefix widths: CT=2, HPC=6, NB=10, LB=14, Host=18
+        # Target label column = 43 (label_pad = 43 - prefix_visible), which puts
+        # every OCID at column 56 — the same geometry as the c5 "RDMA Tree" view.
+        # Host rows put [State] on that same column 56 and their OCID on 81:
+        # 81 + 85 (OCID) + 11 (" ✓ instance") = 177 = UI_WIDTH, so nothing wraps.
         _ro_line() {
             local prefix="$1" lcolor="$2" label="$3" lwidth="$4" count="$5" vcolor="$6" value="$7"
             echo -n -e "${prefix}${lcolor}"
@@ -58081,7 +58130,7 @@ manage_capacity_topology() {
             [[ -z "$ro_tid" ]] && continue
             local ro_tid_cnt
             ro_tid_cnt=$(grep -v "^#" "$CAPACITY_TOPOLOGY_CACHE" | awk -F'|' -v t="$ro_tid" '$4 == t' | wc -l)
-            _ro_line "  " "${BOLD}${WHITE}" "Capacity Topology:" 43 "$ro_tid_cnt" "${YELLOW}" "$ro_tid"
+            _ro_line "  " "${BOLD}${WHITE}" "Capacity Topology:" 41 "$ro_tid_cnt" "${YELLOW}" "$ro_tid"
         done <<< "$ro_topo_ocids"
 
         # Get unique HPC Islands, N/A sorted last
@@ -58108,8 +58157,8 @@ manage_capacity_topology() {
             local r_hpc_cnt
             r_hpc_cnt=$(echo "$r_hpc_hosts" | grep -c . 2>/dev/null)
             
-            # HPC Island (prefix visible=6, pad=39)
-            _ro_line "  ${r_hpc_conn}── " "${BOLD}${CYAN}" "HPC Island:" 39 "$r_hpc_cnt" "${YELLOW}" "$r_hpc_display"
+            # HPC Island (prefix visible=6, pad=37)
+            _ro_line "  ${r_hpc_conn}── " "${BOLD}${CYAN}" "HPC Island:" 37 "$r_hpc_cnt" "${YELLOW}" "$r_hpc_display"
             
             # Network Blocks within this HPC Island
             local r_net_blocks
@@ -58134,8 +58183,8 @@ manage_capacity_topology() {
                 local r_nb_cnt
                 r_nb_cnt=$(echo "$r_nb_hosts" | grep -c . 2>/dev/null)
                 
-                # Network Block (prefix visible=10, pad=35)
-                _ro_line "  ${r_hpc_pipe}   ${r_nb_conn}── " "${BOLD}${MAGENTA}" "Network Block:" 35 "$r_nb_cnt" "${YELLOW}" "$r_nb_display"
+                # Network Block (prefix visible=10, pad=33)
+                _ro_line "  ${r_hpc_pipe}   ${r_nb_conn}── " "${BOLD}${MAGENTA}" "Network Block:" 33 "$r_nb_cnt" "${YELLOW}" "$r_nb_display"
                 
                 # Local Blocks within this Network Block
                 local r_local_blocks
@@ -58160,8 +58209,8 @@ manage_capacity_topology() {
                     local r_lb_cnt
                     r_lb_cnt=$(echo "$r_lb_hosts" | grep -c . 2>/dev/null)
                     
-                    # Local Block (prefix visible=14, pad=31)
-                    _ro_line "  ${r_hpc_pipe}   ${r_nb_pipe}   ${r_lb_conn}── " "${BOLD}${BLUE}" "Local Block:" 31 "$r_lb_cnt" "${YELLOW}" "$r_lb_display"
+                    # Local Block (prefix visible=14, pad=29)
+                    _ro_line "  ${r_hpc_pipe}   ${r_nb_pipe}   ${r_lb_conn}── " "${BOLD}${BLUE}" "Local Block:" 29 "$r_lb_cnt" "${YELLOW}" "$r_lb_display"
                     
                     # List individual hosts under each Local Block
                     local r_host_idx=0
@@ -58199,16 +58248,29 @@ manage_capacity_topology() {
                         [[ "$_r_host_display" == "N/A" ]] && _r_host_display=""
 
                         # Align [STATE] to start at Local Block OCID column
-                        # Host prefix is 18 visible chars; Local Block OCID starts at col 58
-                        # So shape field needs: 58 - 18 = 40 chars
+                        # Host prefix is 18 visible chars; Local Block OCID starts at col 56
+                        # So shape field needs: 56 - 18 = 38 chars
                         local _r_shape_p
-                        printf -v _r_shape_p '%-40s' "$r_h_shape_display"
+                        printf -v _r_shape_p '%-38s' "$r_h_shape_display"
 
-                        # Details badge in brackets (skip if empty)
-                        local _r_details_badge=""
-                        [[ -n "$r_h_details_display" && "$r_h_details_display" != "-" ]] && _r_details_badge=" [${r_state_color}${r_h_details_display}${NC}]"
+                        # Fixed-width state/details for column alignment.
+                        # State padded to 8 (longest = INACTIVE), details to 11
+                        # (longest = UNAVAILABLE/MAINTENANCE) so [State] [Details]
+                        # and the host OCID stay aligned across every row.
+                        # Rows with no details emit 14 blank columns (" [" + 11 + "]")
+                        # so their OCID lands in the same column as the rest.
+                        local _r_state_p _r_det_p
+                        printf -v _r_state_p '%-8s' "$r_h_state"
 
-                        echo -e "  ${r_hpc_pipe}   ${r_nb_pipe}   ${r_lb_pipe}   ${r_host_conn}── ${CYAN}${_r_shape_p}${NC}[${r_state_color}${r_h_state}${NC}]${_r_details_badge} ${YELLOW}${_r_host_display}${NC}${_r_inst_flag}"
+                        local _r_details_badge
+                        if [[ -n "$r_h_details_display" && "$r_h_details_display" != "-" ]]; then
+                            printf -v _r_det_p '%-11s' "$r_h_details_display"
+                            _r_details_badge=" [${r_state_color}${_r_det_p}${NC}]"
+                        else
+                            printf -v _r_details_badge '%14s' ""
+                        fi
+
+                        echo -e "  ${r_hpc_pipe}   ${r_nb_pipe}   ${r_lb_pipe}   ${r_host_conn}── ${CYAN}${_r_shape_p}${NC}[${r_state_color}${_r_state_p}${NC}]${_r_details_badge} ${YELLOW}${_r_host_display}${NC}${_r_inst_flag}"
                     done < <(echo "$r_lb_hosts" | sort -t'|' -k5,5 -k2,2)
                     
                 done <<< "$r_local_blocks"
@@ -58230,8 +58292,10 @@ manage_capacity_topology() {
         # Get unique state+details combinations with counts, sorted by count descending
         while IFS='|' read -r lc_state lc_details lc_count; do
             [[ -z "$lc_state" ]] && continue
+            # _calc replaces `bc` — Cloud Shell has no bc (see _calc header).
+            # Explicit fallback keeps the column populated if _calc returns rc=1.
             local lc_pct
-            lc_pct=$(echo "scale=1; $lc_count * 100 / $total_hosts" | bc)
+            lc_pct=$(_calc 1 "$lc_count * 100 / $total_hosts") || lc_pct="0"
             
             local lc_state_color="$WHITE"
             case "$lc_state" in
@@ -58901,11 +58965,24 @@ capacity_topology_view_rdma_tree() {
                     local _h_host_display="${h_host_ocid:-}"
                     [[ "$_h_host_display" == "N/A" ]] && _h_host_display=""
 
-                    # Details badge in brackets (skip if empty)
-                    local _h_details_badge=""
-                    [[ -n "$h_details_display" && "$h_details_display" != "-" ]] && _h_details_badge=" [${state_color}${h_details_display}${NC}]"
+                    # Fixed-width state/details for column alignment.
+                    # State padded to 8 (longest = INACTIVE), details to 11
+                    # (longest = UNAVAILABLE/MAINTENANCE) so [State] [Details]
+                    # and the host OCID stay aligned across every row.
+                    # Rows with no details emit 14 blank columns (" [" + 11 + "]")
+                    # so their OCID lands in the same column as the rest.
+                    local _h_state_p _h_det_p
+                    printf -v _h_state_p '%-8s' "$h_state"
 
-                    echo -e "  ${hpc_pipe}   ${nb_pipe}   ${lb_pipe}   ${host_connector}── ${CYAN}${_h_shape_p}${NC}[${state_color}${h_state}${NC}]${_h_details_badge} ${YELLOW}${_h_host_display}${NC}${_h_inst_flag}"
+                    local _h_details_badge
+                    if [[ -n "$h_details_display" && "$h_details_display" != "-" ]]; then
+                        printf -v _h_det_p '%-11s' "$h_details_display"
+                        _h_details_badge=" [${state_color}${_h_det_p}${NC}]"
+                    else
+                        printf -v _h_details_badge '%14s' ""
+                    fi
+
+                    echo -e "  ${hpc_pipe}   ${nb_pipe}   ${lb_pipe}   ${host_connector}── ${CYAN}${_h_shape_p}${NC}[${state_color}${_h_state_p}${NC}]${_h_details_badge} ${YELLOW}${_h_host_display}${NC}${_h_inst_flag}"
                 done < <(echo "$lb_hosts" | sort -t'|' -k2,2)
 
                 echo -e "  ${hpc_pipe}   ${nb_pipe}   ${lb_pipe}"
@@ -63262,7 +63339,9 @@ _storage_compare() {
         # Total disk (sum sizes from LSBLK_DEVICES)
         local _total="N/A"
         if [[ -n "$_lsblk_dev" && "$_lsblk_dev" != *"unavailable"* ]]; then
-            _total=$(echo "$_lsblk_dev" | awk '/^(sd|vd|nvme)/{print $4}' | paste -sd+ | bc 2>/dev/null || echo "N/A")
+            local _sum_expr
+            _sum_expr=$(echo "$_lsblk_dev" | awk '/^(sd|vd|nvme)/{print $4}' | paste -sd+)
+            _total=$(_calc 1 "$_sum_expr") || _total="N/A"
             [[ -n "$_total" && "$_total" != "N/A" ]] && _total="${_total}G"
         fi
         _v_total_disk+=("$_total")
@@ -68221,7 +68300,8 @@ PYEOF
                 local _ad_short="${lfs_ad##*:}"
                 local _cap_display="N/A"
                 if [[ "$lfs_cap" =~ ^[0-9]+$ && "$lfs_cap" -gt 0 ]]; then
-                    _cap_display=$(echo "scale=0; $lfs_cap / 1000" | bc 2>/dev/null)
+                    # Integer floor — plain bash arithmetic, no bc/awk needed
+                    _cap_display=$(( lfs_cap / 1000 ))
                     _cap_display="${_cap_display} TiB"
                 fi
                 local _mgs_display="${lfs_mgs}"
@@ -74412,11 +74492,11 @@ os_view_bucket_details() {
     local size_display="N/A"
     if [[ "$approximate_size" =~ ^[0-9]+$ ]] && [[ "$approximate_size" -gt 0 ]]; then
         if [[ "$approximate_size" -gt 1099511627776 ]]; then
-            size_display=$(echo "scale=2; $approximate_size / 1099511627776" | bc)" TB"
+            size_display="$(_calc 2 "$approximate_size / 1099511627776") TB"
         elif [[ "$approximate_size" -gt 1073741824 ]]; then
-            size_display=$(echo "scale=2; $approximate_size / 1073741824" | bc)" GB"
+            size_display="$(_calc 2 "$approximate_size / 1073741824") GB"
         elif [[ "$approximate_size" -gt 1048576 ]]; then
-            size_display=$(echo "scale=2; $approximate_size / 1048576" | bc)" MB"
+            size_display="$(_calc 2 "$approximate_size / 1048576") MB"
         else
             size_display="${approximate_size} bytes"
         fi
