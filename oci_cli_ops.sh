@@ -451,7 +451,7 @@ _oci_throttle() {
 }
 
 # Script directory and cache paths
-readonly SCRIPT_VERSION="3.35.1"
+readonly SCRIPT_VERSION="3.36.0"
 readonly SCRIPT_VERSION_DATE="2026-09-04"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CACHE_DIR="${SCRIPT_DIR}/cache"
@@ -51241,13 +51241,23 @@ _limits_search_global() {
 
 
 #--------------------------------------------------------------------------------
-# Render Dedicated Pool summary table from Compute Hosts cache
-# Shows per-shape host counts (total / available / in-use) with limit names.
-# Args: $1 = header style: "subheader" uses _ui_subheader, "banner" uses ━━━ line
-# Requires: COMPUTE_HOST_CACHE, TEMP_DIR
+# Render Dedicated Pool summary table from the Capacity Topology cache
+# Shows per-shape host counts (total / available / in-use / unavail) with limit
+# names. Args: $1 = header style: "subheader" uses _ui_subheader, "banner" uses
+# ━━━ line.  Requires: CAPACITY_TOPOLOGY_CACHE, TEMP_DIR
+#
+# Reads the same cache as the Lifecycle Summary rendered directly above it in the
+# c5 view, so the two panels always reconcile. It previously read
+# COMPUTE_HOST_CACHE — a different API (compute-host list) with a different health
+# vocabulary — which had two consequences: its counts could disagree with the
+# summary, and because manage_capacity_topology never calls fetch_compute_hosts,
+# the whole panel silently rendered nothing when that cache happened to be cold.
+#
+# Fields: 1=InstanceOCID  3=HostLifecycleDetails  5=InstanceShape
+# Buckets are mutually exclusive so TOTAL = AVAILABLE + IN USE + UNAVAIL.
 #--------------------------------------------------------------------------------
 _render_dedicated_pool() {
-    [[ -s "$COMPUTE_HOST_CACHE" ]] && grep -qv "^#" "$COMPUTE_HOST_CACHE" || return 0
+    [[ -s "$CAPACITY_TOPOLOGY_CACHE" ]] && grep -qv "^#" "$CAPACITY_TOPOLOGY_CACHE" || return 0
     local _style="${1:-subheader}"
 
     echo ""
@@ -51268,27 +51278,35 @@ _render_dedicated_pool() {
         ["BM.GPU.B4.8"]="gpu-b4-count"
     )
 
-    printf "  ${BOLD}${CYAN}%-48s %6s %10s %8s${NC}\n" "SHAPE" "TOTAL" "AVAILABLE" "IN USE"
-    echo -e "  ${GRAY}──────────────────────────────────────────────────────────────────────────────${NC}"
+    printf "  ${BOLD}${CYAN}%-48s %6s %10s %8s %9s${NC}\n" "SHAPE" "TOTAL" "AVAILABLE" "IN USE" "UNAVAIL"
+    echo -e "  ${GRAY}─────────────────────────────────────────────────────────────────────────────────────${NC}"
 
+    # A host counts as provisionable only when nothing is running on it AND the
+    # hardware is AVAILABLE or DEGRADED. DEGRADED still accepts an instance;
+    # UNAVAILABLE does not, so it must not inflate the AVAILABLE figure. Anything
+    # else (including an absent/unknown details value) is counted UNAVAIL rather
+    # than assumed provisionable.
     local _dp_agg="${TEMP_DIR}/ct_dp_agg_$$.txt"
-    grep -v "^#" "$COMPUTE_HOST_CACHE" | awk -F'|' '{
-        shape = $4
+    grep -v "^#" "$CAPACITY_TOPOLOGY_CACHE" | awk -F'|' '{
+        shape = $5
         if (shape == "" || shape == "N/A") shape = "(unknown)"
         total[shape]++
-        if ($8 == "N/A" || $8 == "") avail[shape]++
-        else inuse[shape]++
+        if ($1 != "N/A" && $1 != "")                    inuse[shape]++
+        else if ($3 == "AVAILABLE" || $3 == "DEGRADED") avail[shape]++
+        else                                            unavail[shape]++
     } END {
-        for (s in total) printf "%s|%d|%d|%d\n", s, total[s], avail[s]+0, inuse[s]+0
+        for (s in total) printf "%s|%d|%d|%d|%d\n", s, total[s], avail[s]+0, inuse[s]+0, unavail[s]+0
     }' | sort -t'|' -k1,1 > "$_dp_agg"
 
-    while IFS='|' read -r _dp_shape _dp_total _dp_avail _dp_inuse; do
+    while IFS='|' read -r _dp_shape _dp_total _dp_avail _dp_inuse _dp_unavail; do
         [[ -z "$_dp_shape" ]] && continue
 
         local _dp_avail_color="${NC}"
         [[ "$_dp_avail" -gt 0 ]] && _dp_avail_color="${GREEN}"
         local _dp_inuse_color="${NC}"
         [[ "$_dp_inuse" -gt 0 ]] && _dp_inuse_color="${YELLOW}"
+        local _dp_unavail_color="${NC}"
+        [[ "$_dp_unavail" -gt 0 ]] && _dp_unavail_color="${RED}"
 
         local _dp_lname="${_dp_limit_map[$_dp_shape]:-}"
         local _dp_lsuffix=""
@@ -51297,13 +51315,14 @@ _render_dedicated_pool() {
         local _dp_pad=$(( 48 - ${#_dp_label} ))
         [[ $_dp_pad -lt 1 ]] && _dp_pad=1
 
-        printf "  ${WHITE}%s${GRAY}%s${NC}%*s %6s ${_dp_avail_color}%10s${NC} ${_dp_inuse_color}%8s${NC}\n" \
-            "$_dp_shape" "$_dp_lsuffix" "$_dp_pad" "" "$_dp_total" "$_dp_avail" "$_dp_inuse"
+        printf "  ${WHITE}%s${GRAY}%s${NC}%*s %6s ${_dp_avail_color}%10s${NC} ${_dp_inuse_color}%8s${NC} ${_dp_unavail_color}%9s${NC}\n" \
+            "$_dp_shape" "$_dp_lsuffix" "$_dp_pad" "" "$_dp_total" "$_dp_avail" "$_dp_inuse" "$_dp_unavail"
     done < "$_dp_agg"
     rm -f "$_dp_agg" 2>/dev/null
 
     echo ""
-    echo -e "  ${GRAY}Available = no instance running, ready to provision${NC}"
+    echo -e "  ${GRAY}Available = no instance running, hardware AVAILABLE or DEGRADED — ready to provision${NC}"
+    echo -e "  ${GRAY}Unavail   = hardware UNAVAILABLE or unknown — cannot be provisioned${NC}"
 }
 
 # Extended dedicated pool renderer — per-AD columns matching compute standard capacity layout
